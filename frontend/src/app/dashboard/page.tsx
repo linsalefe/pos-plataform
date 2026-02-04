@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Users, MessageCircle, ArrowDownLeft, ArrowUpRight, TrendingUp, UserPlus, Sparkles } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Users, ArrowDownLeft, ArrowUpRight, TrendingUp, UserPlus, Sparkles, Loader2 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import { useAuth } from '@/contexts/auth-context';
 import api from '@/lib/api';
 
 interface Stats {
@@ -38,14 +40,19 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
+  const { user, loading: authLoading } = useAuth();
+  const router = useRouter();
 
   useEffect(() => { setMounted(true); }, []);
+  useEffect(() => { if (!authLoading && !user) router.push('/login'); }, [user, authLoading, router]);
 
   useEffect(() => {
-    loadStats();
-    const interval = setInterval(loadStats, 30000);
-    return () => clearInterval(interval);
-  }, []);
+    if (user) {
+      loadStats();
+      const interval = setInterval(loadStats, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [user]);
 
   const loadStats = async () => {
     try {
@@ -59,6 +66,16 @@ export default function DashboardPage() {
   };
 
   const maxDailyCount = stats ? Math.max(...stats.daily_messages.map(d => d.count), 1) : 1;
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#f8f9fb]">
+        <Loader2 className="w-8 h-8 text-[#2A658F] animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) return null;
 
   if (loading || !stats) {
     return (

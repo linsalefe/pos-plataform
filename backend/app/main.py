@@ -9,6 +9,7 @@ import os
 from app.database import get_db
 from app.models import Channel, Contact, Message
 from app.routes import router
+from app.auth_routes import router as auth_router
 
 load_dotenv()
 
@@ -23,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(auth_router)
 
 VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
 

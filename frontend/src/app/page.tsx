@@ -1,5 +1,23 @@
-import { redirect } from 'next/navigation';
+'use client';
+
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/contexts/auth-context';
+import { Loader2 } from 'lucide-react';
 
 export default function Home() {
-  redirect('/dashboard');
+  const { user, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!loading) {
+      router.push(user ? '/dashboard' : '/login');
+    }
+  }, [user, loading, router]);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#f8f9fb]">
+      <Loader2 className="w-8 h-8 text-[#2A658F] animate-spin" />
+    </div>
+  );
 }
