@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Zap, Search, Filter, Send, Loader2, CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Zap, Search, Send, Loader2, CheckCircle, XCircle, AlertTriangle, Filter } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { useAuth } from '@/contexts/auth-context';
 import api from '@/lib/api';
@@ -30,6 +30,24 @@ interface SendResult {
   errors: { name: string; error: string }[];
 }
 
+const stageColors: Record<string, string> = {
+  'Entrada': 'bg-blue-50 text-blue-700',
+  'Pré Qualificado': 'bg-purple-50 text-purple-700',
+  'Follow 2': 'bg-amber-50 text-amber-700',
+  'Follow 3': 'bg-amber-50 text-amber-700',
+  'Follow 4': 'bg-amber-50 text-amber-700',
+  'Follows 5': 'bg-orange-50 text-orange-700',
+  'Follows 6': 'bg-orange-50 text-orange-700',
+  'Agendados': 'bg-cyan-50 text-cyan-700',
+  'Reagendamento': 'bg-cyan-50 text-cyan-700',
+  'Em Negociação': 'bg-indigo-50 text-indigo-700',
+  'Contratos Gerados': 'bg-emerald-50 text-emerald-700',
+  'Vendidos': 'bg-green-50 text-green-700',
+  'Descartado': 'bg-red-50 text-red-700',
+  'Sem contato': 'bg-gray-100 text-gray-600',
+  'SEM CONTATO': 'bg-gray-100 text-gray-600',
+};
+
 export default function AutomacoesPage() {
   const [leads, setLeads] = useState<ExactLead[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -40,6 +58,7 @@ export default function AutomacoesPage() {
   const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectAll, setSelectAll] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   // Template
   const [templates, setTemplates] = useState<any[]>([]);
@@ -56,6 +75,8 @@ export default function AutomacoesPage() {
 
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
+
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
     if (!authLoading && !user) router.push('/login');
@@ -125,7 +146,6 @@ export default function AutomacoesPage() {
     return text;
   };
 
-  // Filtros
   const sdrs = [...new Set(leads.map(l => l.sdr_name).filter(Boolean))].sort() as string[];
   const stages = stats ? Object.keys(stats.by_stage).sort() : [];
   const subSources = stats ? Object.keys(stats.by_sub_source).sort() : [];
@@ -201,15 +221,23 @@ export default function AutomacoesPage() {
     return phone.replace(/^55/, '').replace(/(\d{2})(\d{5})(\d{4})/, '($1) $2-$3');
   };
 
+  const hasActiveFilters = search || stageFilter || subSourceFilter || sdrFilter;
+
   if (authLoading) return <div className="min-h-screen flex items-center justify-center bg-[#f8f9fb]"><Loader2 className="w-8 h-8 text-[#2A658F] animate-spin" /></div>;
   if (!user) return null;
 
   if (loading) {
     return (
       <AppLayout>
-        <div className="animate-pulse space-y-6">
-          <div className="h-8 bg-gray-200 rounded-lg w-48" />
-          <div className="h-96 bg-gray-200 rounded-2xl" />
+        <div className="animate-pulse space-y-6 max-w-7xl mx-auto">
+          <div className="space-y-2">
+            <div className="h-4 bg-gray-200 rounded w-32" />
+            <div className="h-7 bg-gray-200 rounded w-48" />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="h-80 bg-gray-200 rounded-2xl" />
+            <div className="lg:col-span-2 h-96 bg-gray-200 rounded-2xl" />
+          </div>
         </div>
       </AppLayout>
     );
@@ -218,25 +246,27 @@ export default function AutomacoesPage() {
   return (
     <AppLayout>
       <div className="space-y-6 max-w-7xl mx-auto overflow-y-auto h-full pb-6">
+
         {/* Header */}
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Zap className="w-4 h-4 text-[#2A658F]" />
-            <p className="text-sm font-medium text-[#2A658F]">Envio em massa</p>
-          </div>
+        <div className={`transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
+          <p className="text-sm text-gray-400 mb-0.5">Envio em massa</p>
           <h1 className="text-2xl font-semibold text-[#27273D] tracking-tight">Automações</h1>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Coluna esquerda - Template */}
+        <div className={`grid grid-cols-1 lg:grid-cols-3 gap-6 transition-all duration-700 ease-out delay-100 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+
+          {/* ══════════════════════════════════════ */}
+          {/* COLUNA ESQUERDA — CONFIG               */}
+          {/* ══════════════════════════════════════ */}
           <div className="space-y-4">
+
             {/* Canal */}
             <div className="bg-white rounded-2xl p-4 border border-gray-100">
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Canal</h3>
+              <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2.5">Canal</h3>
               <select
                 value={activeChannelId}
                 onChange={(e) => { setActiveChannelId(Number(e.target.value)); setTemplates([]); setSelectedTemplate(null); }}
-                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-[#2A658F]/20"
+                className="w-full px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all cursor-pointer"
               >
                 {channels.map(ch => (
                   <option key={ch.id} value={ch.id}>{ch.name}</option>
@@ -246,11 +276,11 @@ export default function AutomacoesPage() {
 
             {/* Template */}
             <div className="bg-white rounded-2xl p-4 border border-gray-100">
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Template</h3>
+              <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2.5">Template</h3>
               {loadingTemplates ? (
-                <div className="flex justify-center py-4"><Loader2 className="w-5 h-5 text-[#2A658F] animate-spin" /></div>
+                <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 text-[#2A658F] animate-spin" /></div>
               ) : templates.length === 0 ? (
-                <button onClick={loadTemplates} className="w-full py-2.5 border border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-[#2A658F] hover:text-[#2A658F] transition-colors">
+                <button onClick={loadTemplates} className="w-full py-3 border border-dashed border-gray-200 rounded-xl text-[13px] text-gray-400 hover:border-[#2A658F] hover:text-[#2A658F] hover:bg-[#2A658F]/5 transition-all">
                   Carregar templates
                 </button>
               ) : (
@@ -259,25 +289,31 @@ export default function AutomacoesPage() {
                     <button
                       key={t.name}
                       onClick={() => selectTemplate(t)}
-                      className={`w-full text-left px-3 py-2 rounded-xl border text-sm transition-all ${selectedTemplate?.name === t.name ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]' : 'border-gray-100 text-gray-700 hover:bg-gray-50'}`}
+                      className={`w-full text-left px-3 py-2.5 rounded-xl border text-sm transition-all ${
+                        selectedTemplate?.name === t.name
+                          ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
+                          : 'border-gray-50 text-gray-700 hover:bg-gray-50 hover:border-gray-100'
+                      }`}
                     >
-                      <p className="font-medium text-xs">{t.name.replace(/_/g, ' ')}</p>
-                      <p className="text-[10px] text-gray-400">{t.parameters.length} variáveis</p>
+                      <p className="font-medium text-[12px]">{t.name.replace(/_/g, ' ')}</p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">{t.parameters.length} variáveis</p>
                     </button>
                   ))}
                 </div>
               )}
 
               {selectedTemplate && selectedTemplate.parameters.length > 0 && (
-                <div className="mt-3 space-y-2">
+                <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
+                  <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Variáveis</p>
                   {selectedTemplate.parameters.map((p: string, i: number) => (
                     <div key={i}>
-                      <label className="text-[11px] text-gray-500">{p}</label>
+                      <label className="text-[11px] text-gray-400 mb-1 block">{p} ({'{{'}{i+1}{'}}'})</label>
                       <input
                         type="text"
                         value={templateParams[i] || ''}
                         onChange={e => updateParam(i, e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:border-[#2A658F]"
+                        placeholder={`Valor para ${p}`}
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-100 rounded-lg text-[13px] text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-[#2A658F] focus:bg-white transition-all"
                       />
                     </div>
                   ))}
@@ -285,19 +321,19 @@ export default function AutomacoesPage() {
               )}
 
               {selectedTemplate && (
-                <div className="mt-3 bg-[#f0f2f5] rounded-xl p-3">
-                  <p className="text-[10px] font-semibold text-gray-400 uppercase mb-1">Prévia</p>
-                  <p className="text-xs text-gray-700 whitespace-pre-wrap">{getPreview()}</p>
+                <div className="mt-4 bg-[#eef0f3] rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase mb-1.5 tracking-wider">Prévia</p>
+                  <p className="text-[12px] text-gray-700 whitespace-pre-wrap leading-relaxed">{getPreview()}</p>
                 </div>
               )}
             </div>
 
-            {/* Botão Enviar */}
+            {/* Botão Enviar em massa */}
             {selectedIds.size > 0 && selectedTemplate && (
               <button
                 onClick={() => setShowConfirm(true)}
                 disabled={sending}
-                className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-[#2A658F] to-[#3d7ba8] text-white font-medium rounded-xl hover:shadow-lg hover:shadow-[#2A658F]/30 transition-all disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-2 py-3 bg-[#2A658F] text-white font-medium rounded-xl hover:bg-[#1f5375] hover:shadow-lg hover:shadow-[#2A658F]/20 active:scale-[0.98] transition-all disabled:opacity-40 disabled:active:scale-100"
               >
                 {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 {sending ? 'Enviando...' : `Enviar para ${selectedIds.size} leads`}
@@ -306,22 +342,22 @@ export default function AutomacoesPage() {
 
             {/* Resultado */}
             {sendResult && (
-              <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-2">
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Resultado</h3>
-                <div className="flex gap-3">
+              <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+                <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Resultado</h3>
+                <div className="flex gap-4">
                   <div className="flex items-center gap-1.5">
-                    <CheckCircle className="w-4 h-4 text-green-500" />
-                    <span className="text-sm font-medium text-green-700">{sendResult.sent} enviados</span>
+                    <CheckCircle className="w-4 h-4 text-emerald-500" />
+                    <span className="text-[13px] font-medium text-emerald-700">{sendResult.sent} enviados</span>
                   </div>
                   {sendResult.failed > 0 && (
                     <div className="flex items-center gap-1.5">
                       <XCircle className="w-4 h-4 text-red-500" />
-                      <span className="text-sm font-medium text-red-700">{sendResult.failed} falharam</span>
+                      <span className="text-[13px] font-medium text-red-700">{sendResult.failed} falharam</span>
                     </div>
                   )}
                 </div>
                 {sendResult.errors.length > 0 && (
-                  <div className="mt-2 space-y-1">
+                  <div className="mt-2 space-y-1 pt-2 border-t border-gray-100">
                     {sendResult.errors.map((e, i) => (
                       <p key={i} className="text-[11px] text-red-500">{e.name}: {e.error}</p>
                     ))}
@@ -331,32 +367,48 @@ export default function AutomacoesPage() {
             )}
           </div>
 
-          {/* Coluna direita - Lista de leads */}
+          {/* ══════════════════════════════════════ */}
+          {/* COLUNA DIREITA — LISTA DE LEADS        */}
+          {/* ══════════════════════════════════════ */}
           <div className="lg:col-span-2 space-y-4">
+
             {/* Filtros */}
-            <div className="bg-white rounded-2xl p-4 border border-gray-100 flex flex-wrap items-center gap-3">
-              <div className="relative flex-1 min-w-[180px]">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Buscar..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/20"
-                />
+            <div className="bg-white rounded-2xl p-4 border border-gray-100">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative flex-1 min-w-[180px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Buscar lead..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Filter className="w-4 h-4 text-gray-400" />
+                  <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all cursor-pointer">
+                    <option value="">Todos estágios</option>
+                    {stages.map(s => <option key={s} value={s}>{s} ({stats?.by_stage[s]})</option>)}
+                  </select>
+                  <select value={subSourceFilter} onChange={(e) => setSubSourceFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all cursor-pointer">
+                    <option value="">Todos cursos</option>
+                    {subSources.map(s => <option key={s} value={s}>{s} ({stats?.by_sub_source[s]})</option>)}
+                  </select>
+                  <select value={sdrFilter} onChange={(e) => setSdrFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all cursor-pointer">
+                    <option value="">Todos SDRs</option>
+                    {sdrs.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                {hasActiveFilters && (
+                  <button
+                    onClick={() => { setSearch(''); setStageFilter(''); setSubSourceFilter(''); setSdrFilter(''); }}
+                    className="px-3 py-2.5 text-[12px] font-medium text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
+                  >
+                    Limpar
+                  </button>
+                )}
               </div>
-              <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-900 bg-white focus:outline-none">
-                <option value="">Todos estágios</option>
-                {stages.map(s => <option key={s} value={s}>{s} ({stats?.by_stage[s]})</option>)}
-              </select>
-              <select value={subSourceFilter} onChange={(e) => setSubSourceFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-900 bg-white focus:outline-none">
-                <option value="">Todos cursos</option>
-                {subSources.map(s => <option key={s} value={s}>{s} ({stats?.by_sub_source[s]})</option>)}
-              </select>
-              <select value={sdrFilter} onChange={(e) => setSdrFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-900 bg-white focus:outline-none">
-                <option value="">Todos SDRs</option>
-                {sdrs.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
             </div>
 
             {/* Tabela */}
@@ -364,21 +416,21 @@ export default function AutomacoesPage() {
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-gray-100">
-                      <th className="px-4 py-3">
+                    <tr className="border-b border-gray-100 bg-gray-50/50">
+                      <th className="px-4 py-3 w-10">
                         <input type="checkbox" checked={selectAll} onChange={toggleSelectAll} className="w-4 h-4 rounded border-gray-300 text-[#2A658F] focus:ring-[#2A658F]" />
                       </th>
-                      <th className="text-left text-xs font-semibold text-gray-500 uppercase px-4 py-3">Nome</th>
-                      <th className="text-left text-xs font-semibold text-gray-500 uppercase px-4 py-3">Telefone</th>
-                      <th className="text-left text-xs font-semibold text-gray-500 uppercase px-4 py-3">Curso</th>
-                      <th className="text-left text-xs font-semibold text-gray-500 uppercase px-4 py-3">Estágio</th>
-                      <th className="text-left text-xs font-semibold text-gray-500 uppercase px-4 py-3">SDR</th>
-                      {selectedTemplate && <th className="px-4 py-3"></th>}
+                      <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-3">Nome</th>
+                      <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-3">Telefone</th>
+                      <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-3">Curso</th>
+                      <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-3">Estágio</th>
+                      <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-4 py-3">SDR</th>
+                      {selectedTemplate && <th className="px-4 py-3 w-20"></th>}
                     </tr>
                   </thead>
                   <tbody>
                     {filteredLeads.map((lead) => (
-                      <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                      <tr key={lead.id} className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors ${selectedIds.has(lead.id) ? 'bg-[#2A658F]/[0.03]' : ''}`}>
                         <td className="px-4 py-3">
                           <input
                             type="checkbox"
@@ -387,19 +439,29 @@ export default function AutomacoesPage() {
                             className="w-4 h-4 rounded border-gray-300 text-[#2A658F] focus:ring-[#2A658F]"
                           />
                         </td>
-                        <td className="px-4 py-3 text-sm font-medium text-[#27273D]">{lead.name}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{formatPhone(lead.phone1)}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{lead.sub_source || '-'}</td>
                         <td className="px-4 py-3">
-                          <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">{lead.stage || '-'}</span>
+                          <span className="text-[13px] font-medium text-[#27273D]">{lead.name}</span>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{lead.sdr_name || '-'}</td>
+                        <td className="px-4 py-3">
+                          <span className="text-[13px] text-gray-500 tabular-nums">{formatPhone(lead.phone1)}</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-[13px] text-gray-500">{lead.sub_source || '-'}</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium ${stageColors[lead.stage || ''] || 'bg-gray-100 text-gray-600'}`}>
+                            {lead.stage || '-'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-[13px] text-gray-500">{lead.sdr_name || '-'}</span>
+                        </td>
                         {selectedTemplate && (
                           <td className="px-4 py-3">
                             <button
                               onClick={() => handleSingleSend(lead)}
                               disabled={sending || !lead.phone1}
-                              className="text-xs px-3 py-1.5 bg-[#2A658F] text-white rounded-lg hover:bg-[#1e4f6e] disabled:opacity-30 transition-colors"
+                              className="text-[11px] px-3 py-1.5 bg-[#2A658F] text-white rounded-lg hover:bg-[#1f5375] disabled:opacity-30 transition-all active:scale-95"
                             >
                               Enviar
                             </button>
@@ -410,37 +472,59 @@ export default function AutomacoesPage() {
                   </tbody>
                 </table>
               </div>
-              <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between text-sm text-gray-500">
-                <span>{filteredLeads.length} leads | {selectedIds.size} selecionados</span>
+              {filteredLeads.length === 0 && (
+                <div className="text-center py-16 text-gray-400">
+                  <Zap className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                  <p className="text-sm">Nenhum lead encontrado</p>
+                </div>
+              )}
+              <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between">
+                <span className="text-[12px] text-gray-400">
+                  {filteredLeads.length} leads • {selectedIds.size} selecionados
+                </span>
+                {hasActiveFilters && (
+                  <span className="text-[12px] text-[#2A658F] font-medium">Filtros ativos</span>
+                )}
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Modal Confirmação */}
+      {/* ══════════════════════════════════════ */}
+      {/* MODAL CONFIRMAÇÃO                      */}
+      {/* ══════════════════════════════════════ */}
       {showConfirm && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowConfirm(false)}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl mx-4" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center">
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowConfirm(false)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl mx-4 border border-gray-100" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-5">
+              <div className="w-11 h-11 bg-amber-50 rounded-xl flex items-center justify-center">
                 <AlertTriangle className="w-5 h-5 text-amber-600" />
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-[#27273D]">Confirmar envio</h2>
-                <p className="text-sm text-gray-500">Esta ação não pode ser desfeita</p>
+                <h2 className="text-[15px] font-semibold text-[#27273D]">Confirmar envio</h2>
+                <p className="text-[13px] text-gray-400">Esta ação não pode ser desfeita</p>
               </div>
             </div>
-            <div className="bg-gray-50 rounded-xl p-3 mb-4 space-y-1">
-              <p className="text-sm text-gray-700"><strong>Template:</strong> {selectedTemplate?.name.replace(/_/g, ' ')}</p>
-              <p className="text-sm text-gray-700"><strong>Leads:</strong> {selectedIds.size}</p>
-              <p className="text-sm text-gray-700"><strong>Canal:</strong> {channels.find(c => c.id === activeChannelId)?.name}</p>
+            <div className="bg-gray-50 rounded-xl p-4 mb-5 space-y-2 border border-gray-100">
+              <div className="flex justify-between">
+                <span className="text-[12px] text-gray-400">Template</span>
+                <span className="text-[13px] font-medium text-gray-700">{selectedTemplate?.name.replace(/_/g, ' ')}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[12px] text-gray-400">Leads</span>
+                <span className="text-[13px] font-medium text-gray-700">{selectedIds.size}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[12px] text-gray-400">Canal</span>
+                <span className="text-[13px] font-medium text-gray-700">{channels.find(c => c.id === activeChannelId)?.name}</span>
+              </div>
             </div>
             <div className="flex gap-3">
-              <button onClick={() => setShowConfirm(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors">
+              <button onClick={() => setShowConfirm(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-[13px] font-medium text-gray-500 hover:bg-gray-50 transition-colors">
                 Cancelar
               </button>
-              <button onClick={handleBulkSend} className="flex-1 py-2.5 bg-[#2A658F] text-white rounded-xl text-sm font-medium hover:bg-[#1e4f6e] transition-colors">
+              <button onClick={handleBulkSend} className="flex-1 py-2.5 bg-[#2A658F] text-white rounded-xl text-[13px] font-medium hover:bg-[#1f5375] active:scale-[0.98] transition-all">
                 Confirmar envio
               </button>
             </div>

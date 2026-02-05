@@ -20,14 +20,15 @@ Permite que a equipe comercial gerencie leads, responda conversas em tempo real,
 10. [ETAPA 6 — Webhook (Receber Mensagens)](#-etapa-6--webhook-receber-mensagens)
 11. [ETAPA 7 — Deploy em Produção (AWS Lightsail)](#-etapa-7--deploy-em-produção-aws-lightsail)
 12. [ETAPA 8 — Configurar Templates do WhatsApp](#-etapa-8--configurar-templates-do-whatsapp)
-13. [Funcionalidades](#-funcionalidades)
-14. [Estrutura de Pastas](#-estrutura-de-pastas)
-15. [Banco de Dados — Tabelas](#-banco-de-dados--tabelas)
-16. [API — Endpoints](#-api--endpoints)
-17. [Variáveis de Ambiente](#-variáveis-de-ambiente)
-18. [Comandos Úteis](#-comandos-úteis)
-19. [Solução de Problemas](#-solução-de-problemas)
-20. [Licença](#-licença)
+13. [ETAPA 9 — Integração Exact Spotter (CRM)](#-etapa-9--integração-exact-spotter-crm)
+14. [Funcionalidades](#-funcionalidades)
+15. [Estrutura de Pastas](#-estrutura-de-pastas)
+16. [Banco de Dados — Tabelas](#-banco-de-dados--tabelas)
+17. [API — Endpoints](#-api--endpoints)
+18. [Variáveis de Ambiente](#-variáveis-de-ambiente)
+19. [Comandos Úteis](#-comandos-úteis)
+20. [Solução de Problemas](#-solução-de-problemas)
+21. [Licença](#-licença)
 
 ---
 
@@ -42,6 +43,8 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 - Operar múltiplos números de WhatsApp em um único painel
 - Visualizar métricas no dashboard (total de conversas, leads novos, etc.)
 - Receber e visualizar mídias (fotos, áudios, vídeos, documentos)
+- Integração com Exact Spotter (CRM) — importação automática de leads de pós-graduação
+- Página de automações para envio em massa de templates por filtros (estágio, curso, SDR)
 
 **URL de Produção:** `https://hub.cenatdata.online`
 
@@ -74,7 +77,9 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 │  - Login         │   │  - REST API (/api/*)              │
 │  - Dashboard     │   │  - Webhook WhatsApp (/webhook)    │
 │  - Conversas     │   │  - Autenticação JWT               │
-│  - Usuários      │   │  - Proxy de mídia                 │
+│  - Leads Pós     │   │  - Proxy de mídia                 │
+│  - Automações    │   │  - Sync Exact Spotter (10min)     │
+│  - Usuários      │   │  - Envio em massa de templates    │
 └──────────────────┘   └──────────┬───────────────────────┘
                                   │
                                   ▼
@@ -88,7 +93,17 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
                        │  - users         │
                        │  - tags          │
                        │  - contact_tags  │
+                       │  - exact_leads   │
                        └──────────────────┘
+
+                    ┌──────────────────────┐
+                    │  Exact Spotter API   │
+                    │  (CRM - v3)          │
+                    │                      │
+                    │  - Leads pós-grad    │
+                    │  - Sync a cada 10min │
+                    │  - Histórico/Dados   │
+                    └──────────────────────┘
 
                     ┌──────────────────────┐
                     │  Meta / WhatsApp     │
@@ -115,6 +130,12 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 4. Meta entrega ao lead no WhatsApp
 5. Backend salva mensagem no PostgreSQL
 
+**Fluxo de sincronização Exact Spotter:**
+1. A cada 10 minutos, background task busca leads na API Exact Spotter
+2. Filtra leads com subSource começando em "pos" (pós-graduação)
+3. Insere novos leads ou atualiza existentes na tabela `exact_leads`
+4. Frontend exibe leads na página `/leads-pos` com filtros e detalhes
+
 ---
 
 ## 🛠 Tecnologias Utilizadas
@@ -131,6 +152,7 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 | **Banco de Dados** | PostgreSQL | 14+ |
 | **Autenticação** | JWT (PyJWT) + bcrypt | — |
 | **HTTP (backend)** | httpx | latest |
+| **CRM** | Exact Spotter API v3 | — |
 | **WhatsApp API** | Meta Cloud API | v22.0 |
 | **Servidor Web** | Nginx | 1.18 |
 | **SSL** | Certbot (Let's Encrypt) | auto |
@@ -146,6 +168,7 @@ Antes de começar, você precisa ter:
 - **Conta Meta Business** verificada (business.facebook.com)
 - **App Meta Developers** com produto WhatsApp configurado
 - **Número de telefone** vinculado ao WhatsApp Business API
+- **Conta Exact Spotter** com token de API (para integração CRM)
 - **Conta AWS** (para hospedagem em produção)
 - **Domínio** apontando para o IP do servidor
 - **Git e GitHub** configurados na máquina local
@@ -246,13 +269,16 @@ pos-plataform/
 ├── backend/              # API FastAPI (Python)
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── main.py       # App principal + webhook
-│   │   ├── models.py     # Modelos SQLAlchemy
+│   │   ├── main.py       # App principal + webhook + sync Exact Spotter
+│   │   ├── models.py     # Modelos SQLAlchemy (Contact, Message, Channel, User, Tag, ExactLead)
 │   │   ├── database.py   # Conexão com PostgreSQL
 │   │   ├── routes.py     # Rotas da API
 │   │   ├── auth.py       # Autenticação JWT
 │   │   ├── auth_routes.py # Rotas de login/registro
-│   │   └── whatsapp.py   # Funções de envio WhatsApp
+│   │   ├── whatsapp.py   # Funções de envio WhatsApp
+│   │   ├── exact_spotter.py # Integração API Exact Spotter
+│   │   ├── exact_routes.py  # Rotas: leads pós, sync, detalhes, envio em massa
+│   │   └── create_tables.py # Script para criar tabelas
 │   ├── requirements.txt
 │   └── .env
 ├── frontend/             # Interface Next.js (React)
@@ -262,6 +288,8 @@ pos-plataform/
 │   │   │   ├── dashboard/page.tsx
 │   │   │   ├── conversations/page.tsx
 │   │   │   ├── users/page.tsx
+│   │   │   ├── leads-pos/page.tsx
+│   │   │   ├── automacoes/page.tsx
 │   │   │   ├── layout.tsx
 │   │   │   └── page.tsx
 │   │   ├── components/
@@ -306,6 +334,7 @@ python-dotenv
 httpx
 pyjwt
 bcrypt==4.0.1
+apscheduler
 ```
 
 ### 3.3 — Criar arquivo `.env`
@@ -318,6 +347,7 @@ WHATSAPP_PHONE_ID=SEU_PHONE_NUMBER_ID_AQUI
 WEBHOOK_VERIFY_TOKEN=cenat_webhook_2024
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/cenat_whatsapp
 JWT_SECRET=sua-chave-secreta-jwt-aqui
+EXACT_SPOTTER_TOKEN=seu_token_exact_spotter_aqui
 ```
 
 > ⚠️ **Nunca commite o `.env`!** Adicione ao `.gitignore`.
@@ -379,7 +409,36 @@ CREATE TABLE IF NOT EXISTS contact_tags (
 "
 ```
 
-### 4.3 — Inserir Canal (Número de WhatsApp)
+### 4.3 — Criar Tabela de Leads Exact Spotter
+
+```bash
+cd backend && source venv/bin/activate
+python -m app.create_tables
+```
+
+Ou manualmente:
+
+```bash
+psql -U postgres cenat_whatsapp -c "
+CREATE TABLE IF NOT EXISTS exact_leads (
+    id SERIAL PRIMARY KEY,
+    exact_id INTEGER UNIQUE NOT NULL,
+    name VARCHAR(255),
+    phone1 VARCHAR(50),
+    phone2 VARCHAR(50),
+    source VARCHAR(255),
+    sub_source VARCHAR(255),
+    stage VARCHAR(255),
+    funnel_id INTEGER,
+    sdr_name VARCHAR(255),
+    register_date TIMESTAMP,
+    update_date TIMESTAMP,
+    synced_at TIMESTAMP DEFAULT now()
+);
+"
+```
+
+### 4.4 — Inserir Canal (Número de WhatsApp)
 
 ```bash
 psql -U postgres cenat_whatsapp -c "
@@ -397,7 +456,7 @@ VALUES (
 
 > 📌 Para adicionar mais números, basta inserir mais linhas nesta tabela com os dados de cada número.
 
-### 4.4 — Criar Usuário Admin
+### 4.5 — Criar Usuário Admin
 
 ```bash
 # Gerar hash da senha com Python
@@ -616,6 +675,7 @@ WHATSAPP_PHONE_ID=978293125363835
 WEBHOOK_VERIFY_TOKEN=cenat_webhook_2024
 DATABASE_URL=postgresql+asyncpg://cenat:CenatHub2024#@localhost:5432/cenat_whatsapp
 JWT_SECRET=cenat-hub-prod-secret-2024-x7k9m
+EXACT_SPOTTER_TOKEN=seu_token_exact_spotter_aqui
 EOF
 ```
 
@@ -623,18 +683,7 @@ Criar tabelas:
 
 ```bash
 source venv/bin/activate
-python3 -c "
-import asyncio
-from app.database import engine
-from app.models import Base
-
-async def create():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print('Tabelas criadas!')
-
-asyncio.run(create())
-"
+python -m app.create_tables
 ```
 
 Executar alterações extras no banco (colunas, canal, usuário admin):
@@ -704,17 +753,6 @@ cd /home/ubuntu/pos-plataform/frontend
 # Configurar API URL de produção
 cat > .env.production << 'EOF'
 NEXT_PUBLIC_API_URL=https://hub.cenatdata.online/api
-EOF
-
-# Configurar api.ts
-cat > src/lib/api.ts << 'EOF'
-import axios from 'axios';
-
-const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api',
-});
-
-export default api;
 EOF
 
 # Instalar dependências e buildar
@@ -894,6 +932,89 @@ O sistema busca automaticamente todos os templates **aprovados** da sua conta Me
 
 ---
 
+## 🔗 ETAPA 9 — Integração Exact Spotter (CRM)
+
+### 9.1 — Obter Token da API
+
+1. Acesse o **Exact Spotter** da sua conta
+2. Vá em **Configurações → Integrações → API**
+3. Copie o **Token de API** (token_exact)
+4. Adicione ao `.env` do backend:
+
+```env
+EXACT_SPOTTER_TOKEN=seu_token_aqui
+```
+
+### 9.2 — Como Funciona a Sincronização
+
+- O backend possui uma **background task** que roda a cada **10 minutos**
+- Busca todos os leads da API Exact Spotter (v3, protocolo OData)
+- Filtra apenas leads com `subSource` começando com `"pos"` (pós-graduação)
+- Insere novos leads ou atualiza dados de leads existentes na tabela `exact_leads`
+- A primeira sincronização pode ser feita manualmente via API:
+
+```bash
+curl -X POST https://hub.cenatdata.online/api/exact-leads/sync
+```
+
+### 9.3 — Dados Sincronizados
+
+| Campo | Origem no Exact Spotter |
+|-------|------------------------|
+| name | lead (nome do lead) |
+| phone1 | phone1 |
+| phone2 | phone2 |
+| source | source.value |
+| sub_source | subSource.value (curso) |
+| stage | stage (etapa no funil) |
+| funnel_id | funnelId |
+| sdr_name | sdr.name |
+| register_date | registerDate |
+| update_date | updateDate |
+
+### 9.4 — Funcionalidades da Página Leads Pós (`/leads-pos`)
+
+- **Tabela** com todos os leads de pós-graduação sincronizados
+- **Filtros** por estágio e curso (dropdown)
+- **Busca** por nome ou telefone
+- **Cards de resumo** (total, vendidos, contratos gerados, descartados)
+- **Botão Sincronizar** para forçar sync manual
+- **Popup de detalhes** ao clicar em um lead:
+  - Dados de contato (telefone, email, cargo, cidade)
+  - Informações do lead (fonte, curso, SDR, data de cadastro)
+  - Histórico de qualificação (mudanças de estágio)
+  - Link direto para abrir no Exact Spotter
+  - Botão para iniciar conversa WhatsApp
+
+### 9.5 — Busca Inteligente nas Conversas
+
+Na página de **Conversas**, a barra de busca agora também pesquisa nos leads do Exact Spotter. Ao digitar um nome, aparece um dropdown com sugestões de leads. Ao clicar em um lead, o sistema preenche automaticamente o telefone e nome no modal de "Nova Conversa".
+
+### 9.6 — Página de Automações (`/automacoes`)
+
+- Selecione o **canal** (número de WhatsApp)
+- Carregue e selecione um **template** aprovado
+- Preencha as **variáveis** do template
+- **Filtre leads** por estágio, curso e SDR
+- **Selecione leads** individualmente ou em massa (checkbox)
+- **Envie** para todos os selecionados de uma vez
+- O sistema envia com **delay de 1 segundo** entre mensagens para evitar rate limit
+- **Relatório** mostra quantos foram enviados e quais falharam
+- Contatos são **criados automaticamente** no sistema ao enviar
+
+### 9.7 — Estágios do Funil
+
+| Estágio | Descrição |
+|---------|-----------|
+| Entrada | Lead acabou de entrar |
+| Follows 2-9 | Tentativas de contato |
+| Agendados | Reunião agendada |
+| Contratos Gerados | Contrato enviado |
+| Vendidos | Matrícula confirmada |
+| Descartado | Lead perdido |
+
+---
+
 ## 🎯 Funcionalidades
 
 ### Dashboard
@@ -906,7 +1027,7 @@ O sistema busca automaticamente todos os templates **aprovados** da sua conta Me
 - Chat em tempo real com polling (3 segundos)
 - Envio e recebimento de texto
 - Visualização de imagens, áudios, vídeos e documentos
-- Busca de contatos
+- Busca de contatos e leads do Exact Spotter
 - Filtro por status (Todos, Novo, Contato, Qualificado, etc.)
 - Seletor de canal (múltiplos números)
 
@@ -920,6 +1041,23 @@ O sistema busca automaticamente todos os templates **aprovados** da sua conta Me
 - Seletor dinâmico de templates aprovados
 - Preenchimento de variáveis com prévia em tempo real
 - Criação automática do contato no sistema
+- Busca inteligente de leads do Exact Spotter (preenche telefone e nome automaticamente)
+
+### Leads Pós-Graduação (Exact Spotter)
+- Sincronização automática a cada 10 minutos com a API Exact Spotter
+- Filtro por estágio, curso e busca por nome/telefone
+- Popup com detalhes completos do lead (contato, email, cargo, cidade, histórico de qualificação)
+- Link direto para abrir o lead no Exact Spotter
+- Botão para iniciar conversa WhatsApp com o lead
+
+### Automações (Envio em Massa)
+- Seleção de canal e template aprovado
+- Filtros por estágio, curso e SDR
+- Seleção individual ou em massa (checkbox)
+- Envio em lote com delay de 1s entre mensagens (evita rate limit)
+- Modal de confirmação antes do envio
+- Relatório de resultado (enviados/falharam/erros)
+- Criação automática do contato no sistema ao enviar
 
 ### Gerenciar Usuários (Admin)
 - Lista de todos os usuários
@@ -948,13 +1086,16 @@ pos-plataform/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py          # Inicialização do módulo
-│   │   ├── main.py              # FastAPI app, CORS, webhook, health
-│   │   ├── models.py            # Modelos: Contact, Message, Channel, User, Tag
+│   │   ├── main.py              # FastAPI app, CORS, webhook, health, sync background task
+│   │   ├── models.py            # Modelos: Contact, Message, Channel, User, Tag, ExactLead
 │   │   ├── database.py          # Engine + SessionLocal async
 │   │   ├── routes.py            # Rotas: contacts, messages, send, tags, channels, media, templates
 │   │   ├── auth.py              # hash_password, verify_password, create_access_token, get_current_user
 │   │   ├── auth_routes.py       # login, register, me, users, toggle_user
-│   │   └── whatsapp.py          # send_text_message, send_template_message
+│   │   ├── whatsapp.py          # send_text_message, send_template_message
+│   │   ├── exact_spotter.py     # fetch_leads_from_exact, sync_exact_leads, is_pos_lead
+│   │   ├── exact_routes.py      # list_exact_leads, sync, stats, details, bulk_send_template
+│   │   └── create_tables.py     # Script para criar todas as tabelas
 │   ├── requirements.txt
 │   ├── .env                     # Variáveis (NÃO commitar)
 │   └── venv/                    # Ambiente virtual (NÃO commitar)
@@ -969,9 +1110,13 @@ pos-plataform/
 │   │   │   ├── dashboard/
 │   │   │   │   └── page.tsx     # Dashboard com métricas e gráficos
 │   │   │   ├── conversations/
-│   │   │   │   └── page.tsx     # Chat + CRM + templates + mídia
-│   │   │   └── users/
-│   │   │       └── page.tsx     # Gerenciar usuários (admin)
+│   │   │   │   └── page.tsx     # Chat + CRM + templates + mídia + busca de leads
+│   │   │   ├── users/
+│   │   │   │   └── page.tsx     # Gerenciar usuários (admin)
+│   │   │   ├── leads-pos/
+│   │   │   │   └── page.tsx     # Leads pós-graduação (Exact Spotter)
+│   │   │   └── automacoes/
+│   │   │       └── page.tsx     # Envio em massa de templates
 │   │   ├── components/
 │   │   │   ├── Sidebar.tsx      # Menu lateral com logo, navegação, logout
 │   │   │   └── AppLayout.tsx    # Wrapper com proteção de rota
@@ -1049,6 +1194,23 @@ pos-plataform/
 | color | VARCHAR(20) | Cor (blue, red, green, etc.) |
 | created_at | TIMESTAMP | Data de criação |
 
+### `exact_leads`
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| exact_id | INTEGER UNIQUE | ID do lead no Exact Spotter |
+| name | VARCHAR(255) | Nome do lead |
+| phone1 | VARCHAR(50) | Telefone principal |
+| phone2 | VARCHAR(50) | Telefone secundário |
+| source | VARCHAR(255) | Fonte (ex: Rd Marketing) |
+| sub_source | VARCHAR(255) | Curso (ex: possmedh, possupervisao) |
+| stage | VARCHAR(255) | Estágio no funil (Entrada, Follow 2-9, Vendidos, etc.) |
+| funnel_id | INTEGER | ID do funil no Exact Spotter |
+| sdr_name | VARCHAR(255) | Nome do SDR responsável |
+| register_date | TIMESTAMP | Data de cadastro no CRM |
+| update_date | TIMESTAMP | Data de última atualização |
+| synced_at | TIMESTAMP | Data da última sincronização |
+
 ### `contact_tags`
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
@@ -1108,6 +1270,15 @@ pos-plataform/
 |--------|------|-----------|
 | GET | `/api/dashboard/stats` | Métricas gerais |
 
+### Exact Spotter (Leads Pós)
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/exact-leads` | Listar leads (filtros: stage, sub_source, search, limit) |
+| POST | `/api/exact-leads/sync` | Sincronizar leads do Exact Spotter |
+| GET | `/api/exact-leads/stats` | Estatísticas agregadas (total, por estágio, por curso) |
+| GET | `/api/exact-leads/{exact_id}/details` | Detalhes do lead (dados, contato, histórico) |
+| POST | `/api/exact-leads/bulk-send-template` | Envio em massa de template para leads selecionados |
+
 ### Webhook
 | Método | Rota | Descrição |
 |--------|------|-----------|
@@ -1131,6 +1302,9 @@ DATABASE_URL=postgresql+asyncpg://usuario:senha@host:5432/cenat_whatsapp
 
 # Autenticação (obrigatório)
 JWT_SECRET=chave_secreta_para_tokens_jwt
+
+# Exact Spotter CRM (obrigatório para leads pós)
+EXACT_SPOTTER_TOKEN=token_da_api_exact_spotter
 ```
 
 ### Frontend (`frontend/.env.production`)
@@ -1183,6 +1357,11 @@ npm run build
 sudo systemctl restart cenat-frontend
 
 # ═══════════════════════════════════════
+# SINCRONIZAR LEADS MANUALMENTE
+# ═══════════════════════════════════════
+curl -X POST https://hub.cenatdata.online/api/exact-leads/sync
+
+# ═══════════════════════════════════════
 # ACESSAR BANCO DE DADOS
 # ═══════════════════════════════════════
 sudo -u postgres psql cenat_whatsapp
@@ -1192,7 +1371,8 @@ sudo -u postgres psql cenat_whatsapp
 # SELECT * FROM messages WHERE contact_wa_id = '5583988001234' ORDER BY timestamp DESC;
 # SELECT * FROM channels;
 # SELECT id, name, email, role, is_active FROM users;
-# UPDATE users SET is_active = true WHERE email = 'email@exemplo.com';
+# SELECT COUNT(*), stage FROM exact_leads GROUP BY stage ORDER BY count DESC;
+# SELECT COUNT(*), sub_source FROM exact_leads GROUP BY sub_source ORDER BY count DESC;
 
 # ═══════════════════════════════════════
 # RENOVAR SSL
@@ -1302,6 +1482,26 @@ Verifique se o domínio está na lista de origens permitidas no `main.py`:
 ```python
 allow_origins=["http://localhost:3000", "http://localhost:3001", "https://hub.cenatdata.online"]
 ```
+
+### Leads não sincronizam do Exact Spotter
+
+```bash
+# Verificar se o token está no .env
+grep EXACT_SPOTTER_TOKEN /home/ubuntu/pos-plataform/backend/.env
+
+# Testar sync manualmente
+curl -X POST https://hub.cenatdata.online/api/exact-leads/sync
+
+# Ver logs do backend
+sudo journalctl -u cenat-backend -n 50 --no-pager | grep -i exact
+```
+
+### Envio em massa falha
+
+- Verifique se o template está **aprovado** no Meta
+- Verifique se os leads possuem telefone (phone1)
+- O sistema envia com delay de 1s — envios grandes podem demorar
+- Verifique o resultado no relatório (erros específicos por lead)
 
 ---
 

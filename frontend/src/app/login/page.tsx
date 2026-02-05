@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
-import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2, Mail, Lock, AlertCircle, MessageCircle, Users, BarChart3 } from 'lucide-react';
 
 export default function LoginPage() {
   const { user, loading: authLoading, login } = useAuth();
@@ -34,7 +34,7 @@ export default function LoginPage() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#f8f9fb]">
+      <div className="min-h-screen flex items-center justify-center bg-[#0f1b2d]">
         <Loader2 className="w-8 h-8 text-[#2A658F] animate-spin" />
       </div>
     );
@@ -44,101 +44,142 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex bg-[#0f1b2d]">
-      {/* Lado esquerdo - Branding */}
+
+      {/* ── Lado esquerdo — Branding ── */}
       <div className="hidden lg:flex lg:w-1/2 flex-col justify-center px-16 relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-[#2A658F]/20 to-transparent" />
-        <div className="absolute top-1/4 -left-20 w-96 h-96 bg-[#2A658F]/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-10 w-72 h-72 bg-[#4d9fd4]/10 rounded-full blur-3xl" />
-        
-        <div className={`relative z-10 transition-all duration-1000 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
-          <div className="flex items-center gap-3 mb-8">
-            <img src="/logo-icon-white.png" alt="Cenat" className="w-14 h-14 object-contain" />
-            <span className="text-3xl font-bold text-white tracking-tight">Cenat</span>
+        {/* Background layers */}
+        <div className="absolute inset-0 bg-gradient-to-br from-[#2A658F]/15 via-transparent to-[#4d9fd4]/5" />
+        <div className="absolute top-1/4 -left-20 w-96 h-96 bg-[#2A658F]/8 rounded-full blur-3xl" />
+        <div className="absolute bottom-1/4 right-10 w-72 h-72 bg-[#4d9fd4]/8 rounded-full blur-3xl" />
+
+        {/* Subtle grid */}
+        <div
+          className="absolute inset-0 opacity-[0.03]"
+          style={{
+            backgroundImage: 'linear-gradient(rgba(255,255,255,.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.1) 1px, transparent 1px)',
+            backgroundSize: '60px 60px',
+          }}
+        />
+
+        <div className={`relative z-10 max-w-lg transition-all duration-1000 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
+          {/* Logo */}
+          <div className="flex items-center gap-3 mb-10">
+            <img src="/logo-icon-white.png" alt="Cenat" className="w-12 h-12 object-contain" />
+            <div>
+              <span className="text-2xl font-bold text-white tracking-tight">Cenat</span>
+              <span className="text-2xl font-light text-[#4d9fd4] ml-1.5">Hub</span>
+            </div>
           </div>
-          <h1 className="text-5xl font-bold text-white leading-tight mb-2">
-            Cenat Hub
+
+          {/* Headline */}
+          <h1 className="text-4xl font-bold text-white leading-tight mb-3">
+            Central de Atendimento
+            <br />
+            <span className="text-[#4d9fd4]">Integrado</span>
           </h1>
-          <p className="text-xl text-[#4d9fd4] font-medium mb-4">Central de Atendimento Integrado</p>
-          <p className="text-lg text-gray-400 max-w-md leading-relaxed">
-            Gerencie seus leads, acompanhe conversas e converta mais clientes com nossa plataforma de multiatendimento via WhatsApp Business API.
+          <p className="text-base text-gray-400 leading-relaxed max-w-md">
+            Gerencie leads, acompanhe conversas e converta mais clientes com
+            multiatendimento via WhatsApp Business API.
           </p>
-          
-          <div className="flex gap-8 mt-12">
-            <div>
-              <p className="text-3xl font-bold text-white">Multi</p>
-              <p className="text-sm text-gray-500 mt-1">Números & Atendentes</p>
-            </div>
-            <div>
-              <p className="text-3xl font-bold text-white">Real-time</p>
-              <p className="text-sm text-gray-500 mt-1">Mensagens instantâneas</p>
-            </div>
-            <div>
-              <p className="text-3xl font-bold text-white">CRM</p>
-              <p className="text-sm text-gray-500 mt-1">Gestão de leads</p>
-            </div>
+
+          {/* Feature pills */}
+          <div className="flex flex-wrap gap-3 mt-10">
+            {[
+              { icon: MessageCircle, label: 'Multi-números' },
+              { icon: Users, label: 'Equipe em tempo real' },
+              { icon: BarChart3, label: 'CRM integrado' },
+            ].map((feat, i) => (
+              <div
+                key={feat.label}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/[0.06] transition-all duration-700 ease-out ${
+                  mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
+                }`}
+                style={{ transitionDelay: `${800 + i * 150}ms` }}
+              >
+                <feat.icon className="w-4 h-4 text-[#4d9fd4]" />
+                <span className="text-sm text-gray-300 font-medium">{feat.label}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* Lado direito - Form */}
+      {/* ── Divisor vertical ── */}
+      <div className="hidden lg:block w-px bg-gradient-to-b from-transparent via-white/[0.06] to-transparent" />
+
+      {/* ── Lado direito — Form ── */}
       <div className="w-full lg:w-1/2 flex items-center justify-center px-6">
-        <div className={`w-full max-w-md transition-all duration-700 ease-out delay-300 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
+        <div
+          className={`w-full max-w-[420px] transition-all duration-700 ease-out delay-300 ${
+            mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
+          }`}
+        >
           {/* Logo mobile */}
           <div className="flex items-center gap-3 mb-8 lg:hidden">
             <img src="/logo-icon-white.png" alt="Cenat" className="w-10 h-10 object-contain" />
             <span className="text-2xl font-bold text-white">Cenat Hub</span>
           </div>
 
-          <div className="bg-white rounded-3xl p-8 shadow-2xl shadow-black/20">
-            <div className="mb-6">
-              <h2 className="text-2xl font-bold text-[#27273D]">Bem-vindo de volta</h2>
-              <p className="text-gray-500 text-sm mt-1">Entre com suas credenciais para acessar o Hub</p>
+          <div className="bg-white rounded-2xl p-8 shadow-2xl shadow-black/25">
+            {/* Header */}
+            <div className="mb-7">
+              <h2 className="text-[22px] font-bold text-[#27273D]">Bem-vindo de volta</h2>
+              <p className="text-gray-400 text-sm mt-1">Entre com suas credenciais para acessar</p>
             </div>
 
+            {/* Erro */}
             {error && (
-              <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
-                {error}
+              <div className="mb-5 flex items-center gap-2.5 px-4 py-3 bg-red-50 border border-red-100 rounded-xl">
+                <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                <span className="text-sm text-red-600">{error}</span>
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-5">
+              {/* Email */}
               <div>
-                <label className="block text-sm font-medium text-gray-600 mb-1.5">Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="seu@email.com"
-                  required
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-4 focus:ring-[#2A658F]/10 transition-all outline-none"
-                />
+                <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Email</label>
+                <div className="relative">
+                  <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="seu@email.com"
+                    required
+                    className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#2A658F] focus:ring-4 focus:ring-[#2A658F]/10 focus:bg-white transition-all outline-none"
+                  />
+                </div>
               </div>
 
+              {/* Senha */}
               <div>
-                <label className="block text-sm font-medium text-gray-600 mb-1.5">Senha</label>
+                <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Senha</label>
                 <div className="relative">
+                  <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                   <input
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
                     required
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-4 focus:ring-[#2A658F]/10 transition-all outline-none pr-12"
+                    className="w-full pl-10 pr-12 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#2A658F] focus:ring-4 focus:ring-[#2A658F]/10 focus:bg-white transition-all outline-none"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
 
+              {/* Submit */}
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 bg-gradient-to-r from-[#2A658F] to-[#3d7ba8] text-white font-medium rounded-xl hover:shadow-lg hover:shadow-[#2A658F]/30 hover:-translate-y-0.5 transition-all duration-200 disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none flex items-center justify-center gap-2"
+                className="w-full py-3 bg-[#2A658F] text-white font-medium rounded-xl hover:bg-[#1f5375] hover:shadow-lg hover:shadow-[#2A658F]/25 active:scale-[0.98] transition-all duration-200 disabled:opacity-50 disabled:hover:shadow-none disabled:active:scale-100 flex items-center justify-center gap-2 mt-1"
               >
                 {loading ? (
                   <>
@@ -152,8 +193,8 @@ export default function LoginPage() {
             </form>
           </div>
 
-          <p className="text-center text-xs text-gray-600 mt-6">
-            Cenat Hub © {new Date().getFullYear()} — Central de Atendimento Integrado
+          <p className="text-center text-[11px] text-gray-600 mt-6">
+            Cenat Hub © {new Date().getFullYear()} — Todos os direitos reservados
           </p>
         </div>
       </div>
