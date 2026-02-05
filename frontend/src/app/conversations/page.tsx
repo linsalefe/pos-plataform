@@ -85,8 +85,11 @@ export default function ConversationsPage() {
   const [showNewChat, setShowNewChat] = useState(false);
   const [newChatPhone, setNewChatPhone] = useState('');
   const [newChatName, setNewChatName] = useState('');
-  const [newChatCourse, setNewChatCourse] = useState('');
   const [sendingTemplate, setSendingTemplate] = useState(false);
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
+  const [templateParams, setTemplateParams] = useState<string[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [notesValue, setNotesValue] = useState('');
   const [mounted, setMounted] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -232,29 +235,54 @@ export default function ConversationsPage() {
     } catch (err) { console.error('Erro:', err); }
   };
 
+  const loadTemplates = async () => {
+    if (!activeChannel) return;
+    setLoadingTemplates(true);
+    try {
+      const res = await api.get(\`/channels/\${activeChannel.id}/templates\`);
+      setTemplates(res.data);
+    } catch (err) { console.error('Erro:', err); }
+    finally { setLoadingTemplates(false); }
+  };
+
+  const selectTemplate = (t: any) => {
+    setSelectedTemplate(t);
+    setTemplateParams(new Array(t.parameters.length).fill(''));
+  };
+
+  const updateParam = (index: number, value: string) => {
+    const newParams = [...templateParams];
+    newParams[index] = value;
+    setTemplateParams(newParams);
+  };
+
+  const getPreview = () => {
+    if (!selectedTemplate) return '';
+    let text = selectedTemplate.body;
+    templateParams.forEach((p, i) => {
+      text = text.replace(\`{{\${i + 1}}}\`, p || \`[Variável \${i + 1}]\`);
+    });
+    return text;
+  };
+
   const handleNewChat = async () => {
-    if (!newChatPhone.trim() || !newChatName.trim() || !activeChannel) return;
+    if (!newChatPhone.trim() || !newChatName.trim() || !activeChannel || !selectedTemplate) return;
     setSendingTemplate(true);
     try {
       const phone = newChatPhone.replace(/\D/g, '');
-      const params = newChatCourse.trim()
-        ? [newChatName, newChatCourse]
-        : [newChatName];
-      const templateName = newChatCourse.trim() ? 'primeiro_contato_pos' : 'hello_world';
-      const lang = newChatCourse.trim() ? 'pt_BR' : 'en_US';
-
       await api.post('/send/template', {
         to: phone,
-        template_name: templateName,
-        language: lang,
+        template_name: selectedTemplate.name,
+        language: selectedTemplate.language,
         channel_id: activeChannel.id,
-        parameters: params,
+        parameters: templateParams.length > 0 ? templateParams : [],
         contact_name: newChatName,
       });
       setShowNewChat(false);
       setNewChatPhone('');
       setNewChatName('');
-      setNewChatCourse('');
+      setSelectedTemplate(null);
+      setTemplateParams([]);
       await loadContacts();
     } catch (err) {
       console.error('Erro:', err);
@@ -675,10 +703,10 @@ export default function ConversationsPage() {
       {/* Modal Nova Conversa */}
       {showNewChat && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowNewChat(false)}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl mx-4" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl mx-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-lg font-semibold text-[#27273D]">Nova Conversa</h2>
-              <button onClick={() => setShowNewChat(false)} className="p-1 hover:bg-gray-100 rounded-lg">
+              <button onClick={() => { setShowNewChat(false); setSelectedTemplate(null); setTemplateParams([]); }} className="p-1 hover:bg-gray-100 rounded-lg">
                 <X className="w-5 h-5 text-gray-400" />
               </button>
             </div>
@@ -705,22 +733,74 @@ export default function ConversationsPage() {
                   className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 outline-none"
                 />
               </div>
+
+              {/* Seletor de Template */}
               <div>
-                <label className="block text-sm font-medium text-gray-600 mb-1.5">Nome da Pós-Graduação</label>
-                <input
-                  type="text"
-                  value={newChatCourse}
-                  onChange={e => setNewChatCourse(e.target.value)}
-                  placeholder="Boas práticas: Como trabalhar com pessoas que ouvem vozes"
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 outline-none"
-                />
-                <p className="text-[11px] text-gray-400 mt-1">Será enviado no template de primeiro contato</p>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">Template da mensagem</label>
+                {loadingTemplates ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="w-5 h-5 text-[#2A658F] animate-spin" />
+                  </div>
+                ) : templates.length === 0 ? (
+                  <button
+                    onClick={loadTemplates}
+                    className="w-full py-2.5 border border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-[#2A658F] hover:text-[#2A658F] transition-colors"
+                  >
+                    Carregar templates disponíveis
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    {templates.map((t: any) => (
+                      <button
+                        key={t.name}
+                        onClick={() => selectTemplate(t)}
+                        className={\`w-full text-left px-3 py-2.5 rounded-xl border text-sm transition-all \${
+                          selectedTemplate?.name === t.name
+                            ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
+                            : 'border-gray-200 text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                        }\`}
+                      >
+                        <p className="font-medium">{t.name.replace(/_/g, ' ')}</p>
+                        <p className="text-[11px] text-gray-400 mt-0.5">{t.language} • {t.parameters.length} variáveis</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
+
+              {/* Parâmetros do template */}
+              {selectedTemplate && selectedTemplate.parameters.length > 0 && (
+                <div className="space-y-3 pt-1">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Preencher variáveis</p>
+                  {selectedTemplate.parameters.map((p: string, i: number) => (
+                    <div key={i}>
+                      <label className="block text-xs text-gray-500 mb-1">{p} ({'{{'}{i+1}{'}}'})</label>
+                      <input
+                        type="text"
+                        value={templateParams[i] || ''}
+                        onChange={e => updateParam(i, e.target.value)}
+                        placeholder={\`Valor para \${p}\`}
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 focus:border-[#2A658F] outline-none"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Preview */}
+              {selectedTemplate && (
+                <div className="bg-[#f0f2f5] rounded-xl p-4">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase mb-2">Prévia da mensagem</p>
+                  <div className="bg-white rounded-xl px-3 py-2 shadow-sm">
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">{getPreview()}</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             <button
               onClick={handleNewChat}
-              disabled={sendingTemplate || !newChatPhone.trim() || !newChatName.trim()}
+              disabled={sendingTemplate || !newChatPhone.trim() || !newChatName.trim() || !selectedTemplate}
               className="w-full mt-6 py-3 bg-gradient-to-r from-[#2A658F] to-[#3d7ba8] text-white font-medium rounded-xl hover:shadow-lg hover:shadow-[#2A658F]/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {sendingTemplate ? (

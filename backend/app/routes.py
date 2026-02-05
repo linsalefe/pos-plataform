@@ -395,3 +395,38 @@ async def delete_tag(tag_id: int, db: AsyncSession = Depends(get_db)):
     await db.delete(tag)
     await db.commit()
     return {"status": "deleted"}
+
+
+@router.get("/channels/{channel_id}/templates")
+async def list_templates(channel_id: int, db: AsyncSession = Depends(get_db)):
+    import httpx
+    channel = await get_channel(channel_id, db)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"https://graph.facebook.com/v22.0/{channel.waba_id}/message_templates",
+            headers={"Authorization": f"Bearer {channel.whatsapp_token}"},
+            params={"status": "APPROVED", "limit": 50},
+        )
+        data = response.json()
+
+    templates = []
+    for t in data.get("data", []):
+        params = []
+        for comp in t.get("components", []):
+            if comp["type"] == "BODY":
+                text = comp.get("text", "")
+                import re
+                matches = re.findall(r'\{\{(\d+)\}\}', text)
+                params = [f"Variável {m}" for m in matches]
+                body_text = text
+        templates.append({
+            "name": t["name"],
+            "language": t["language"],
+            "status": t["status"],
+            "body": body_text if 'body_text' in dir() else "",
+            "parameters": params,
+        })
+        if 'body_text' in dir():
+            del body_text
+
+    return templates
