@@ -23,8 +23,10 @@ class SendTextRequest(BaseModel):
 class SendTemplateRequest(BaseModel):
     to: str
     template_name: str
-    language: str = "en_US"
+    language: str = "pt_BR"
     channel_id: int = 1
+    parameters: list = []
+    contact_name: str = ""
 
 
 class UpdateContactRequest(BaseModel):
@@ -202,15 +204,23 @@ async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db)):
 @router.post("/send/template")
 async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get_db)):
     channel = await get_channel(req.channel_id, db)
-    result = await send_template_message(req.to, req.template_name, req.language, channel.phone_number_id, channel.whatsapp_token)
+    result = await send_template_message(req.to, req.template_name, req.language, channel.phone_number_id, channel.whatsapp_token, req.parameters if req.parameters else None)
 
     if "messages" in result:
         wa_id = result.get("contacts", [{}])[0].get("wa_id", req.to)
 
         contact_result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
-        if not contact_result.scalar_one_or_none():
-            db.add(Contact(wa_id=wa_id, name="", channel_id=req.channel_id))
+        contact = contact_result.scalar_one_or_none()
+        if not contact:
+            db.add(Contact(wa_id=wa_id, name=req.contact_name or "", channel_id=req.channel_id))
             await db.flush()
+        elif req.contact_name and not contact.name:
+            contact.name = req.contact_name
+
+        # Montar conteúdo legível
+        content_text = f"template:{req.template_name}"
+        if req.parameters:
+            content_text = f"[Template] " + ", ".join(req.parameters)
 
         message = Message(
             wa_message_id=result["messages"][0]["id"],
@@ -218,7 +228,7 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
             channel_id=req.channel_id,
             direction="outbound",
             message_type="template",
-            content=f"template:{req.template_name}",
+            content=content_text,
             timestamp=datetime.now(),
             status="sent",
         )

@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import {
   Send, Search, MessageCircle, Check, CheckCheck, Clock, XCircle,
-  ArrowLeft, Plus, X, User, Phone, Calendar, ChevronDown, Sparkles, Radio
+  ArrowLeft, Plus, X, User, Phone, Calendar, ChevronDown, Sparkles, Radio, Loader2
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
@@ -82,6 +82,11 @@ export default function ConversationsPage() {
   const [newTagName, setNewTagName] = useState('');
   const [newTagColor, setNewTagColor] = useState('blue');
   const [editingNotes, setEditingNotes] = useState(false);
+  const [showNewChat, setShowNewChat] = useState(false);
+  const [newChatPhone, setNewChatPhone] = useState('');
+  const [newChatName, setNewChatName] = useState('');
+  const [newChatCourse, setNewChatCourse] = useState('');
+  const [sendingTemplate, setSendingTemplate] = useState(false);
   const [notesValue, setNotesValue] = useState('');
   const [mounted, setMounted] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -227,6 +232,37 @@ export default function ConversationsPage() {
     } catch (err) { console.error('Erro:', err); }
   };
 
+  const handleNewChat = async () => {
+    if (!newChatPhone.trim() || !newChatName.trim() || !activeChannel) return;
+    setSendingTemplate(true);
+    try {
+      const phone = newChatPhone.replace(/\D/g, '');
+      const params = newChatCourse.trim()
+        ? [newChatName, newChatCourse]
+        : [newChatName];
+      const templateName = newChatCourse.trim() ? 'primeiro_contato_pos' : 'hello_world';
+      const lang = newChatCourse.trim() ? 'pt_BR' : 'en_US';
+
+      await api.post('/send/template', {
+        to: phone,
+        template_name: templateName,
+        language: lang,
+        channel_id: activeChannel.id,
+        parameters: params,
+        contact_name: newChatName,
+      });
+      setShowNewChat(false);
+      setNewChatPhone('');
+      setNewChatName('');
+      setNewChatCourse('');
+      await loadContacts();
+    } catch (err) {
+      console.error('Erro:', err);
+    } finally {
+      setSendingTemplate(false);
+    }
+  };
+
   const getInitials = (name: string) => name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
   const getAvatarColor = (name: string) => {
     const c = ['from-blue-500 to-blue-600','from-purple-500 to-purple-600','from-emerald-500 to-emerald-600','from-orange-500 to-orange-600','from-pink-500 to-pink-600','from-cyan-500 to-cyan-600','from-indigo-500 to-indigo-600'];
@@ -326,6 +362,15 @@ export default function ConversationsPage() {
                 </button>
               )}
             </div>
+
+            {/* Nova conversa */}
+            <button
+              onClick={() => setShowNewChat(true)}
+              className="w-full mt-2 flex items-center justify-center gap-2 py-2 bg-gradient-to-r from-[#2A658F] to-[#3d7ba8] text-white text-xs font-medium rounded-xl hover:shadow-lg hover:shadow-[#2A658F]/30 transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Nova conversa
+            </button>
 
             {/* Status Filter */}
             <div className="flex gap-1.5 mt-3 overflow-x-auto pb-1">
@@ -626,6 +671,73 @@ export default function ConversationsPage() {
           )}
         </div>
       </div>
+
+      {/* Modal Nova Conversa */}
+      {showNewChat && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowNewChat(false)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl mx-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-semibold text-[#27273D]">Nova Conversa</h2>
+              <button onClick={() => setShowNewChat(false)} className="p-1 hover:bg-gray-100 rounded-lg">
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">Telefone do lead</label>
+                <input
+                  type="text"
+                  value={newChatPhone}
+                  onChange={e => setNewChatPhone(e.target.value)}
+                  placeholder="5583988001234"
+                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 outline-none"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">DDD + número com 9 (sem espaços)</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">Nome do lead</label>
+                <input
+                  type="text"
+                  value={newChatName}
+                  onChange={e => setNewChatName(e.target.value)}
+                  placeholder="Maria Silva"
+                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">Nome da Pós-Graduação</label>
+                <input
+                  type="text"
+                  value={newChatCourse}
+                  onChange={e => setNewChatCourse(e.target.value)}
+                  placeholder="Boas práticas: Como trabalhar com pessoas que ouvem vozes"
+                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 outline-none"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">Será enviado no template de primeiro contato</p>
+              </div>
+            </div>
+
+            <button
+              onClick={handleNewChat}
+              disabled={sendingTemplate || !newChatPhone.trim() || !newChatName.trim()}
+              className="w-full mt-6 py-3 bg-gradient-to-r from-[#2A658F] to-[#3d7ba8] text-white font-medium rounded-xl hover:shadow-lg hover:shadow-[#2A658F]/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {sendingTemplate ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Enviando...
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4" />
+                  Enviar template
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
     </AppLayout>
   );
 }

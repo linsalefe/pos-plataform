@@ -21,7 +21,20 @@ async def send_text_message(to: str, text: str, phone_number_id: str, token: str
         return response.json()
 
 
-async def send_template_message(to: str, template_name: str, language: str, phone_number_id: str, token: str) -> dict:
+async def send_template_message(to: str, template_name: str, language: str, phone_number_id: str, token: str, parameters: list = None) -> dict:
+    template_data = {
+        "name": template_name,
+        "language": {"code": language},
+    }
+
+    if parameters:
+        template_data["components"] = [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": p} for p in parameters],
+            }
+        ]
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{BASE_URL}/{phone_number_id}/messages",
@@ -33,10 +46,7 @@ async def send_template_message(to: str, template_name: str, language: str, phon
                 "messaging_product": "whatsapp",
                 "to": to,
                 "type": "template",
-                "template": {
-                    "name": template_name,
-                    "language": {"code": language},
-                },
+                "template": template_data,
             },
         )
         return response.json()
