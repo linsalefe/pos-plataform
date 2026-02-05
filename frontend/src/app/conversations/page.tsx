@@ -239,7 +239,8 @@ export default function ConversationsPage() {
     if (!activeChannel) return;
     setLoadingTemplates(true);
     try {
-      const res = await api.get(\`/channels/\${activeChannel.id}/templates\`);
+      // CORREÇÃO AQUI: removidas as barras invertidas extras
+      const res = await api.get(`/channels/${activeChannel.id}/templates`);
       setTemplates(res.data);
     } catch (err) { console.error('Erro:', err); }
     finally { setLoadingTemplates(false); }
@@ -260,7 +261,8 @@ export default function ConversationsPage() {
     if (!selectedTemplate) return '';
     let text = selectedTemplate.body;
     templateParams.forEach((p, i) => {
-      text = text.replace(\`{{\${i + 1}}}\`, p || \`[Variável \${i + 1}]\`);
+      // CORREÇÃO AQUI: removidas as barras invertidas extras
+      text = text.replace(`{{${i + 1}}}`, p || `[Variável ${i + 1}]`);
     });
     return text;
   };
@@ -754,11 +756,11 @@ export default function ConversationsPage() {
                       <button
                         key={t.name}
                         onClick={() => selectTemplate(t)}
-                        className={\`w-full text-left px-3 py-2.5 rounded-xl border text-sm transition-all \${
+                        className={`w-full text-left px-3 py-2.5 rounded-xl border text-sm transition-all ${
                           selectedTemplate?.name === t.name
                             ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
                             : 'border-gray-200 text-gray-700 hover:border-gray-300 hover:bg-gray-50'
-                        }\`}
+                        }`}
                       >
                         <p className="font-medium">{t.name.replace(/_/g, ' ')}</p>
                         <p className="text-[11px] text-gray-400 mt-0.5">{t.language} • {t.parameters.length} variáveis</p>
@@ -779,7 +781,7 @@ export default function ConversationsPage() {
                         type="text"
                         value={templateParams[i] || ''}
                         onChange={e => updateParam(i, e.target.value)}
-                        placeholder={\`Valor para \${p}\`}
+                        placeholder={`Valor para ${p}`}
                         className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 focus:border-[#2A658F] outline-none"
                       />
                     </div>
