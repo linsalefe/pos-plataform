@@ -28,7 +28,7 @@ export default function Sidebar() {
       {/* Logo */}
       <div className="h-16 flex items-center px-4 border-b border-white/5">
         <div className={`flex items-center gap-2.5 ${collapsed ? 'justify-center w-full' : ''}`}>
-          <Image src="/[LOGO] Ícone - Branco.png" alt="Cenat" width={36} height={36} className="object-contain flex-shrink-0" />
+          <Image src="/logo-icon-white.png" alt="Cenat" width={36} height={36} className="object-contain flex-shrink-0" />
           {!collapsed && (
             <span className="text-white font-semibold text-lg tracking-[0.2em] uppercase">Cenat</span>
           )}

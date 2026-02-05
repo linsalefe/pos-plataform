@@ -52,7 +52,7 @@ export default function LoginPage() {
         
         <div className={`relative z-10 transition-all duration-1000 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
           <div className="flex items-center gap-3 mb-8">
-            <img src="/[LOGO] Ícone - Branco.png" alt="Cenat" className="w-14 h-14 object-contain" />
+            <img src="/logo-icon-white.png" alt="Cenat" className="w-14 h-14 object-contain" />
             <span className="text-3xl font-bold text-white tracking-tight">Cenat</span>
           </div>
           <h1 className="text-5xl font-bold text-white leading-tight mb-2">
@@ -85,7 +85,7 @@ export default function LoginPage() {
         <div className={`w-full max-w-md transition-all duration-700 ease-out delay-300 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
           {/* Logo mobile */}
           <div className="flex items-center gap-3 mb-8 lg:hidden">
-            <img src="/[LOGO] Ícone - Branco.png" alt="Cenat" className="w-10 h-10 object-contain" />
+            <img src="/logo-icon-white.png" alt="Cenat" className="w-10 h-10 object-contain" />
             <span className="text-2xl font-bold text-white">Cenat Hub</span>
           </div>
 

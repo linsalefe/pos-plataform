@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   title: "Cenat Hub",
   description: "Central de Atendimento Integrado",
   icons: {
-    icon: "/[LOGO] Ícone - Cor.png",
+    icon: "/logo-icon-color.png",
   },
 };
 
