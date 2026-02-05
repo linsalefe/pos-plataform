@@ -239,7 +239,6 @@ export default function ConversationsPage() {
     if (!activeChannel) return;
     setLoadingTemplates(true);
     try {
-      // CORREÇÃO AQUI: removidas as barras invertidas extras
       const res = await api.get(`/channels/${activeChannel.id}/templates`);
       setTemplates(res.data);
     } catch (err) { console.error('Erro:', err); }
@@ -261,7 +260,6 @@ export default function ConversationsPage() {
     if (!selectedTemplate) return '';
     let text = selectedTemplate.body;
     templateParams.forEach((p, i) => {
-      // CORREÇÃO AQUI: removidas as barras invertidas extras
       text = text.replace(`{{${i + 1}}}`, p || `[Variável ${i + 1}]`);
     });
     return text;
@@ -560,9 +558,10 @@ export default function ConversationsPage() {
                                 className="w-32 h-32"
                               />
                             ) : msg.type === 'document' && msg.content.startsWith('media:') ? (
-                              
+                              <a
                                 href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`}
                                 target="_blank"
+                                rel="noopener noreferrer"
                                 className={`flex items-center gap-2 ${msg.direction === 'outbound' ? 'text-white/90' : 'text-[#2A658F]'} underline text-sm`}
                               >
                                 📄 {msg.content.split('|')[2] || 'Documento'}
