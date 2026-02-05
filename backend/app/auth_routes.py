@@ -106,3 +106,18 @@ async def list_users(db: AsyncSession = Depends(get_db), current_user: User = De
         }
         for u in users
     ]
+
+
+@router.patch("/users/{user_id}")
+async def toggle_user(user_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas administradores")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    user.is_active = not user.is_active
+    await db.commit()
+    return {"id": user.id, "is_active": user.is_active}
