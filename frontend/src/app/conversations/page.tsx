@@ -20,6 +20,15 @@ interface ContactTag {
   color: string;
 }
 
+interface ExactLeadResult {
+  id: number;
+  exact_id: number;
+  name: string;
+  phone1: string | null;
+  sub_source: string | null;
+  stage: string | null;
+}
+
 interface Contact {
   wa_id: string;
   name: string;
@@ -92,6 +101,9 @@ export default function ConversationsPage() {
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [notesValue, setNotesValue] = useState('');
   const [mounted, setMounted] = useState(false);
+  const [exactLeadResults, setExactLeadResults] = useState<ExactLeadResult[]>([]);
+  const [showLeadSuggestions, setShowLeadSuggestions] = useState(false);
+  const [searchingLeads, setSearchingLeads] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setMounted(true); }, []);
@@ -291,6 +303,37 @@ export default function ConversationsPage() {
     }
   };
 
+  const searchExactLeads = async (query: string) => {
+    if (query.length < 2) {
+      setExactLeadResults([]);
+      setShowLeadSuggestions(false);
+      return;
+    }
+    setSearchingLeads(true);
+    try {
+      const res = await api.get('/exact-leads', { params: { search: query, limit: 8 } });
+      setExactLeadResults(res.data);
+      setShowLeadSuggestions(true);
+    } catch (err) {
+      console.error('Erro ao buscar leads:', err);
+    } finally {
+      setSearchingLeads(false);
+    }
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    searchExactLeads(value);
+  };
+
+  const selectExactLead = (lead: ExactLeadResult) => {
+    setShowLeadSuggestions(false);
+    setSearch('');
+    setNewChatPhone(lead.phone1 || '');
+    setNewChatName(lead.name || '');
+    setShowNewChat(true);
+  };
+
   const getInitials = (name: string) => name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
   const getAvatarColor = (name: string) => {
     const c = ['from-blue-500 to-blue-600','from-purple-500 to-purple-600','from-emerald-500 to-emerald-600','from-orange-500 to-orange-600','from-pink-500 to-pink-600','from-cyan-500 to-cyan-600','from-indigo-500 to-indigo-600'];
@@ -379,15 +422,42 @@ export default function ConversationsPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="text"
-                placeholder="Buscar contato..."
+                placeholder="Buscar contato ou lead..."
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                onFocus={() => { if (exactLeadResults.length > 0) setShowLeadSuggestions(true); }}
+                onBlur={() => setTimeout(() => setShowLeadSuggestions(false), 200)}
                 className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 transition-all outline-none"
               />
               {search && (
-                <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2">
+                <button onClick={() => { setSearch(''); setExactLeadResults([]); setShowLeadSuggestions(false); }} className="absolute right-3 top-1/2 -translate-y-1/2">
                   <XCircle className="w-4 h-4 text-gray-400" />
                 </button>
+              )}
+              {showLeadSuggestions && exactLeadResults.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl border border-gray-200 shadow-xl z-30 max-h-[300px] overflow-y-auto">
+                  <div className="px-3 py-2 border-b border-gray-100">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase">Leads Pós (Exact Spotter)</p>
+                  </div>
+                  {exactLeadResults.map(lead => (
+                    <button
+                      key={lead.id}
+                      onMouseDown={() => selectExactLead(lead)}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-gray-50 transition-colors text-left border-b border-gray-50"
+                    >
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white text-[10px] font-semibold flex-shrink-0">
+                        {lead.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-800 truncate">{lead.name}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[11px] text-gray-500">{lead.phone1 || 'Sem telefone'}</span>
+                          {lead.sub_source && <span className="text-[10px] px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded">{lead.sub_source}</span>}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
 

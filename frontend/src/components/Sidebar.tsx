@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
-import { LayoutDashboard, MessageCircle, Users, ChevronLeft, ChevronRight, LogOut, GraduationCap } from 'lucide-react';
+import { LayoutDashboard, MessageCircle, Users, ChevronLeft, ChevronRight, LogOut, GraduationCap, Zap } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 
@@ -12,6 +12,7 @@ const menuItems = [
   { href: '/conversations', label: 'Conversas', icon: MessageCircle },
   { href: '/users', label: 'Usuários', icon: Users },
   { href: '/leads-pos', label: 'Leads Pós', icon: GraduationCap },
+  { href: '/automacoes', label: 'Automações', icon: Zap },
 ];
 
 export default function Sidebar() {

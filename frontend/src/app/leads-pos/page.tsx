@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { GraduationCap, Search, RefreshCw, Loader2, Phone, Filter } from 'lucide-react';
+import { GraduationCap, Search, RefreshCw, Loader2, Phone, Filter, X, Mail, Briefcase, MapPin, Clock, ExternalLink, MessageCircle } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { useAuth } from '@/contexts/auth-context';
 import api from '@/lib/api';
@@ -27,6 +27,18 @@ interface Stats {
   total: number;
   by_stage: Record<string, number>;
   by_sub_source: Record<string, number>;
+}
+
+interface LeadDetails {
+  lead: {
+    id: number; name: string; phone1: string | null; phone2: string | null;
+    stage: string | null; source: string | null; sub_source: string | null;
+    sdr: string | null; register_date: string | null; update_date: string | null;
+    description: string | null; city: string | null; state: string | null;
+    public_link: string | null;
+  };
+  persons: { name: string | null; email: string | null; job_title: string | null; phone1: string | null; }[];
+  qualifications: { origin_stage: string | null; stage: string | null; score: number | null; qualification_date: string | null; meeting_date: string | null; user_action: string | null; }[];
 }
 
 const stageColors: Record<string, string> = {
@@ -58,6 +70,9 @@ export default function LeadsPosPage() {
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState('');
   const [subSourceFilter, setSubSourceFilter] = useState('');
+  const [selectedLead, setSelectedLead] = useState<ExactLead | null>(null);
+  const [leadDetails, setLeadDetails] = useState<LeadDetails | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -96,6 +111,30 @@ export default function LeadsPosPage() {
     } finally {
       setSyncing(false);
     }
+  };
+
+  const openLeadPopup = async (lead: ExactLead) => {
+    setSelectedLead(lead);
+    setLeadDetails(null);
+    setLoadingDetails(true);
+    try {
+      const res = await api.get('/exact-leads/' + lead.exact_id + '/details');
+      setLeadDetails(res.data);
+    } catch (err) {
+      console.error('Erro ao carregar detalhes:', err);
+    } finally {
+      setLoadingDetails(false);
+    }
+  };
+
+  const closeLeadPopup = () => {
+    setSelectedLead(null);
+    setLeadDetails(null);
+  };
+
+  const formatQualDate = (dateStr: string | null) => {
+    if (!dateStr) return '-';
+    return new Date(dateStr).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   const formatDate = (dateStr: string | null) => {
@@ -206,7 +245,7 @@ export default function LeadsPosPage() {
               placeholder="Buscar por nome ou telefone..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#2A658F]/20 focus:border-[#2A658F]"
+              className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/20 focus:border-[#2A658F]"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -214,7 +253,7 @@ export default function LeadsPosPage() {
             <select
               value={stageFilter}
               onChange={(e) => setStageFilter(e.target.value)}
-              className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#2A658F]/20 bg-white"
+              className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/20 bg-white"
             >
               <option value="">Todos os estágios</option>
               {stages.map((s) => (
@@ -224,7 +263,7 @@ export default function LeadsPosPage() {
             <select
               value={subSourceFilter}
               onChange={(e) => setSubSourceFilter(e.target.value)}
-              className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#2A658F]/20 bg-white"
+              className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/20 bg-white"
             >
               <option value="">Todos os cursos</option>
               {subSources.map((s) => (
@@ -250,7 +289,7 @@ export default function LeadsPosPage() {
               </thead>
               <tbody>
                 {filteredLeads.map((lead) => (
-                  <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                  <tr key={lead.id} onClick={() => openLeadPopup(lead)} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors cursor-pointer">
                     <td className="px-5 py-3.5">
                       <p className="text-sm font-medium text-[#27273D]">{lead.name}</p>
                     </td>
@@ -290,6 +329,152 @@ export default function LeadsPosPage() {
           </div>
         </div>
       </div>
+      {/* Modal Detalhes do Lead */}
+      {selectedLead && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={closeLeadPopup}>
+          <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl mx-4 max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+              <div>
+                <h2 className="text-lg font-semibold text-[#27273D]">{selectedLead.name}</h2>
+                <div className="flex items-center gap-3 mt-1">
+                  <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${stageColors[selectedLead.stage || ''] || 'bg-gray-100 text-gray-700'}`}>
+                    {selectedLead.stage || '-'}
+                  </span>
+                  <span className="text-xs text-gray-500">{selectedLead.sub_source || '-'}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {leadDetails?.lead?.public_link && (
+                  <a href={leadDetails.lead.public_link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#2A658F] bg-[#2A658F]/10 rounded-xl hover:bg-[#2A658F]/20 transition-colors">
+                    <ExternalLink className="w-3.5 h-3.5" /> Exact Spotter
+                  </a>
+                )}
+                <button onClick={closeLeadPopup} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingDetails ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 text-[#2A658F] animate-spin" />
+                </div>
+              ) : leadDetails ? (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Coluna esquerda - Dados */}
+                  <div className="space-y-5">
+                    {/* Contato */}
+                    <div className="bg-gray-50 rounded-xl p-4">
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Contato</h3>
+                      <div className="space-y-2.5">
+                        <div className="flex items-center gap-2.5">
+                          <Phone className="w-4 h-4 text-gray-400" />
+                          <span className="text-sm text-gray-700">{formatPhone(selectedLead.phone1)}</span>
+                        </div>
+                        {leadDetails.persons[0]?.email && (
+                          <div className="flex items-center gap-2.5">
+                            <Mail className="w-4 h-4 text-gray-400" />
+                            <span className="text-sm text-gray-700">{leadDetails.persons[0].email}</span>
+                          </div>
+                        )}
+                        {leadDetails.persons[0]?.job_title && (
+                          <div className="flex items-center gap-2.5">
+                            <Briefcase className="w-4 h-4 text-gray-400" />
+                            <span className="text-sm text-gray-700">{leadDetails.persons[0].job_title}</span>
+                          </div>
+                        )}
+                        {(leadDetails.lead.city || leadDetails.lead.state) && (
+                          <div className="flex items-center gap-2.5">
+                            <MapPin className="w-4 h-4 text-gray-400" />
+                            <span className="text-sm text-gray-700">{[leadDetails.lead.city, leadDetails.lead.state].filter(Boolean).join(', ')}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Info do Lead */}
+                    <div className="bg-gray-50 rounded-xl p-4">
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Informações</h3>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-[11px] text-gray-400">Fonte</p>
+                          <p className="text-sm font-medium text-gray-700">{selectedLead.source || '-'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] text-gray-400">Curso</p>
+                          <p className="text-sm font-medium text-gray-700">{selectedLead.sub_source || '-'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] text-gray-400">SDR</p>
+                          <p className="text-sm font-medium text-gray-700">{selectedLead.sdr_name || '-'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] text-gray-400">Cadastro</p>
+                          <p className="text-sm font-medium text-gray-700">{formatDate(selectedLead.register_date)}</p>
+                        </div>
+                      </div>
+                      {leadDetails.lead.description && (
+                        <div className="mt-3 pt-3 border-t border-gray-200">
+                          <p className="text-[11px] text-gray-400 mb-1">Descrição</p>
+                          <p className="text-sm text-gray-700">{leadDetails.lead.description}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Coluna direita - Histórico */}
+                  <div>
+                    <div className="bg-gray-50 rounded-xl p-4">
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Histórico de Qualificação</h3>
+                      {leadDetails.qualifications.length > 0 ? (
+                        <div className="space-y-3">
+                          {leadDetails.qualifications.map((q, i) => (
+                            <div key={i} className="relative pl-6 pb-3 border-l-2 border-gray-200 last:border-l-0 last:pb-0">
+                              <div className="absolute left-[-5px] top-1 w-2 h-2 rounded-full bg-[#2A658F]" />
+                              <div className="bg-white rounded-lg p-3 border border-gray-100">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-xs font-medium text-gray-800">
+                                    {q.origin_stage || '?'} → {q.stage || '?'}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                                  <Clock className="w-3 h-3" />
+                                  {formatQualDate(q.qualification_date)}
+                                </div>
+                                {q.user_action && (
+                                  <p className="text-xs text-gray-500 mt-1">{q.user_action}</p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-400 text-center py-4">Sem histórico de qualificação</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-center text-gray-400 py-8">Erro ao carregar detalhes</p>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 flex-shrink-0">
+              <button
+                onClick={() => { closeLeadPopup(); window.location.href = '/conversations'; }}
+                className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-[#2A658F] to-[#3d7ba8] text-white font-medium rounded-xl hover:shadow-lg hover:shadow-[#2A658F]/30 transition-all"
+              >
+                <MessageCircle className="w-4 h-4" />
+                Iniciar conversa WhatsApp
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AppLayout>
   );
 }
