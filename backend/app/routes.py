@@ -5,6 +5,8 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional
 
+SP_TZ = timezone(timedelta(hours=-3))
+
 from app.database import get_db
 from app.models import Channel, Contact, Message, Tag, contact_tags
 from app.whatsapp import send_text_message, send_template_message
@@ -192,7 +194,7 @@ async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db)):
             direction="outbound",
             message_type="text",
             content=req.text,
-            timestamp=datetime.now(),
+            timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
         )
         db.add(message)
@@ -229,7 +231,7 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
             direction="outbound",
             message_type="template",
             content=content_text,
-            timestamp=datetime.now(),
+            timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
         )
         db.add(message)

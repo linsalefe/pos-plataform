@@ -3,8 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
+
+SP_TZ = timezone(timedelta(hours=-3))
 
 from app.database import get_db
 from app.models import Channel, Contact, Message
@@ -116,7 +118,7 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     direction="inbound",
                     message_type=msg_type,
                     content=content,
-                    timestamp=datetime.fromtimestamp(int(msg["timestamp"])),
+                    timestamp=datetime.fromtimestamp(int(msg["timestamp"]), tz=SP_TZ).replace(tzinfo=None),
                     status="received",
                 )
                 db.add(message)
