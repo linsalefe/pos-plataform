@@ -1,6 +1,6 @@
 import asyncio
 from app.database import engine, Base
-from app.models import Contact, Message
+from app.models import Contact, Message, ExactLead
 
 
 async def create_all():

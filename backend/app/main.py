@@ -4,18 +4,45 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
+from contextlib import asynccontextmanager
 import os
+import asyncio
 
 SP_TZ = timezone(timedelta(hours=-3))
 
-from app.database import get_db
+from app.database import get_db, async_session
 from app.models import Channel, Contact, Message
 from app.routes import router
 from app.auth_routes import router as auth_router
+from app.exact_routes import router as exact_router
+from app.exact_spotter import sync_exact_leads
 
 load_dotenv()
 
-app = FastAPI(title="Cenat WhatsApp API")
+
+async def sync_job():
+    """Job que sincroniza leads do Exact Spotter a cada 10 minutos."""
+    while True:
+        await asyncio.sleep(600)  # 10 minutos
+        try:
+            async with async_session() as db:
+                result = await sync_exact_leads(db)
+                print(f"🔄 Sync Exact Spotter: {result}")
+        except Exception as e:
+            print(f"❌ Erro no sync Exact Spotter: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: inicia o job de sync
+    task = asyncio.create_task(sync_job())
+    print("✅ Sync Exact Spotter agendado (a cada 10 min)")
+    yield
+    # Shutdown: cancela o job
+    task.cancel()
+
+
+app = FastAPI(title="Cenat WhatsApp API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,6 +54,7 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(auth_router)
+app.include_router(exact_router)
 
 VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
 

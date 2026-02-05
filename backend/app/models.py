@@ -83,3 +83,21 @@ class User(Base):
     role = Column(String(20), nullable=False, default="atendente")
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class ExactLead(Base):
+    __tablename__ = "exact_leads"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    exact_id = Column(Integer, unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    phone1 = Column(String(30), nullable=True)
+    phone2 = Column(String(30), nullable=True)
+    source = Column(String(100), nullable=True)
+    sub_source = Column(String(100), nullable=True)
+    stage = Column(String(50), nullable=True)
+    funnel_id = Column(Integer, nullable=True)
+    sdr_name = Column(String(255), nullable=True)
+    register_date = Column(DateTime, nullable=True)
+    update_date = Column(DateTime, nullable=True)
+    synced_at = Column(DateTime, server_default=func.now())
