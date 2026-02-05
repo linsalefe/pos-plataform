@@ -430,3 +430,34 @@ async def list_templates(channel_id: int, db: AsyncSession = Depends(get_db)):
             del body_text
 
     return templates
+
+
+@router.get("/media/{media_id}")
+async def get_media(media_id: str, channel_id: int = 1, db: AsyncSession = Depends(get_db)):
+    import httpx
+    channel = await get_channel(channel_id, db)
+
+    # Passo 1: pegar URL da mídia
+    async with httpx.AsyncClient() as client:
+        url_response = await client.get(
+            f"https://graph.facebook.com/v22.0/{media_id}",
+            headers={"Authorization": f"Bearer {channel.whatsapp_token}"},
+        )
+        url_data = url_response.json()
+        media_url = url_data.get("url")
+
+        if not media_url:
+            raise HTTPException(status_code=404, detail="Mídia não encontrada")
+
+        # Passo 2: baixar mídia
+        media_response = await client.get(
+            media_url,
+            headers={"Authorization": f"Bearer {channel.whatsapp_token}"},
+        )
+
+    from fastapi.responses import Response
+    return Response(
+        content=media_response.content,
+        media_type=url_data.get("mime_type", "application/octet-stream"),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )

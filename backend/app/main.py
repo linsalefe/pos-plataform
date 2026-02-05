@@ -88,16 +88,33 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 if result.scalar_one_or_none():
                     continue
 
+                msg_type = msg["type"]
                 content = ""
-                if msg["type"] == "text":
+
+                if msg_type == "text":
                     content = msg["text"]["body"]
+                elif msg_type == "image":
+                    media = msg.get("image", {})
+                    content = f'media:{media.get("id", "")}|{media.get("mime_type", "image/jpeg")}|{media.get("caption", "")}'
+                elif msg_type == "audio":
+                    media = msg.get("audio", {})
+                    content = f'media:{media.get("id", "")}|{media.get("mime_type", "audio/ogg")}|'
+                elif msg_type == "video":
+                    media = msg.get("video", {})
+                    content = f'media:{media.get("id", "")}|{media.get("mime_type", "video/mp4")}|{media.get("caption", "")}'
+                elif msg_type == "document":
+                    media = msg.get("document", {})
+                    content = f'media:{media.get("id", "")}|{media.get("mime_type", "")}|{media.get("filename", "documento")}'
+                elif msg_type == "sticker":
+                    media = msg.get("sticker", {})
+                    content = f'media:{media.get("id", "")}|{media.get("mime_type", "image/webp")}|'
 
                 message = Message(
                     wa_message_id=wa_message_id,
                     contact_wa_id=msg["from"],
                     channel_id=channel_id,
                     direction="inbound",
-                    message_type=msg["type"],
+                    message_type=msg_type,
                     content=content,
                     timestamp=datetime.fromtimestamp(int(msg["timestamp"])),
                     status="received",

@@ -538,7 +538,38 @@ export default function ConversationsPage() {
                             <div className={`max-w-[70%] px-3 py-2 rounded-2xl shadow-sm ${
                               msg.direction === 'outbound' ? 'bg-[#2A658F] text-white rounded-br-sm' : 'bg-white text-gray-800 rounded-bl-sm'
                             }`}>
+                              {msg.type === 'image' && msg.content.startsWith('media:') ? (
+                              <img
+                                src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`}
+                                alt={msg.content.split('|')[2] || 'Imagem'}
+                                className="max-w-[250px] rounded-lg cursor-pointer"
+                                onClick={() => window.open(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`, '_blank')}
+                              />
+                            ) : msg.type === 'audio' && msg.content.startsWith('media:') ? (
+                              <audio controls className="max-w-[250px]">
+                                <source src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`} type={msg.content.split('|')[1] || 'audio/ogg'} />
+                              </audio>
+                            ) : msg.type === 'video' && msg.content.startsWith('media:') ? (
+                              <video controls className="max-w-[250px] rounded-lg">
+                                <source src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`} type={msg.content.split('|')[1] || 'video/mp4'} />
+                              </video>
+                            ) : msg.type === 'sticker' && msg.content.startsWith('media:') ? (
+                              <img
+                                src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`}
+                                alt="Sticker"
+                                className="w-32 h-32"
+                              />
+                            ) : msg.type === 'document' && msg.content.startsWith('media:') ? (
+                              
+                                href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`}
+                                target="_blank"
+                                className={`flex items-center gap-2 ${msg.direction === 'outbound' ? 'text-white/90' : 'text-[#2A658F]'} underline text-sm`}
+                              >
+                                📄 {msg.content.split('|')[2] || 'Documento'}
+                              </a>
+                            ) : (
                               <p className="text-[13.5px] whitespace-pre-wrap break-words leading-relaxed">{msg.content}</p>
+                            )}
                               <div className={`flex items-center justify-end gap-1 mt-0.5 ${msg.direction === 'outbound' ? 'text-white/60' : 'text-gray-400'}`}>
                                 <span className="text-[10px]">{formatTime(msg.timestamp)}</span>
                                 {msg.direction === 'outbound' && getStatusIcon(msg.status)}
