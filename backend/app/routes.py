@@ -280,6 +280,7 @@ async def list_contacts(channel_id: Optional[int] = None, db: AsyncSession = Dep
             "direction": last_msg.direction if last_msg else None,
             "tags": [{"id": t.id, "name": t.name, "color": t.color} for t in tags],
             "unread": unread,
+            "ai_active": c.ai_active or False,
             "created_at": c.created_at.isoformat() if c.created_at else None,
         })
 
@@ -306,6 +307,7 @@ async def get_contact(wa_id: str, db: AsyncSession = Depends(get_db)):
         "lead_status": contact.lead_status,
         "notes": contact.notes,
         "channel_id": contact.channel_id,
+        "ai_active": contact.ai_active or False,
         "tags": [{"id": t.id, "name": t.name, "color": t.color} for t in tags],
         "total_messages": msg_count.scalar(),
         "created_at": contact.created_at.isoformat() if contact.created_at else None,
@@ -364,6 +366,7 @@ async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db)):
             "content": m.content,
             "timestamp": m.timestamp.isoformat(),
             "status": m.status,
+            "sent_by_ai": m.sent_by_ai or False,
             "channel_id": m.channel_id,
         }
         for m in messages

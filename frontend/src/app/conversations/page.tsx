@@ -34,6 +34,7 @@ interface Contact {
   name: string;
   lead_status: string;
   notes: string | null;
+  ai_active: boolean;
   last_message: string;
   last_message_time: string | null;
   direction: string | null;
@@ -51,6 +52,7 @@ interface Message {
   content: string;
   timestamp: string;
   status: string;
+  sent_by_ai: boolean;
 }
 
 const leadStatuses = [
@@ -100,6 +102,7 @@ export default function ConversationsPage() {
   const [templateParams, setTemplateParams] = useState<string[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [notesValue, setNotesValue] = useState('');
+  const [togglingAI, setTogglingAI] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [exactLeadResults, setExactLeadResults] = useState<ExactLeadResult[]>([]);
   const [showLeadSuggestions, setShowLeadSuggestions] = useState(false);
@@ -203,6 +206,21 @@ export default function ConversationsPage() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
+
+  const toggleAI = async () => {
+    if (!selectedContact) return;
+    setTogglingAI(true);
+    try {
+      const newValue = !selectedContact.ai_active;
+      await api.patch(`/ai/contacts/${selectedContact.wa_id}/toggle`, { ai_active: newValue });
+      setSelectedContact({ ...selectedContact, ai_active: newValue });
+      loadContacts();
+    } catch (err) {
+      console.error("Erro ao alternar IA:", err);
+    } finally {
+      setTogglingAI(false);
+    }
+  };
   const updateLeadStatus = async (status: string) => {
     if (!selectedContact) return;
     try {
@@ -551,7 +569,7 @@ export default function ConversationsPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <p className={`font-medium text-[13px] truncate ${isSelected ? 'text-[#2A658F]' : 'text-[#27273D]'}`}>
-                            {contact.name || contact.wa_id}
+                            {contact.ai_active && "🤖 "}{contact.name || contact.wa_id}
                           </p>
                           {contact.last_message_time && (
                             <span className="text-[11px] text-gray-400 ml-2 flex-shrink-0 tabular-nums">{formatTime(contact.last_message_time)}</span>
@@ -675,6 +693,7 @@ export default function ConversationsPage() {
                                 <p className="text-[13.5px] whitespace-pre-wrap break-words leading-relaxed">{msg.content}</p>
                               )}
                               <div className={`flex items-center justify-end gap-1 mt-0.5 ${msg.direction === 'outbound' ? 'text-white/50' : 'text-gray-400'}`}>
+                                {msg.sent_by_ai && <span className="text-[10px] font-medium">🤖 Nat</span>}
                                 <span className="text-[10px] tabular-nums">{formatTime(msg.timestamp)}</span>
                                 {msg.direction === 'outbound' && getStatusIcon(msg.status)}
                               </div>
@@ -738,6 +757,36 @@ export default function ConversationsPage() {
                       </div>
 
                       {/* Lead Status */}
+
+                      {/* Toggle IA */}
+                      <div className="pb-4 border-b border-gray-100">
+                        <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Agente IA (Nat)</p>
+                        <button
+                          onClick={toggleAI}
+                          disabled={togglingAI}
+                          className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl border transition-all ${
+                            selectedContact.ai_active
+                              ? "border-emerald-200 bg-emerald-50"
+                              : "border-gray-200 bg-gray-50"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-[16px]">{selectedContact.ai_active ? "🤖" : "👤"}</span>
+                            <span className={`text-[13px] font-medium ${
+                              selectedContact.ai_active ? "text-emerald-700" : "text-gray-500"
+                            }`}>
+                              {selectedContact.ai_active ? "IA Ativa" : "IA Desligada"}
+                            </span>
+                          </div>
+                          <div className={`w-10 h-5 rounded-full transition-all ${
+                            selectedContact.ai_active ? "bg-emerald-500" : "bg-gray-300"
+                          } relative`}>
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${
+                              selectedContact.ai_active ? "left-5" : "left-0.5"
+                            }`} />
+                          </div>
+                        </button>
+                      </div>
                       <div>
                         <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Status do Lead</p>
                         <div className="relative">

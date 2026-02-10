@@ -1,8 +1,10 @@
 'use client';
 
-import { usePathname, useRouter } from 'next/navigation';
-import Link from 'next/link';
-import Image from 'next/image';
+import { useState } from 'react';
+import Link from "next/link";
+import Image from "next/image";
+import { usePathname, useRouter } from "next/navigation";
+import { useAuth } from "@/contexts/auth-context"; // CAMINHO CORRIGIDO AQUI
 import {
   LayoutDashboard,
   MessageCircle,
@@ -12,9 +14,11 @@ import {
   LogOut,
   GraduationCap,
   Zap,
+  Bot,
+  Columns3,
+  FlaskConical,
+  Calendar as CalendarIcon,
 } from 'lucide-react';
-import { useState } from 'react';
-import { useAuth } from '@/contexts/auth-context';
 
 const menuItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -22,6 +26,10 @@ const menuItems = [
   { href: '/users', label: 'Usuários', icon: Users },
   { href: '/leads-pos', label: 'Leads Pós', icon: GraduationCap },
   { href: '/automacoes', label: 'Automações', icon: Zap },
+  { href: '/ai-config', label: 'Config IA', icon: Bot },
+  { href: '/kanban', label: 'Kanban IA', icon: Columns3 },
+  { href: '/ai-test', label: 'Teste IA', icon: FlaskConical },
+  { href: '/agenda', label: 'Agenda', icon: CalendarIcon },
 ];
 
 export default function Sidebar() {
@@ -37,11 +45,13 @@ export default function Sidebar() {
 
   const getInitials = (name: string) =>
     name
-      .split(' ')
-      .map((n) => n[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2);
+      ? name
+          .split(' ')
+          .map((n) => n[0])
+          .join('')
+          .toUpperCase()
+          .slice(0, 2)
+      : '??';
 
   return (
     <aside
@@ -107,7 +117,6 @@ export default function Sidebar() {
                   ${collapsed ? 'justify-center' : ''}
                 `}
               >
-                {/* Barra indicadora ativa */}
                 {isActive && (
                   <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-[#2A658F] rounded-r-full" />
                 )}
@@ -120,7 +129,6 @@ export default function Sidebar() {
                 {!collapsed && <span>{item.label}</span>}
               </Link>
 
-              {/* Tooltip quando colapsado */}
               {collapsed && (
                 <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2.5 py-1.5 bg-[#1a2d42] text-white text-xs font-medium rounded-lg shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-50 border border-white/[0.06]">
                   {item.label}
@@ -134,7 +142,6 @@ export default function Sidebar() {
 
       {/* ── Rodapé: Usuário + Ações ── */}
       <div className="px-3 pb-4 space-y-2 border-t border-white/[0.06] pt-4">
-        {/* Info do usuário */}
         {user && !collapsed && (
           <div className="flex items-center gap-3 px-2 py-2 rounded-xl bg-white/[0.03]">
             <div className="w-9 h-9 rounded-lg bg-[#2A658F]/30 flex items-center justify-center text-[#4d9fd4] text-xs font-bold flex-shrink-0">
@@ -156,7 +163,6 @@ export default function Sidebar() {
             <div className="w-9 h-9 rounded-lg bg-[#2A658F]/30 flex items-center justify-center text-[#4d9fd4] text-xs font-bold cursor-default">
               {getInitials(user.name)}
             </div>
-            {/* Tooltip nome */}
             <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2.5 py-1.5 bg-[#1a2d42] text-white text-xs font-medium rounded-lg shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-50 border border-white/[0.06]">
               {user.name}
               <span className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-[#1a2d42]" />
@@ -164,7 +170,6 @@ export default function Sidebar() {
           </div>
         )}
 
-        {/* Botão sair */}
         <div className="relative group">
           <button
             onClick={handleLogout}
@@ -178,15 +183,8 @@ export default function Sidebar() {
             <LogOut className="w-[16px] h-[16px] flex-shrink-0" />
             {!collapsed && <span>Sair</span>}
           </button>
-          {collapsed && (
-            <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2.5 py-1.5 bg-[#1a2d42] text-white text-xs font-medium rounded-lg shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-50 border border-white/[0.06]">
-              Sair
-              <span className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-[#1a2d42]" />
-            </div>
-          )}
         </div>
 
-        {/* Botão colapsar */}
         <button
           onClick={() => setCollapsed(!collapsed)}
           className={`

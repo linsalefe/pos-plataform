@@ -35,6 +35,7 @@ class Contact(Base):
     name = Column(String(255), nullable=True)
     lead_status = Column(String(30), default="novo")
     notes = Column(Text, nullable=True)
+    ai_active = Column(Boolean, default=False)
     channel_id = Column(Integer, ForeignKey("channels.id"))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -56,6 +57,7 @@ class Message(Base):
     content = Column(Text, nullable=True)
     timestamp = Column(DateTime, nullable=False)
     status = Column(String(20), default="received")
+    sent_by_ai = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
 
     contact = relationship("Contact", back_populates="messages")
@@ -101,3 +103,53 @@ class ExactLead(Base):
     register_date = Column(DateTime, nullable=True)
     update_date = Column(DateTime, nullable=True)
     synced_at = Column(DateTime, server_default=func.now())
+
+class AIConfig(Base):
+    __tablename__ = "ai_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), unique=True, nullable=False)
+    is_enabled = Column(Boolean, default=False)
+    system_prompt = Column(Text, nullable=True)
+    model = Column(String(50), default="gpt-5")
+    temperature = Column(String(10), default="0.7")
+    max_tokens = Column(Integer, default=500)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    channel = relationship("Channel", backref="ai_config")
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    embedding = Column(Text, nullable=True)  # JSON string do vetor de embedding
+    chunk_index = Column(Integer, default=0)
+    token_count = Column(Integer, default=0)
+    created_at = Column(DateTime, server_default=func.now())
+
+    channel = relationship("Channel", backref="knowledge_documents")
+
+class AIConversationSummary(Base):
+    __tablename__ = "ai_conversation_summaries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contact_wa_id = Column(String(20), ForeignKey("contacts.wa_id"), nullable=False, index=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    status = Column(String(30), default="em_atendimento_ia")  # em_atendimento_ia, aguardando_humano, finalizado
+    summary = Column(Text, nullable=True)
+    lead_name = Column(String(255), nullable=True)
+    lead_course = Column(String(255), nullable=True)
+    ai_messages_count = Column(Integer, default=0)
+    human_took_over = Column(Boolean, default=False)
+    started_at = Column(DateTime, server_default=func.now())
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    contact = relationship("Contact", backref="ai_summaries")
+    channel = relationship("Channel", backref="ai_summaries")
+
+
