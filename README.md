@@ -2,7 +2,7 @@
 
 **Plataforma de multiatendimento via WhatsApp Business API** desenvolvida para o CENAT (Centro Educacional Novas Abordagens em Saúde Mental).
 
-Permite que a equipe comercial gerencie leads, responda conversas em tempo real, envie templates personalizados e acompanhe métricas — tudo em um único painel web acessível de qualquer navegador.
+Permite que a equipe comercial gerencie leads, responda conversas em tempo real, envie templates personalizados, qualifique leads automaticamente com IA e acompanhe métricas — tudo em um único painel web acessível de qualquer navegador.
 
 ---
 
@@ -21,14 +21,16 @@ Permite que a equipe comercial gerencie leads, responda conversas em tempo real,
 11. [ETAPA 7 — Deploy em Produção (AWS Lightsail)](#-etapa-7--deploy-em-produção-aws-lightsail)
 12. [ETAPA 8 — Configurar Templates do WhatsApp](#-etapa-8--configurar-templates-do-whatsapp)
 13. [ETAPA 9 — Integração Exact Spotter (CRM)](#-etapa-9--integração-exact-spotter-crm)
-14. [Funcionalidades](#-funcionalidades)
-15. [Estrutura de Pastas](#-estrutura-de-pastas)
-16. [Banco de Dados — Tabelas](#-banco-de-dados--tabelas)
-17. [API — Endpoints](#-api--endpoints)
-18. [Variáveis de Ambiente](#-variáveis-de-ambiente)
-19. [Comandos Úteis](#-comandos-úteis)
-20. [Solução de Problemas](#-solução-de-problemas)
-21. [Licença](#-licença)
+14. [ETAPA 10 — Agente de IA (Nat)](#-etapa-10--agente-de-ia-nat)
+15. [ETAPA 11 — Google Calendar](#-etapa-11--google-calendar)
+16. [Funcionalidades](#-funcionalidades)
+17. [Estrutura de Pastas](#-estrutura-de-pastas)
+18. [Banco de Dados — Tabelas](#-banco-de-dados--tabelas)
+19. [API — Endpoints](#-api--endpoints)
+20. [Variáveis de Ambiente](#-variáveis-de-ambiente)
+21. [Comandos Úteis](#-comandos-úteis)
+22. [Solução de Problemas](#-solução-de-problemas)
+23. [Licença](#-licença)
 
 ---
 
@@ -45,6 +47,12 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 - Receber e visualizar mídias (fotos, áudios, vídeos, documentos)
 - Integração com Exact Spotter (CRM) — importação automática de leads de pós-graduação
 - Página de automações para envio em massa de templates por filtros (estágio, curso, SDR)
+- Qualificar leads automaticamente via IA (Nat) com fluxo de 5 etapas
+- Agendar reuniões automaticamente verificando Google Calendar em tempo real
+- Acompanhar leads no Kanban IA (aguardando IA, qualificado, agendado, etc.)
+- Anotações automáticas na timeline do Exact Spotter quando IA é desligada
+- Página de agenda com calendário Google embutido e painel de disponibilidade
+- Chat de teste da IA para simular conversas antes de ativar em produção
 
 **URL de Produção:** `https://hub.cenatdata.online`
 
@@ -54,87 +62,114 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     NAVEGADOR                           │
-│              (hub.cenatdata.online)                      │
-│                  Next.js (React)                        │
+│                       NAVEGADOR                         │
+│                (hub.cenatdata.online)                    │
+│                   Next.js (React)                       │
 └──────────────────────┬──────────────────────────────────┘
                        │ HTTPS
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│                  NGINX (Reverse Proxy)                  │
-│              SSL via Let's Encrypt                       │
+│                 NGINX (Reverse Proxy)                   │
+│                 SSL via Let's Encrypt                   │
 │                                                         │
-│  /           → Frontend (porta 3001)                    │
-│  /api/       → Backend  (porta 8001)                    │
-│  /webhook    → Backend  (porta 8001)                    │
+│   /         → Frontend (porta 3001)                     │
+│   /api/     → Backend  (porta 8001)                     │
+│   /webhook  → Backend  (porta 8001)                     │
 └──────────┬──────────────────────┬───────────────────────┘
            │                      │
            ▼                      ▼
-┌──────────────────┐   ┌──────────────────────────────────┐
-│   Next.js App    │   │      FastAPI Backend              │
-│   Porta 3001     │   │      Porta 8001                   │
-│                  │   │                                    │
-│  - Login         │   │  - REST API (/api/*)              │
-│  - Dashboard     │   │  - Webhook WhatsApp (/webhook)    │
-│  - Conversas     │   │  - Autenticação JWT               │
-│  - Leads Pós     │   │  - Proxy de mídia                 │
-│  - Automações    │   │  - Sync Exact Spotter (10min)     │
-│  - Usuários      │   │  - Envio em massa de templates    │
-└──────────────────┘   └──────────┬───────────────────────┘
-                                  │
-                                  ▼
-                       ┌──────────────────┐
-                       │   PostgreSQL     │
-                       │   Porta 5432     │
-                       │                  │
-                       │  - contacts      │
-                       │  - messages      │
-                       │  - channels      │
-                       │  - users         │
-                       │  - tags          │
-                       │  - contact_tags  │
-                       │  - exact_leads   │
-                       └──────────────────┘
+┌──────────────────┐  ┌──────────────────────────────────┐
+│  Next.js App     │  │       FastAPI Backend             │
+│  Porta 3001      │  │       Porta 8001                  │
+│                  │  │                                    │
+│  - Login         │  │  - REST API (/api/*)               │
+│  - Dashboard     │  │  - Webhook WhatsApp (/webhook)     │
+│  - Conversas     │  │  - Autenticação JWT                │
+│  - Leads Pós     │  │  - Proxy de mídia                  │
+│  - Automações    │  │  - Sync Exact Spotter (10min)      │
+│  - Usuários      │  │  - Envio em massa de templates     │
+│  - Config IA     │  │  - AI Engine (GPT-5 + RAG)         │
+│  - Kanban IA     │  │  - Google Calendar API              │
+│  - Teste IA      │  │  - Anotações Exact Spotter         │
+│  - Agenda        │  │                                    │
+└──────────────────┘  └──────────┬───────────────────────┘
+                                 │
+                                 ▼
+                      ┌──────────────────┐
+                      │   PostgreSQL     │
+                      │   Porta 5432     │
+                      │                  │
+                      │  - contacts      │
+                      │  - messages      │
+                      │  - channels      │
+                      │  - users         │
+                      │  - tags          │
+                      │  - contact_tags  │
+                      │  - exact_leads   │
+                      │  - ai_configs    │
+                      │  - knowledge_    │
+                      │    documents     │
+                      │  - ai_conver-    │
+                      │    sation_       │
+                      │    summaries     │
+                      │  - ai_messages   │
+                      └──────────────────┘
 
-                    ┌──────────────────────┐
-                    │  Exact Spotter API   │
-                    │  (CRM - v3)          │
-                    │                      │
-                    │  - Leads pós-grad    │
-                    │  - Sync a cada 10min │
-                    │  - Histórico/Dados   │
-                    └──────────────────────┘
+┌──────────────────────┐  ┌──────────────────────┐
+│  Exact Spotter API   │  │  Meta / WhatsApp     │
+│  (CRM - v3)          │  │  Cloud API           │
+│                      │  │                      │
+│  - Leads pós-grad    │  │  - Enviar mensagens  │
+│  - Sync a cada 10min │  │  - Receber webhook   │
+│  - Histórico/Dados   │  │  - Baixar mídias     │
+└──────────────────────┘  │  - Templates         │
+                          └──────────────────────┘
 
-                    ┌──────────────────────┐
-                    │  Meta / WhatsApp     │
-                    │  Cloud API           │
-                    │                      │
-                    │  - Enviar mensagens  │
-                    │  - Receber webhook   │
-                    │  - Baixar mídias     │
-                    │  - Templates         │
-                    └──────────────────────┘
+┌──────────────────────┐  ┌──────────────────────┐
+│     OpenAI API       │  │   Google Calendar    │
+│                      │  │   API v3             │
+│  - GPT-5 (respostas)│  │                      │
+│  - GPT-4o-mini       │  │  - Consultar         │
+│    (retry + resumos) │  │    horários livres   │
+│  - Embeddings        │  │  - Criar eventos     │
+│    (RAG)             │  │    automaticamente   │
+└──────────────────────┘  └──────────────────────┘
 ```
 
-**Fluxo de uma mensagem recebida:**
+### Fluxo de uma mensagem recebida
+
 1. Lead envia mensagem pelo WhatsApp
 2. Meta envia POST para `https://hub.cenatdata.online/webhook`
 3. Nginx encaminha para FastAPI (porta 8001)
 4. Backend salva no PostgreSQL (contato + mensagem)
 5. Frontend faz polling a cada 3 segundos e exibe no chat
 
-**Fluxo de uma mensagem enviada:**
+### Fluxo de uma mensagem enviada
+
 1. Atendente digita mensagem no chat
 2. Frontend faz POST para `/api/send/text`
 3. Backend envia via WhatsApp Cloud API
 4. Meta entrega ao lead no WhatsApp
 5. Backend salva mensagem no PostgreSQL
 
-**Fluxo de sincronização Exact Spotter:**
+### Fluxo de sincronização Exact Spotter
+
 1. A cada 10 minutos, background task busca leads na API Exact Spotter
 2. Filtra leads com subSource começando em "pos" (pós-graduação)
 3. Insere novos leads ou atualiza existentes na tabela `exact_leads`
 4. Frontend exibe leads na página `/leads-pos` com filtros e detalhes
+
+### Fluxo de atendimento com IA
+
+1. Lead recebe template de primeiro contato via WhatsApp
+2. Lead responde → webhook recebe a mensagem
+3. Backend salva no PostgreSQL e aciona o AI Engine
+4. AI Engine busca contexto via RAG (base de conhecimento dos cursos)
+5. AI Engine injeta nome do lead, curso de interesse e horários livres do Google Calendar
+6. GPT-5 gera resposta seguindo fluxo de qualificação em 5 etapas
+7. Resposta enviada automaticamente via WhatsApp API
+8. Ao confirmar agendamento → evento criado automaticamente no Google Calendar
+9. Ao desligar IA → resumo gerado via GPT-4o-mini e postado na timeline do Exact Spotter
 
 ---
 
@@ -154,6 +189,10 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 | **HTTP (backend)** | httpx | latest |
 | **CRM** | Exact Spotter API v3 | — |
 | **WhatsApp API** | Meta Cloud API | v22.0 |
+| **IA / LLM** | OpenAI GPT-5 + GPT-4o-mini | latest |
+| **Embeddings** | OpenAI text-embedding-3-small | latest |
+| **Calendário** | Google Calendar API v3 | — |
+| **Google Auth** | google-api-python-client + google-auth | latest |
 | **Servidor Web** | Nginx | 1.18 |
 | **SSL** | Certbot (Let's Encrypt) | auto |
 | **Hospedagem** | AWS Lightsail | Ubuntu 22.04 |
@@ -169,6 +208,8 @@ Antes de começar, você precisa ter:
 - **App Meta Developers** com produto WhatsApp configurado
 - **Número de telefone** vinculado ao WhatsApp Business API
 - **Conta Exact Spotter** com token de API (para integração CRM)
+- **Conta OpenAI** com API key (para o agente de IA)
+- **Conta Google Cloud** com Calendar API ativada + Service Account
 - **Conta AWS** (para hospedagem em produção)
 - **Domínio** apontando para o IP do servidor
 - **Git e GitHub** configurados na máquina local
@@ -225,7 +266,7 @@ Após configurar, anote as seguintes informações (você vai precisar delas):
 | **App ID** | Dashboard do App | `1234567890` |
 | **Webhook Verify Token** | Você define (string qualquer) | `cenat_webhook_2024` |
 
-#### Como gerar o Token Permanente:
+#### Como gerar o Token Permanente
 
 1. Vá em **business.facebook.com → Configurações → Usuários do sistema**
 2. Crie um **Usuário do sistema** (tipo Admin)
@@ -266,22 +307,29 @@ cd pos-plataform
 
 ```
 pos-plataform/
-├── backend/              # API FastAPI (Python)
+├── backend/                        # API FastAPI (Python)
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── main.py       # App principal + webhook + sync Exact Spotter
-│   │   ├── models.py     # Modelos SQLAlchemy (Contact, Message, Channel, User, Tag, ExactLead)
-│   │   ├── database.py   # Conexão com PostgreSQL
-│   │   ├── routes.py     # Rotas da API
-│   │   ├── auth.py       # Autenticação JWT
-│   │   ├── auth_routes.py # Rotas de login/registro
-│   │   ├── whatsapp.py   # Funções de envio WhatsApp
-│   │   ├── exact_spotter.py # Integração API Exact Spotter
-│   │   ├── exact_routes.py  # Rotas: leads pós, sync, detalhes, envio em massa
-│   │   └── create_tables.py # Script para criar tabelas
+│   │   ├── main.py                 # App principal + webhook + sync Exact Spotter
+│   │   ├── models.py               # Modelos SQLAlchemy
+│   │   ├── database.py             # Conexão com PostgreSQL
+│   │   ├── routes.py               # Rotas da API
+│   │   ├── auth.py                 # Autenticação JWT
+│   │   ├── auth_routes.py          # Rotas de login/registro
+│   │   ├── whatsapp.py             # Funções de envio WhatsApp
+│   │   ├── exact_spotter.py        # Integração API Exact Spotter
+│   │   ├── exact_routes.py         # Rotas: leads pós, sync, detalhes, envio em massa
+│   │   ├── ai_engine.py            # Motor IA: RAG + GPT + qualificação
+│   │   ├── ai_routes.py            # Rotas IA: config, knowledge, test, toggle
+│   │   ├── kanban_routes.py        # Rotas Kanban IA
+│   │   ├── calendar_routes.py      # Rotas Google Calendar
+│   │   ├── google_calendar.py      # Integração Google Calendar API
+│   │   ├── migrate_ai.py           # Script migração tabelas IA
+│   │   └── create_tables.py        # Script para criar tabelas
 │   ├── requirements.txt
+│   ├── google-credentials.json     # Chave Service Account Google (NÃO commitar)
 │   └── .env
-├── frontend/             # Interface Next.js (React)
+├── frontend/                       # Interface Next.js (React)
 │   ├── src/
 │   │   ├── app/
 │   │   │   ├── login/page.tsx
@@ -290,6 +338,10 @@ pos-plataform/
 │   │   │   ├── users/page.tsx
 │   │   │   ├── leads-pos/page.tsx
 │   │   │   ├── automacoes/page.tsx
+│   │   │   ├── ai-config/page.tsx
+│   │   │   ├── kanban/page.tsx
+│   │   │   ├── ai-test/page.tsx
+│   │   │   ├── agenda/page.tsx
 │   │   │   ├── layout.tsx
 │   │   │   └── page.tsx
 │   │   ├── components/
@@ -318,7 +370,7 @@ pos-plataform/
 ```bash
 cd backend
 python3 -m venv venv
-source venv/bin/activate   # No Windows: venv\Scripts\activate
+source venv/bin/activate      # No Windows: venv\Scripts\activate
 pip install -r requirements.txt
 pip install bcrypt==4.0.1
 ```
@@ -335,6 +387,10 @@ httpx
 pyjwt
 bcrypt==4.0.1
 apscheduler
+openai
+numpy
+google-api-python-client
+google-auth
 ```
 
 ### 3.3 — Criar arquivo `.env`
@@ -342,12 +398,22 @@ apscheduler
 Crie o arquivo `backend/.env` com suas credenciais:
 
 ```env
+# WhatsApp API
 WHATSAPP_TOKEN=SEU_TOKEN_PERMANENTE_AQUI
 WHATSAPP_PHONE_ID=SEU_PHONE_NUMBER_ID_AQUI
 WEBHOOK_VERIFY_TOKEN=cenat_webhook_2024
+
+# Banco de Dados
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/cenat_whatsapp
+
+# Autenticação
 JWT_SECRET=sua-chave-secreta-jwt-aqui
+
+# Exact Spotter CRM
 EXACT_SPOTTER_TOKEN=seu_token_exact_spotter_aqui
+
+# OpenAI (IA)
+OPENAI_API_KEY=sua_chave_openai
 ```
 
 > ⚠️ **Nunca commite o `.env`!** Adicione ao `.gitignore`.
@@ -627,9 +693,9 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 
 # Verificar versões
-node -v    # v20.x.x
-npm -v     # 10.x.x
-python3 --version  # 3.10+
+node -v          # v20.x.x
+npm -v           # 10.x.x
+python3 --version # 3.10+
 ```
 
 ### 7.7 — Configurar PostgreSQL
@@ -676,6 +742,7 @@ WEBHOOK_VERIFY_TOKEN=cenat_webhook_2024
 DATABASE_URL=postgresql+asyncpg://cenat:CenatHub2024#@localhost:5432/cenat_whatsapp
 JWT_SECRET=cenat-hub-prod-secret-2024-x7k9m
 EXACT_SPOTTER_TOKEN=seu_token_exact_spotter_aqui
+OPENAI_API_KEY=sua_chave_openai
 EOF
 ```
 
@@ -697,7 +764,7 @@ ALTER TABLE messages ADD COLUMN IF NOT EXISTS channel_id INTEGER REFERENCES chan
 
 INSERT INTO channels (name, phone_number, phone_number_id, whatsapp_token, waba_id, is_active)
 VALUES ('Pós-Graduação (SDR)', '5511952137432', '978293125363835',
-'SEU_TOKEN_AQUI', '1360246076143727', true);
+        'SEU_TOKEN_AQUI', '1360246076143727', true);
 "
 ```
 
@@ -710,7 +777,7 @@ import bcrypt
 h = bcrypt.hashpw('SuaSenhaAqui'.encode(), bcrypt.gensalt()).decode()
 print(h)
 " | xargs -I{} sudo -u postgres psql cenat_whatsapp -c \
-"INSERT INTO users (name, email, password_hash, role, is_active) VALUES ('Seu Nome', 'seu@email.com', '{}', 'admin', true);"
+  "INSERT INTO users (name, email, password_hash, role, is_active) VALUES ('Seu Nome', 'seu@email.com', '{}', 'admin', true);"
 ```
 
 ### 7.11 — Criar Serviço do Backend (systemd)
@@ -1015,15 +1082,287 @@ Na página de **Conversas**, a barra de busca agora também pesquisa nos leads d
 
 ---
 
+## 🤖 ETAPA 10 — Agente de IA (Nat)
+
+### 10.1 — Visão Geral
+
+A **Nat** é o agente de IA do Cenat Hub que qualifica leads automaticamente via WhatsApp. Ela:
+
+- Segue um fluxo de qualificação em 5 etapas
+- Utiliza RAG (Retrieval-Augmented Generation) com base de conhecimento dos 10 cursos do CENAT
+- Reconhece o nome e curso de interesse do lead automaticamente
+- Verifica horários disponíveis no Google Calendar em tempo real
+- Cria eventos no Google Calendar ao confirmar agendamento
+- Gera resumo automático e posta na timeline do Exact Spotter quando desligada
+
+### 10.2 — Fluxo de Qualificação (5 Etapas)
+
+| Etapa | Pergunta | Objetivo |
+|-------|----------|----------|
+| 1 | Graduação e ano de conclusão | Verificar formação |
+| 2 | Área de atuação | Entender perfil profissional |
+| 3 | Expectativas com a pós-graduação | Qualificar interesse real |
+| 4 | Valor das parcelas (~R$300/mês) | Verificar aceitação do investimento |
+| 5 | Melhor dia/horário para ligação | Agendar reunião com consultora |
+
+A Nat envia apenas **uma pergunta por mensagem** e só avança para a próxima etapa após receber resposta.
+
+### 10.3 — Componentes do AI Engine
+
+**Motor principal (`ai_engine.py`):**
+
+- Busca system prompt e configurações do banco (por canal)
+- Injeta nome do lead e curso de interesse no prompt
+- Injeta horários livres do Google Calendar no prompt
+- Busca contexto via RAG (embeddings + similaridade cosseno, top 3 docs)
+- Busca histórico da conversa (últimas 10 mensagens)
+- Chama GPT-5 para gerar resposta
+- Retry automático com GPT-4o-mini se GPT-5 retorna vazio
+- Detecta agendamento confirmado e cria evento no Google Calendar
+
+**RAG (Base de Conhecimento):**
+
+- 10 cursos de pós-graduação cadastrados com informações detalhadas
+- Documentos divididos em chunks com embeddings via `text-embedding-3-small`
+- Busca por similaridade cosseno retorna os 3 documentos mais relevantes
+- Gerenciável via página `/ai-config` (adicionar/remover documentos)
+
+**Modelos utilizados:**
+
+| Modelo | Uso |
+|--------|-----|
+| `gpt-5` | Respostas principais da conversa |
+| `gpt-4o-mini` | Retry quando GPT-5 retorna vazio + geração de resumos |
+| `text-embedding-3-small` | Embeddings para RAG |
+
+### 10.4 — Página Config IA (`/ai-config`)
+
+Permite configurar a IA por canal:
+
+- System prompt editável (instruções de comportamento da Nat)
+- Modelo (GPT-5, GPT-4o, GPT-4o-mini)
+- Temperatura (0.0 a 1.0) e Max tokens
+- Base de conhecimento: adicionar documentos com título e conteúdo (gera embeddings automaticamente)
+
+### 10.5 — Kanban IA (`/kanban`)
+
+Visualização em colunas do pipeline de qualificação da IA:
+
+| Coluna | Descrição |
+|--------|-----------|
+| Aguardando IA | Lead em atendimento automático pela Nat |
+| Qualificado | Lead qualificado pela Nat |
+| Agendado | Reunião agendada no Google Calendar |
+| Aguardando Humano | IA desligada, aguardando consultora assumir |
+| Convertido | Lead convertido (matrícula) |
+| Perdido | Lead não qualificado |
+
+Cada card mostra: nome do lead, curso de interesse e status atual.
+
+### 10.6 — Teste da IA (`/ai-test`)
+
+Página de simulação que permite:
+
+- Conversar com a Nat como se fosse um lead
+- Definir nome e curso do lead nos campos do header
+- Ver respostas em tempo real com indicação do modelo usado
+- Ver quantidade de documentos RAG encontrados
+- Testar todo o fluxo de qualificação sem enviar mensagens reais
+
+### 10.7 — Toggle IA (na página de Conversas)
+
+Cada conversa tem um toggle para ligar/desligar a IA:
+
+- **ON:** Nat responde automaticamente as mensagens do lead
+- **OFF:** Desliga a IA e dispara automaticamente:
+  - Gera resumo da conversa via GPT-4o-mini
+  - Posta resumo na timeline do Exact Spotter (via `POST /v3/timelineAdd`)
+  - Salva resumo no card do Kanban (campo `summary`)
+  - Muda status para `aguardando_humano`
+
+### 10.8 — Formato do Resumo Automático
+
+Quando a IA é desligada, o seguinte resumo é gerado e postado no Exact Spotter:
+
+```
+📋 RESUMO DO ATENDIMENTO (IA Nat)
+📅 Data: 10/02/2026
+🎓 Curso de interesse: Saúde Mental Infantojuvenil
+👤 Graduação: Psicologia (2020)
+💼 Área de atuação: Clínica
+📌 Expectativa: Aprofundar conhecimentos em saúde mental
+💰 Valor aceito: Sim
+📅 Agendamento: 12/02/2026 às 16:00
+📊 Status: Qualificado
+📝 Observações: Lead demonstrou alto interesse e aceitou o valor.
+```
+
+### 10.9 — Tabelas do Banco de Dados (IA)
+
+#### `ai_configs`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| channel_id | INTEGER FK UNIQUE | Canal vinculado |
+| is_enabled | BOOLEAN | IA ativa para o canal |
+| system_prompt | TEXT | Prompt de sistema da Nat |
+| model | VARCHAR(50) | Modelo (gpt-5, gpt-4o, etc.) |
+| temperature | VARCHAR(10) | Temperatura (0.0 a 1.0) |
+| max_tokens | INTEGER | Limite de tokens na resposta |
+| created_at | TIMESTAMP | Data de criação |
+| updated_at | TIMESTAMP | Última atualização |
+
+#### `knowledge_documents`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| channel_id | INTEGER FK | Canal vinculado |
+| title | VARCHAR(500) | Título do documento |
+| content | TEXT | Conteúdo do documento |
+| embedding | BYTEA | Embedding serializado (numpy array) |
+| chunk_index | INTEGER | Índice do chunk |
+| token_count | INTEGER | Contagem de tokens |
+| created_at | TIMESTAMP | Data de criação |
+
+#### `ai_conversation_summaries`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| contact_wa_id | VARCHAR(20) FK | Contato vinculado |
+| channel_id | INTEGER FK | Canal vinculado |
+| status | VARCHAR(30) | Status: aguardando_ia, qualificado, agendado, etc. |
+| ai_active | BOOLEAN | Se a IA está ativa para este contato |
+| lead_course | VARCHAR(255) | Curso de interesse do lead |
+| summary | TEXT | Resumo gerado pela IA |
+| created_at | TIMESTAMP | Data de criação |
+| updated_at | TIMESTAMP | Última atualização |
+
+#### `ai_messages`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| contact_wa_id | VARCHAR(20) FK | Contato vinculado |
+| channel_id | INTEGER FK | Canal vinculado |
+| role | VARCHAR(20) | `user` ou `assistant` |
+| content | TEXT | Conteúdo da mensagem |
+| model | VARCHAR(50) | Modelo que gerou a resposta |
+| tokens_used | INTEGER | Tokens consumidos |
+| created_at | TIMESTAMP | Data de criação |
+
+### 10.10 — Endpoints da IA
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/ai/config/{channel_id}` | Obter configuração da IA |
+| PUT | `/api/ai/config/{channel_id}` | Salvar configuração da IA |
+| GET | `/api/ai/knowledge/{channel_id}` | Listar documentos da base de conhecimento |
+| POST | `/api/ai/knowledge/{channel_id}` | Adicionar documento (gera embedding) |
+| DELETE | `/api/ai/knowledge/{doc_id}` | Remover documento |
+| POST | `/api/ai/toggle` | Ligar/desligar IA para um contato |
+| GET | `/api/ai/status/{wa_id}` | Status da IA para um contato |
+| POST | `/api/ai/test-chat` | Testar conversa com a Nat (simulação) |
+
+### 10.11 — Endpoints do Kanban
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/kanban/board/{channel_id}` | Obter board completo |
+| PATCH | `/api/kanban/move` | Mover card entre colunas |
+
+---
+
+## 📅 ETAPA 11 — Google Calendar
+
+### 11.1 — Configuração
+
+1. Acesse **https://console.cloud.google.com**
+2. Ative a **Google Calendar API** (APIs e Serviços → Biblioteca → pesquisar "Google Calendar API" → Ativar)
+3. Crie uma **Service Account** (Credenciais → Criar credenciais → Conta de serviço):
+   - Nome: `nat-ia-calendar`
+   - Email gerado: `nat-ia-calendar@seu-projeto.iam.gserviceaccount.com`
+4. Gere uma chave JSON (clique na Service Account → aba Chaves → Adicionar chave → JSON)
+5. Salve o arquivo como `backend/google-credentials.json`
+6. Adicione ao `.gitignore`: `google-credentials.json`
+
+### 11.2 — Compartilhar Agenda
+
+Cada consultora precisa compartilhar sua agenda com o email da Service Account:
+
+1. Abrir Google Calendar
+2. Passar o mouse sobre a agenda → ⋮ → **Configurações e compartilhamento**
+3. Em "Compartilhar com pessoas específicas" → **Adicionar pessoas**
+4. Colar o email da Service Account
+5. Permissão: **Fazer alterações e gerenciar compartilhamento**
+6. Clicar **Enviar**
+
+### 11.3 — Consultoras Configuradas
+
+```python
+# backend/app/google_calendar.py
+CALENDARS = {
+    "victoria": {
+        "name": "Victória Amorim",
+        "calendar_id": "comercialcenat@gmail.com",
+    },
+    # Para adicionar nova consultora:
+    # "nome": {
+    #     "name": "Nome Completo",
+    #     "calendar_id": "email@gmail.com",
+    # },
+}
+```
+
+### 11.4 — Funcionalidades
+
+- Consulta de horários livres em tempo real (8h–18h, slots de 30 minutos)
+- Pula finais de semana automaticamente (sábado e domingo)
+- Injeção no prompt da IA — Nat só oferece horários realmente disponíveis
+- Criação automática de eventos quando lead confirma agendamento
+- Detecção inteligente — GPT-4o-mini analisa a resposta da Nat para extrair data/hora
+
+### 11.5 — Página Agenda (`/agenda`)
+
+**Calendário:**
+
+- Iframe do Google Calendar embutido
+- Visão completa da agenda da equipe
+- Eventos criados pela Nat aparecem automaticamente
+
+**Disponibilidade:**
+
+- Cards por dia com quantidade de horários livres
+- Indicadores visuais:
+  - 🟢 Verde: Muita disponibilidade (>10 slots)
+  - 🟡 Amarelo: Disponibilidade moderada (5–10 slots)
+  - 🔴 Vermelho: Pouca disponibilidade (<5 slots)
+- Botão de atualizar para refresh em tempo real
+
+### 11.6 — Endpoints do Calendar
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/calendar/consultants` | Listar consultoras disponíveis |
+| GET | `/api/calendar/available-dates/{key}` | Próximos dias com horários livres |
+| GET | `/api/calendar/available-slots/{key}/{date}` | Horários livres de um dia específico |
+| POST | `/api/calendar/book` | Agendar reunião (cria evento no Calendar) |
+
+---
+
 ## 🎯 Funcionalidades
 
 ### Dashboard
+
 - Total de conversas ativas
 - Leads novos (últimas 24h)
 - Mensagens enviadas/recebidas
 - Gráfico de atividade
 
 ### Conversas
+
 - Chat em tempo real com polling (3 segundos)
 - Envio e recebimento de texto
 - Visualização de imagens, áudios, vídeos e documentos
@@ -1032,18 +1371,21 @@ Na página de **Conversas**, a barra de busca agora também pesquisa nos leads d
 - Seletor de canal (múltiplos números)
 
 ### CRM (Painel lateral)
+
 - Status do lead: Novo → Contato → Qualificado → Matriculado → Perdido
 - Tags coloridas personalizáveis
 - Notas internas por contato
 - Informações do contato (telefone, data de criação)
 
 ### Nova Conversa
+
 - Seletor dinâmico de templates aprovados
 - Preenchimento de variáveis com prévia em tempo real
 - Criação automática do contato no sistema
 - Busca inteligente de leads do Exact Spotter (preenche telefone e nome automaticamente)
 
 ### Leads Pós-Graduação (Exact Spotter)
+
 - Sincronização automática a cada 10 minutos com a API Exact Spotter
 - Filtro por estágio, curso e busca por nome/telefone
 - Popup com detalhes completos do lead (contato, email, cargo, cidade, histórico de qualificação)
@@ -1051,6 +1393,7 @@ Na página de **Conversas**, a barra de busca agora também pesquisa nos leads d
 - Botão para iniciar conversa WhatsApp com o lead
 
 ### Automações (Envio em Massa)
+
 - Seleção de canal e template aprovado
 - Filtros por estágio, curso e SDR
 - Seleção individual ou em massa (checkbox)
@@ -1059,19 +1402,59 @@ Na página de **Conversas**, a barra de busca agora também pesquisa nos leads d
 - Relatório de resultado (enviados/falharam/erros)
 - Criação automática do contato no sistema ao enviar
 
+### Agente de IA — Nat
+
+- Qualificação automática de leads em 5 etapas via WhatsApp
+- RAG com base de conhecimento de 10 cursos de pós-graduação
+- Reconhecimento automático de nome e curso do lead
+- Verificação de disponibilidade em tempo real via Google Calendar
+- Agendamento automático com criação de evento no Calendar
+- Resumo automático da conversa ao desligar IA
+- Anotação automática na timeline do Exact Spotter
+- Retry inteligente (GPT-5 → GPT-4o-mini) em caso de resposta vazia
+
+### Config IA (`/ai-config`)
+
+- System prompt editável por canal
+- Seleção de modelo, temperatura e max tokens
+- Upload de documentos para base de conhecimento (RAG)
+- Geração automática de embeddings
+
+### Kanban IA (`/kanban`)
+
+- Visualização em colunas do pipeline de qualificação
+- Cards com nome, curso e status do lead
+- Drag and drop entre colunas
+
+### Teste IA (`/ai-test`)
+
+- Simulador de conversas com a Nat
+- Campos para nome e curso do lead
+- Indicação de modelo e docs RAG por mensagem
+
+### Agenda (`/agenda`)
+
+- Google Calendar embutido via iframe
+- Painel de disponibilidade com cards por dia
+- Indicadores visuais de disponibilidade (verde/amarelo/vermelho)
+- Atualização em tempo real
+
 ### Gerenciar Usuários (Admin)
+
 - Lista de todos os usuários
 - Criar novos usuários (atendentes ou admins)
 - Ativar/desativar usuários
 - Controle de acesso por função
 
 ### Autenticação
+
 - Login com email e senha
 - JWT com expiração de 24 horas
 - Proteção de todas as rotas
 - Logout seguro
 
 ### Multi-número
+
 - Suporte a múltiplos números de WhatsApp
 - Cada número é um "canal" independente
 - Contatos e mensagens vinculados ao canal correto
@@ -1085,48 +1468,63 @@ Na página de **Conversas**, a barra de busca agora também pesquisa nos leads d
 pos-plataform/
 ├── backend/
 │   ├── app/
-│   │   ├── __init__.py          # Inicialização do módulo
-│   │   ├── main.py              # FastAPI app, CORS, webhook, health, sync background task
-│   │   ├── models.py            # Modelos: Contact, Message, Channel, User, Tag, ExactLead
-│   │   ├── database.py          # Engine + SessionLocal async
-│   │   ├── routes.py            # Rotas: contacts, messages, send, tags, channels, media, templates
-│   │   ├── auth.py              # hash_password, verify_password, create_access_token, get_current_user
-│   │   ├── auth_routes.py       # login, register, me, users, toggle_user
-│   │   ├── whatsapp.py          # send_text_message, send_template_message
-│   │   ├── exact_spotter.py     # fetch_leads_from_exact, sync_exact_leads, is_pos_lead
-│   │   ├── exact_routes.py      # list_exact_leads, sync, stats, details, bulk_send_template
-│   │   └── create_tables.py     # Script para criar todas as tabelas
+│   │   ├── __init__.py              # Inicialização do módulo
+│   │   ├── main.py                  # FastAPI app, CORS, webhook, health, sync background task
+│   │   ├── models.py                # Modelos: Contact, Message, Channel, User, Tag, ExactLead + IA
+│   │   ├── database.py              # Engine + SessionLocal async
+│   │   ├── routes.py                # Rotas: contacts, messages, send, tags, channels, media, templates
+│   │   ├── auth.py                  # hash_password, verify_password, create_access_token, get_current_user
+│   │   ├── auth_routes.py           # login, register, me, users, toggle_user
+│   │   ├── whatsapp.py              # send_text_message, send_template_message
+│   │   ├── exact_spotter.py         # fetch_leads_from_exact, sync_exact_leads, is_pos_lead
+│   │   ├── exact_routes.py          # list_exact_leads, sync, stats, details, bulk_send_template
+│   │   ├── ai_engine.py             # Motor IA: RAG + GPT + qualificação
+│   │   ├── ai_routes.py             # Rotas IA: config, knowledge, test, toggle
+│   │   ├── kanban_routes.py         # Rotas Kanban IA
+│   │   ├── calendar_routes.py       # Rotas Google Calendar
+│   │   ├── google_calendar.py       # Integração Google Calendar API
+│   │   ├── migrate_ai.py            # Script migração tabelas IA
+│   │   └── create_tables.py         # Script para criar todas as tabelas
 │   ├── requirements.txt
-│   ├── .env                     # Variáveis (NÃO commitar)
-│   └── venv/                    # Ambiente virtual (NÃO commitar)
+│   ├── google-credentials.json      # Chave Service Account Google (NÃO commitar)
+│   ├── .env                         # Variáveis (NÃO commitar)
+│   └── venv/                        # Ambiente virtual (NÃO commitar)
 │
 ├── frontend/
 │   ├── src/
 │   │   ├── app/
-│   │   │   ├── layout.tsx       # Layout raiz (metadata, fontes, AuthProvider)
-│   │   │   ├── page.tsx         # Redirect: / → /dashboard ou /login
+│   │   │   ├── layout.tsx           # Layout raiz (metadata, fontes, AuthProvider)
+│   │   │   ├── page.tsx             # Redirect: / → /dashboard ou /login
 │   │   │   ├── login/
-│   │   │   │   └── page.tsx     # Página de login com branding Cenat Hub
+│   │   │   │   └── page.tsx         # Página de login com branding Cenat Hub
 │   │   │   ├── dashboard/
-│   │   │   │   └── page.tsx     # Dashboard com métricas e gráficos
+│   │   │   │   └── page.tsx         # Dashboard com métricas e gráficos
 │   │   │   ├── conversations/
-│   │   │   │   └── page.tsx     # Chat + CRM + templates + mídia + busca de leads
+│   │   │   │   └── page.tsx         # Chat + CRM + templates + mídia + busca de leads
 │   │   │   ├── users/
-│   │   │   │   └── page.tsx     # Gerenciar usuários (admin)
+│   │   │   │   └── page.tsx         # Gerenciar usuários (admin)
 │   │   │   ├── leads-pos/
-│   │   │   │   └── page.tsx     # Leads pós-graduação (Exact Spotter)
-│   │   │   └── automacoes/
-│   │   │       └── page.tsx     # Envio em massa de templates
+│   │   │   │   └── page.tsx         # Leads pós-graduação (Exact Spotter)
+│   │   │   ├── automacoes/
+│   │   │   │   └── page.tsx         # Envio em massa de templates
+│   │   │   ├── ai-config/
+│   │   │   │   └── page.tsx         # Configuração da IA (prompt, modelo, RAG)
+│   │   │   ├── kanban/
+│   │   │   │   └── page.tsx         # Kanban IA (pipeline de qualificação)
+│   │   │   ├── ai-test/
+│   │   │   │   └── page.tsx         # Teste da IA (chat simulado)
+│   │   │   └── agenda/
+│   │   │       └── page.tsx         # Agenda (Calendar + disponibilidade)
 │   │   ├── components/
-│   │   │   ├── Sidebar.tsx      # Menu lateral com logo, navegação, logout
-│   │   │   └── AppLayout.tsx    # Wrapper com proteção de rota
+│   │   │   ├── Sidebar.tsx          # Menu lateral com logo, navegação, logout
+│   │   │   └── AppLayout.tsx        # Wrapper com proteção de rota
 │   │   ├── contexts/
-│   │   │   └── auth-context.tsx # Provider de autenticação (JWT + localStorage)
+│   │   │   └── auth-context.tsx     # Provider de autenticação (JWT + localStorage)
 │   │   └── lib/
-│   │       └── api.ts           # Instância Axios configurada
+│   │       └── api.ts              # Instância Axios configurada
 │   ├── public/
-│   │   ├── logo-icon-white.png  # Logo ícone branca (sidebar)
-│   │   ├── logo-icon-color.png  # Logo ícone colorida (favicon, login)
+│   │   ├── logo-icon-white.png      # Logo ícone branca (sidebar)
+│   │   ├── logo-icon-color.png      # Logo ícone colorida (favicon, login)
 │   │   ├── logo-principal-cor.png
 │   │   └── logo-principal-negativo.png
 │   ├── package.json
@@ -1141,6 +1539,7 @@ pos-plataform/
 ## 🗂 Banco de Dados — Tabelas
 
 ### `contacts`
+
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
 | wa_id | VARCHAR(20) PK | ID WhatsApp (DDD+número) |
@@ -1151,6 +1550,7 @@ pos-plataform/
 | created_at | TIMESTAMP | Data de criação |
 
 ### `messages`
+
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
 | id | SERIAL PK | ID interno |
@@ -1164,6 +1564,7 @@ pos-plataform/
 | status | VARCHAR(20) | sent, delivered, read, received |
 
 ### `channels`
+
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
 | id | SERIAL PK | ID interno |
@@ -1176,6 +1577,7 @@ pos-plataform/
 | created_at | TIMESTAMP | Data de criação |
 
 ### `users`
+
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
 | id | SERIAL PK | ID interno |
@@ -1187,6 +1589,7 @@ pos-plataform/
 | created_at | TIMESTAMP | Data de criação |
 
 ### `tags`
+
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
 | id | SERIAL PK | ID interno |
@@ -1194,7 +1597,15 @@ pos-plataform/
 | color | VARCHAR(20) | Cor (blue, red, green, etc.) |
 | created_at | TIMESTAMP | Data de criação |
 
+### `contact_tags`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| contact_wa_id | VARCHAR(20) PK, FK | Contato |
+| tag_id | INTEGER PK, FK | Tag |
+
 ### `exact_leads`
+
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
 | id | SERIAL PK | ID interno |
@@ -1204,24 +1615,73 @@ pos-plataform/
 | phone2 | VARCHAR(50) | Telefone secundário |
 | source | VARCHAR(255) | Fonte (ex: Rd Marketing) |
 | sub_source | VARCHAR(255) | Curso (ex: possmedh, possupervisao) |
-| stage | VARCHAR(255) | Estágio no funil (Entrada, Follow 2-9, Vendidos, etc.) |
+| stage | VARCHAR(255) | Estágio no funil |
 | funnel_id | INTEGER | ID do funil no Exact Spotter |
 | sdr_name | VARCHAR(255) | Nome do SDR responsável |
 | register_date | TIMESTAMP | Data de cadastro no CRM |
 | update_date | TIMESTAMP | Data de última atualização |
 | synced_at | TIMESTAMP | Data da última sincronização |
 
-### `contact_tags`
+### `ai_configs`
+
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
-| contact_wa_id | VARCHAR(20) PK, FK | Contato |
-| tag_id | INTEGER PK, FK | Tag |
+| id | SERIAL PK | ID interno |
+| channel_id | INTEGER FK UNIQUE | Canal vinculado |
+| is_enabled | BOOLEAN | IA ativa para o canal |
+| system_prompt | TEXT | Prompt de sistema da Nat |
+| model | VARCHAR(50) | Modelo (gpt-5, gpt-4o, etc.) |
+| temperature | VARCHAR(10) | Temperatura (0.0 a 1.0) |
+| max_tokens | INTEGER | Limite de tokens na resposta |
+| created_at | TIMESTAMP | Data de criação |
+| updated_at | TIMESTAMP | Última atualização |
+
+### `knowledge_documents`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| channel_id | INTEGER FK | Canal vinculado |
+| title | VARCHAR(500) | Título do documento |
+| content | TEXT | Conteúdo do documento |
+| embedding | BYTEA | Embedding serializado (numpy array) |
+| chunk_index | INTEGER | Índice do chunk |
+| token_count | INTEGER | Contagem de tokens |
+| created_at | TIMESTAMP | Data de criação |
+
+### `ai_conversation_summaries`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| contact_wa_id | VARCHAR(20) FK | Contato vinculado |
+| channel_id | INTEGER FK | Canal vinculado |
+| status | VARCHAR(30) | Status: aguardando_ia, qualificado, agendado, etc. |
+| ai_active | BOOLEAN | Se a IA está ativa para este contato |
+| lead_course | VARCHAR(255) | Curso de interesse do lead |
+| summary | TEXT | Resumo gerado pela IA |
+| created_at | TIMESTAMP | Data de criação |
+| updated_at | TIMESTAMP | Última atualização |
+
+### `ai_messages`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| contact_wa_id | VARCHAR(20) FK | Contato vinculado |
+| channel_id | INTEGER FK | Canal vinculado |
+| role | VARCHAR(20) | `user` ou `assistant` |
+| content | TEXT | Conteúdo da mensagem |
+| model | VARCHAR(50) | Modelo que gerou a resposta |
+| tokens_used | INTEGER | Tokens consumidos |
+| created_at | TIMESTAMP | Data de criação |
 
 ---
 
 ## 🔌 API — Endpoints
 
 ### Autenticação
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | POST | `/api/auth/login` | Login (retorna JWT) |
@@ -1231,6 +1691,7 @@ pos-plataform/
 | PATCH | `/api/auth/users/{id}` | Ativar/desativar usuário |
 
 ### Contatos
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | GET | `/api/contacts` | Listar contatos (filtro por channel_id) |
@@ -1239,6 +1700,7 @@ pos-plataform/
 | PATCH | `/api/contacts/{wa_id}/notes` | Atualizar notas |
 
 ### Mensagens
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | GET | `/api/messages/{wa_id}` | Histórico de mensagens |
@@ -1246,6 +1708,7 @@ pos-plataform/
 | POST | `/api/send/template` | Enviar template |
 
 ### Tags
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | GET | `/api/tags` | Listar todas as tags |
@@ -1254,6 +1717,7 @@ pos-plataform/
 | DELETE | `/api/contacts/{wa_id}/tags/{tag_id}` | Remover tag do contato |
 
 ### Canais
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | GET | `/api/channels` | Listar canais ativos |
@@ -1261,16 +1725,19 @@ pos-plataform/
 | GET | `/api/channels/{id}/templates` | Listar templates aprovados |
 
 ### Mídia
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | GET | `/api/media/{media_id}` | Proxy para baixar mídia do WhatsApp |
 
 ### Dashboard
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | GET | `/api/dashboard/stats` | Métricas gerais |
 
 ### Exact Spotter (Leads Pós)
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | GET | `/api/exact-leads` | Listar leads (filtros: stage, sub_source, search, limit) |
@@ -1279,7 +1746,37 @@ pos-plataform/
 | GET | `/api/exact-leads/{exact_id}/details` | Detalhes do lead (dados, contato, histórico) |
 | POST | `/api/exact-leads/bulk-send-template` | Envio em massa de template para leads selecionados |
 
+### Agente de IA
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/ai/config/{channel_id}` | Obter configuração da IA |
+| PUT | `/api/ai/config/{channel_id}` | Salvar configuração da IA |
+| GET | `/api/ai/knowledge/{channel_id}` | Listar documentos da base de conhecimento |
+| POST | `/api/ai/knowledge/{channel_id}` | Adicionar documento (gera embedding) |
+| DELETE | `/api/ai/knowledge/{doc_id}` | Remover documento |
+| POST | `/api/ai/toggle` | Ligar/desligar IA para um contato |
+| GET | `/api/ai/status/{wa_id}` | Status da IA para um contato |
+| POST | `/api/ai/test-chat` | Testar conversa com a Nat (simulação) |
+
+### Kanban IA
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/kanban/board/{channel_id}` | Obter board completo |
+| PATCH | `/api/kanban/move` | Mover card entre colunas |
+
+### Google Calendar
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/calendar/consultants` | Listar consultoras disponíveis |
+| GET | `/api/calendar/available-dates/{key}` | Próximos dias com horários livres |
+| GET | `/api/calendar/available-slots/{key}/{date}` | Horários livres de um dia específico |
+| POST | `/api/calendar/book` | Agendar reunião (cria evento no Calendar) |
+
 ### Webhook
+
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | GET | `/webhook` | Verificação do Meta |
@@ -1305,7 +1802,15 @@ JWT_SECRET=chave_secreta_para_tokens_jwt
 
 # Exact Spotter CRM (obrigatório para leads pós)
 EXACT_SPOTTER_TOKEN=token_da_api_exact_spotter
+
+# OpenAI (obrigatório para IA)
+OPENAI_API_KEY=sua_chave_openai
 ```
+
+**Arquivos sensíveis (NÃO commitar):**
+
+- `backend/.env`
+- `backend/google-credentials.json`
 
 ### Frontend (`frontend/.env.production`)
 
@@ -1373,12 +1878,14 @@ sudo -u postgres psql cenat_whatsapp
 # SELECT id, name, email, role, is_active FROM users;
 # SELECT COUNT(*), stage FROM exact_leads GROUP BY stage ORDER BY count DESC;
 # SELECT COUNT(*), sub_source FROM exact_leads GROUP BY sub_source ORDER BY count DESC;
+# SELECT * FROM ai_configs;
+# SELECT * FROM ai_conversation_summaries ORDER BY updated_at DESC LIMIT 10;
 
 # ═══════════════════════════════════════
 # RENOVAR SSL
 # ═══════════════════════════════════════
-sudo certbot renew --dry-run   # Testar
-sudo certbot renew              # Renovar
+sudo certbot renew --dry-run  # Testar
+sudo certbot renew             # Renovar
 ```
 
 ### Desenvolvimento Local
@@ -1502,6 +2009,59 @@ sudo journalctl -u cenat-backend -n 50 --no-pager | grep -i exact
 - Verifique se os leads possuem telefone (phone1)
 - O sistema envia com delay de 1s — envios grandes podem demorar
 - Verifique o resultado no relatório (erros específicos por lead)
+
+### IA não responde
+
+```bash
+# Verificar chave OpenAI
+grep OPENAI_API_KEY /home/ubuntu/pos-plataform/backend/.env
+
+# Verificar se IA está habilitada para o canal
+# Acessar /ai-config e verificar toggle
+
+# Ver logs
+sudo journalctl -u cenat-backend -n 50 --no-pager | grep -i "ai\|openai\|gpt"
+```
+
+### Calendário não sincroniza / Evento não cria
+
+```bash
+# Verificar se google-credentials.json existe
+ls -la /home/ubuntu/pos-plataform/backend/google-credentials.json
+
+# Verificar se a agenda foi compartilhada com a Service Account
+# Email: nat-ia-calendar@gen-lang-client-0630066041.iam.gserviceaccount.com
+
+# Testar endpoint
+curl http://localhost:8001/api/calendar/available-dates/victoria
+```
+
+### GPT-5 retorna resposta vazia
+
+- O sistema faz retry automático com `gpt-4o-mini`
+- Se persistir, verificar limites da API OpenAI ou trocar modelo na Config IA
+- Verificar logs: `grep "content=''" nos logs do backend`
+
+### Anotação não aparece no Exact Spotter
+
+```bash
+# Verificar token
+grep EXACT_SPOTTER_TOKEN /home/ubuntu/pos-plataform/backend/.env
+
+# Endpoint correto: POST /v3/timelineAdd (NÃO /v3/Timeline)
+# User ID configurado: 415875 (Victória Amorim)
+
+# Testar manualmente
+curl -s -X POST "https://api.exactspotter.com/v3/timelineAdd" \
+  -H "Content-Type: application/json" \
+  -H "token_exact: SEU_TOKEN" \
+  -d '{"leadId": ID_DO_LEAD, "text": "Teste", "userId": 415875}'
+```
+
+### Evento no Calendar com ano errado
+
+- O prompt de detecção inclui "O ano atual é 2026"
+- Se o GPT extrair ano errado, verificar o prompt em `google_calendar.py` na função `detect_and_create_event`
 
 ---
 
