@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from dotenv import load_dotenv
+from app.twilio_routes import router as twilio_router
 from datetime import datetime, timezone, timedelta
 from app.kanban_routes import router as kanban_router
 from app.calendar_routes import router as calendar_router
@@ -36,15 +37,27 @@ async def sync_job():
         except Exception as e:
             print(f"❌ Erro no sync Exact Spotter: {e}")
 
+async def cleanup_recordings_job():
+    """Job que exclui gravações com +90 dias a cada 24 horas."""
+    while True:
+        await asyncio.sleep(86400)  # 24 horas
+        try:
+            from app.google_drive import delete_old_recordings
+            delete_old_recordings(days=90)
+            print("🗑️ Limpeza de gravações antigas concluída")
+        except Exception as e:
+            print(f"❌ Erro na limpeza de gravações: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: inicia o job de sync
     task = asyncio.create_task(sync_job())
+    cleanup_task = asyncio.create_task(cleanup_recordings_job())
     print("✅ Sync Exact Spotter agendado (a cada 10 min)")
     yield
     # Shutdown: cancela o job
     task.cancel()
+    cleanup_task.cancel()
 
 
 app = FastAPI(title="Cenat WhatsApp API", lifespan=lifespan)
@@ -64,6 +77,7 @@ app.include_router(ai_router)
 app.include_router(kanban_router)
 app.include_router(calendar_router)
 VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
+app.include_router(twilio_router)
 
 
 @app.get("/webhook")
@@ -167,77 +181,78 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 existing = result.scalar_one_or_none()
                 if existing:
                     existing.status = new_status
-            # === AGENTE IA: responder automaticamente ===
-            for msg in value.get("messages", []):
-                sender_wa_id = msg["from"]
-                msg_type = msg["type"]
 
-                # Só responde mensagens de texto
-                if msg_type != "text":
-                    continue
-
-                # Buscar contato para verificar se IA está ativa
-                contact_result = await db.execute(
-                    select(Contact).where(Contact.wa_id == sender_wa_id)
-                )
-                ai_contact = contact_result.scalar_one_or_none()
-
-                if not ai_contact or not ai_contact.ai_active or not channel_id:
-                    continue
-
-                # Buscar canal para enviar resposta
-                channel_result = await db.execute(
-                    select(Channel).where(Channel.id == channel_id)
-                )
-                ai_channel = channel_result.scalar_one_or_none()
-                if not ai_channel:
-                    continue
-
-                # Gerar resposta da IA
-                user_text = msg.get("text", {}).get("body", "")
-                ai_response = await generate_ai_response(
-                    contact_wa_id=sender_wa_id,
-                    user_message=user_text,
-                    channel_id=channel_id,
-                    db=db,
-                )
-
-                if ai_response:
-                    # Enviar via WhatsApp
-                    send_result = await send_text_message(
-                        to=sender_wa_id,
-                        text=ai_response,
-                        phone_number_id=ai_channel.phone_number_id,
-                        token=ai_channel.whatsapp_token,
-                    )
-
-                    # Salvar mensagem da IA no banco
-                    if "messages" in send_result:
-                        ai_msg = Message(
-                            wa_message_id=send_result["messages"][0]["id"],
-                            contact_wa_id=sender_wa_id,
-                            channel_id=channel_id,
-                            direction="outbound",
-                            message_type="text",
-                            content=ai_response,
-                            timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
-                            status="sent",
-                        )
-                        db.add(ai_msg)
-
-                        # Atualizar contador no summary do kanban
-                        from app.models import AIConversationSummary
-                        summary_result = await db.execute(
-                            select(AIConversationSummary).where(
-                                AIConversationSummary.contact_wa_id == sender_wa_id,
-                                AIConversationSummary.status == "em_atendimento_ia",
-                            )
-                        )
-                        summary = summary_result.scalar_one_or_none()
-                        if summary:
-                            summary.ai_messages_count = (summary.ai_messages_count or 0) + 1
-
-                    print(f"🤖 IA respondeu para {sender_wa_id}")
+            # === AGENTE IA: DESATIVADO TEMPORARIAMENTE ===
+            # for msg in value.get("messages", []):
+            #     sender_wa_id = msg["from"]
+            #     msg_type = msg["type"]
+            #
+            #     # Só responde mensagens de texto
+            #     if msg_type != "text":
+            #         continue
+            #
+            #     # Buscar contato para verificar se IA está ativa
+            #     contact_result = await db.execute(
+            #         select(Contact).where(Contact.wa_id == sender_wa_id)
+            #     )
+            #     ai_contact = contact_result.scalar_one_or_none()
+            #
+            #     if not ai_contact or not ai_contact.ai_active or not channel_id:
+            #         continue
+            #
+            #     # Buscar canal para enviar resposta
+            #     channel_result = await db.execute(
+            #         select(Channel).where(Channel.id == channel_id)
+            #     )
+            #     ai_channel = channel_result.scalar_one_or_none()
+            #     if not ai_channel:
+            #         continue
+            #
+            #     # Gerar resposta da IA
+            #     user_text = msg.get("text", {}).get("body", "")
+            #     ai_response = await generate_ai_response(
+            #         contact_wa_id=sender_wa_id,
+            #         user_message=user_text,
+            #         channel_id=channel_id,
+            #         db=db,
+            #     )
+            #
+            #     if ai_response:
+            #         # Enviar via WhatsApp
+            #         send_result = await send_text_message(
+            #             to=sender_wa_id,
+            #             text=ai_response,
+            #             phone_number_id=ai_channel.phone_number_id,
+            #             token=ai_channel.whatsapp_token,
+            #         )
+            #
+            #         # Salvar mensagem da IA no banco
+            #         if "messages" in send_result:
+            #             ai_msg = Message(
+            #                 wa_message_id=send_result["messages"][0]["id"],
+            #                 contact_wa_id=sender_wa_id,
+            #                 channel_id=channel_id,
+            #                 direction="outbound",
+            #                 message_type="text",
+            #                 content=ai_response,
+            #                 timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
+            #                 status="sent",
+            #             )
+            #             db.add(ai_msg)
+            #
+            #             # Atualizar contador no summary do kanban
+            #             from app.models import AIConversationSummary
+            #             summary_result = await db.execute(
+            #                 select(AIConversationSummary).where(
+            #                     AIConversationSummary.contact_wa_id == sender_wa_id,
+            #                     AIConversationSummary.status == "em_atendimento_ia",
+            #                 )
+            #             )
+            #             summary = summary_result.scalar_one_or_none()
+            #             if summary:
+            #                 summary.ai_messages_count = (summary.ai_messages_count or 0) + 1
+            #
+            #         print(f"🤖 IA respondeu para {sender_wa_id}")
 
             await db.commit()
             print(f"💾 Dados salvos no banco!")

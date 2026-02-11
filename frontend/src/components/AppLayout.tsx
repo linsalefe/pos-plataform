@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import Sidebar from './Sidebar';
+import Webphone from './Webphone';
 
 export default function AppLayout({ children, fullWidth = false }: { children: React.ReactNode; fullWidth?: boolean }) {
   const { user, loading } = useAuth();
@@ -33,6 +34,7 @@ export default function AppLayout({ children, fullWidth = false }: { children: R
       <main className={`flex-1 flex flex-col overflow-hidden transition-all duration-200 ${fullWidth ? '' : 'p-6'}`}>
         {children}
       </main>
+      {/* <Webphone /> */}
     </div>
   );
 }

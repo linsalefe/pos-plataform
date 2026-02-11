@@ -104,6 +104,7 @@ class ExactLead(Base):
     update_date = Column(DateTime, nullable=True)
     synced_at = Column(DateTime, server_default=func.now())
 
+
 class AIConfig(Base):
     __tablename__ = "ai_configs"
 
@@ -119,6 +120,7 @@ class AIConfig(Base):
 
     channel = relationship("Channel", backref="ai_config")
 
+
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
 
@@ -126,12 +128,13 @@ class KnowledgeDocument(Base):
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
-    embedding = Column(Text, nullable=True)  # JSON string do vetor de embedding
+    embedding = Column(Text, nullable=True)
     chunk_index = Column(Integer, default=0)
     token_count = Column(Integer, default=0)
     created_at = Column(DateTime, server_default=func.now())
 
     channel = relationship("Channel", backref="knowledge_documents")
+
 
 class AIConversationSummary(Base):
     __tablename__ = "ai_conversation_summaries"
@@ -139,7 +142,7 @@ class AIConversationSummary(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     contact_wa_id = Column(String(20), ForeignKey("contacts.wa_id"), nullable=False, index=True)
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
-    status = Column(String(30), default="em_atendimento_ia")  # em_atendimento_ia, aguardando_humano, finalizado
+    status = Column(String(30), default="em_atendimento_ia")
     summary = Column(Text, nullable=True)
     lead_name = Column(String(255), nullable=True)
     lead_course = Column(String(255), nullable=True)
@@ -153,3 +156,26 @@ class AIConversationSummary(Base):
     channel = relationship("Channel", backref="ai_summaries")
 
 
+class CallLog(Base):
+    __tablename__ = "call_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    call_sid = Column(String(100), unique=True, nullable=False, index=True)
+    from_number = Column(String(30), nullable=False)
+    to_number = Column(String(30), nullable=False)
+    direction = Column(String(20), nullable=False)
+    status = Column(String(30), default="initiated")
+    duration = Column(Integer, default=0)
+    recording_url = Column(Text, nullable=True)
+    recording_sid = Column(String(100), nullable=True)
+    drive_file_url = Column(Text, nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_name = Column(String(255), nullable=True)
+    contact_wa_id = Column(String(20), nullable=True)
+    contact_name = Column(String(255), nullable=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", backref="call_logs")
+    channel = relationship("Channel", backref="call_logs")

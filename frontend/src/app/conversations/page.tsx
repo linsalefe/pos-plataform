@@ -2,8 +2,22 @@
 
 import { useEffect, useState, useRef } from 'react';
 import {
-  Send, Search, MessageCircle, Check, CheckCheck, Clock, XCircle,
-  ArrowLeft, Plus, X, User, Phone, Calendar, ChevronDown, Radio, Loader2
+  Send,
+  Search,
+  MessageCircle,
+  Check,
+  CheckCheck,
+  Clock,
+  XCircle,
+  ArrowLeft,
+  Plus,
+  X,
+  User,
+  Phone,
+  Calendar,
+  ChevronDown,
+  Radio,
+  Loader2
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
@@ -107,6 +121,7 @@ export default function ConversationsPage() {
   const [exactLeadResults, setExactLeadResults] = useState<ExactLeadResult[]>([]);
   const [showLeadSuggestions, setShowLeadSuggestions] = useState(false);
   const [searchingLeads, setSearchingLeads] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setMounted(true); }, []);
@@ -206,7 +221,6 @@ export default function ConversationsPage() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
-
   const toggleAI = async () => {
     if (!selectedContact) return;
     setTogglingAI(true);
@@ -221,6 +235,7 @@ export default function ConversationsPage() {
       setTogglingAI(false);
     }
   };
+
   const updateLeadStatus = async (status: string) => {
     if (!selectedContact) return;
     try {
@@ -395,12 +410,9 @@ export default function ConversationsPage() {
     <AppLayout fullWidth>
       <div className="flex h-full">
 
-        {/* ══════════════════════════════════════ */}
-        {/* SIDEBAR CONTATOS                       */}
-        {/* ══════════════════════════════════════ */}
+        {/* SIDEBAR CONTATOS */}
         <div className={`${selectedContact ? 'hidden lg:flex' : 'flex'} w-full lg:w-[350px] flex-col border-r border-gray-100 bg-white flex-shrink-0`}>
 
-          {/* Header do painel */}
           <div className="px-4 pt-4 pb-3 space-y-3">
 
             {/* Channel Selector */}
@@ -422,6 +434,7 @@ export default function ConversationsPage() {
                 </div>
                 <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${showChannelMenu ? 'rotate-180' : ''}`} />
               </button>
+
               {showChannelMenu && (
                 <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-gray-200 shadow-xl z-20 overflow-hidden">
                   {channels.map(ch => (
@@ -459,6 +472,7 @@ export default function ConversationsPage() {
                     <XCircle className="w-4 h-4 text-gray-300 hover:text-gray-500 transition-colors" />
                   </button>
                 )}
+
                 {showLeadSuggestions && exactLeadResults.length > 0 && (
                   <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-gray-200 shadow-xl z-30 max-h-[300px] overflow-y-auto">
                     <div className="px-3 py-2 border-b border-gray-100">
@@ -485,6 +499,7 @@ export default function ConversationsPage() {
                   </div>
                 )}
               </div>
+
               <button
                 onClick={() => setShowNewChat(true)}
                 className="flex items-center justify-center w-10 h-10 bg-[#2A658F] text-white rounded-xl hover:bg-[#1f5375] active:scale-95 transition-all flex-shrink-0"
@@ -506,6 +521,7 @@ export default function ConversationsPage() {
               >
                 Todos ({contacts.length})
               </button>
+
               {leadStatuses.map(s => {
                 const count = contacts.filter(c => c.lead_status === s.value).length;
                 if (count === 0) return null;
@@ -524,6 +540,7 @@ export default function ConversationsPage() {
                 );
               })}
             </div>
+
           </div>
 
           {/* Contacts List */}
@@ -566,15 +583,19 @@ export default function ConversationsPage() {
                         </div>
                         <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 ${st.color} rounded-full border-2 border-white`} />
                       </div>
+
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <p className={`font-medium text-[13px] truncate ${isSelected ? 'text-[#2A658F]' : 'text-[#27273D]'}`}>
                             {contact.ai_active && "🤖 "}{contact.name || contact.wa_id}
                           </p>
                           {contact.last_message_time && (
-                            <span className="text-[11px] text-gray-400 ml-2 flex-shrink-0 tabular-nums">{formatTime(contact.last_message_time)}</span>
+                            <span className="text-[11px] text-gray-400 ml-2 flex-shrink-0 tabular-nums">
+                              {formatTime(contact.last_message_time)}
+                            </span>
                           )}
                         </div>
+
                         <div className="flex items-center gap-1.5 mt-0.5">
                           {contact.tags.length > 0 && (
                             <div className="flex gap-0.5">
@@ -590,6 +611,7 @@ export default function ConversationsPage() {
                           </p>
                         </div>
                       </div>
+
                       {contact.unread > 0 && (
                         <span className="min-w-[20px] h-5 px-1 bg-[#2A658F] text-white text-[10px] font-bold rounded-full flex items-center justify-center flex-shrink-0">
                           {contact.unread}
@@ -601,11 +623,10 @@ export default function ConversationsPage() {
               </div>
             )}
           </div>
+
         </div>
 
-        {/* ══════════════════════════════════════ */}
-        {/* ÁREA DO CHAT                           */}
-        {/* ══════════════════════════════════════ */}
+        {/* ÁREA DO CHAT */}
         <div className={`${selectedContact ? 'flex' : 'hidden lg:flex'} flex-1 flex-col min-w-0`}>
           {selectedContact ? (
             <>
@@ -615,9 +636,11 @@ export default function ConversationsPage() {
                   <button onClick={() => setSelectedContact(null)} className="lg:hidden p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
                     <ArrowLeft className="w-5 h-5 text-gray-500" />
                   </button>
+
                   <div className={`w-10 h-10 rounded-full bg-gradient-to-br ${getAvatarColor(selectedContact.name)} flex items-center justify-center text-white font-semibold text-xs`}>
                     {getInitials(selectedContact.name || selectedContact.wa_id)}
                   </div>
+
                   <div>
                     <p className="font-semibold text-[14px] text-[#27273D]">{selectedContact.name || selectedContact.wa_id}</p>
                     <div className="flex items-center gap-2">
@@ -628,20 +651,36 @@ export default function ConversationsPage() {
                     </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => setShowCRM(!showCRM)}
-                  className={`p-2 rounded-xl transition-all duration-200 ${
-                    showCRM
-                      ? 'bg-[#2A658F]/10 text-[#2A658F]'
-                      : 'hover:bg-gray-100 text-gray-400'
-                  }`}
-                  title="Painel CRM"
-                >
-                  <User className="w-5 h-5" />
-                </button>
+
+                {/* ✅ ALTERAÇÃO 1: Botão Ligar + botão CRM */}
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      const phone = selectedContact?.wa_id || '';
+                      window.dispatchEvent(new CustomEvent('cenat-call', { detail: { phone } }));
+                    }}
+                    className="p-2 rounded-xl hover:bg-green-50 text-gray-400 hover:text-green-600 transition-all duration-200"
+                    title="Ligar para o lead"
+                  >
+                    <Phone className="w-5 h-5" />
+                  </button>
+
+                  <button
+                    onClick={() => setShowCRM(!showCRM)}
+                    className={`p-2 rounded-xl transition-all duration-200 ${
+                      showCRM
+                        ? 'bg-[#2A658F]/10 text-[#2A658F]'
+                        : 'hover:bg-gray-100 text-gray-400'
+                    }`}
+                    title="Painel CRM"
+                  >
+                    <User className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
 
               <div className="flex flex-1 overflow-hidden">
+
                 {/* Messages */}
                 <div className="flex-1 flex flex-col min-w-0">
                   <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1 bg-[#eef0f3]">
@@ -652,6 +691,7 @@ export default function ConversationsPage() {
                             {group.date}
                           </span>
                         </div>
+
                         {group.msgs.map((msg) => (
                           <div key={msg.id} className={`flex mb-1.5 ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
                             <div className={`max-w-[70%] px-3.5 py-2 shadow-sm ${
@@ -692,6 +732,7 @@ export default function ConversationsPage() {
                               ) : (
                                 <p className="text-[13.5px] whitespace-pre-wrap break-words leading-relaxed">{msg.content}</p>
                               )}
+
                               <div className={`flex items-center justify-end gap-1 mt-0.5 ${msg.direction === 'outbound' ? 'text-white/50' : 'text-gray-400'}`}>
                                 {msg.sent_by_ai && <span className="text-[10px] font-medium">🤖 Nat</span>}
                                 <span className="text-[10px] tabular-nums">{formatTime(msg.timestamp)}</span>
@@ -721,19 +762,13 @@ export default function ConversationsPage() {
                         disabled={!newMessage.trim() || sending}
                         className="flex items-center justify-center w-10 h-10 bg-[#2A658F] rounded-xl text-white hover:bg-[#1f5375] active:scale-95 transition-all disabled:opacity-40 disabled:active:scale-100 flex-shrink-0"
                       >
-                        {sending ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Send className="w-4 h-4" />
-                        )}
+                        {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* ══════════════════════════════════════ */}
-                {/* CRM PANEL                              */}
-                {/* ══════════════════════════════════════ */}
+                {/* CRM PANEL */}
                 {showCRM && (
                   <div className="w-[300px] border-l border-gray-100 bg-white overflow-y-auto flex-shrink-0 hidden xl:block">
                     <div className="p-5 space-y-6">
@@ -756,8 +791,6 @@ export default function ConversationsPage() {
                         )}
                       </div>
 
-                      {/* Lead Status */}
-
                       {/* Toggle IA */}
                       <div className="pb-4 border-b border-gray-100">
                         <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Agente IA (Nat)</p>
@@ -765,9 +798,7 @@ export default function ConversationsPage() {
                           onClick={toggleAI}
                           disabled={togglingAI}
                           className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl border transition-all ${
-                            selectedContact.ai_active
-                              ? "border-emerald-200 bg-emerald-50"
-                              : "border-gray-200 bg-gray-50"
+                            selectedContact.ai_active ? "border-emerald-200 bg-emerald-50" : "border-gray-200 bg-gray-50"
                           }`}
                         >
                           <div className="flex items-center gap-2">
@@ -778,15 +809,13 @@ export default function ConversationsPage() {
                               {selectedContact.ai_active ? "IA Ativa" : "IA Desligada"}
                             </span>
                           </div>
-                          <div className={`w-10 h-5 rounded-full transition-all ${
-                            selectedContact.ai_active ? "bg-emerald-500" : "bg-gray-300"
-                          } relative`}>
-                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${
-                              selectedContact.ai_active ? "left-5" : "left-0.5"
-                            }`} />
+                          <div className={`w-10 h-5 rounded-full transition-all ${selectedContact.ai_active ? "bg-emerald-500" : "bg-gray-300"} relative`}>
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${selectedContact.ai_active ? "left-5" : "left-0.5"}`} />
                           </div>
                         </button>
                       </div>
+
+                      {/* Status do Lead */}
                       <div>
                         <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Status do Lead</p>
                         <div className="relative">
@@ -802,10 +831,15 @@ export default function ConversationsPage() {
                             </div>
                             <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${showStatusMenu ? 'rotate-180' : ''}`} />
                           </button>
+
                           {showStatusMenu && (
                             <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-gray-200 shadow-lg z-10 overflow-hidden">
                               {leadStatuses.map(s => (
-                                <button key={s.value} onClick={() => updateLeadStatus(s.value)} className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 transition-colors text-left">
+                                <button
+                                  key={s.value}
+                                  onClick={() => updateLeadStatus(s.value)}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                                >
                                   <div className={`w-2.5 h-2.5 rounded-full ${s.color}`} />
                                   <span className="text-[13px] text-gray-700">{s.label}</span>
                                 </button>
@@ -824,33 +858,55 @@ export default function ConversationsPage() {
                             return (
                               <span key={tag.id} className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-lg ${tc.bg} ${tc.text}`}>
                                 {tag.name}
-                                <button onClick={() => removeTag(tag.id)} className="hover:opacity-60 transition-opacity"><X className="w-3 h-3" /></button>
+                                <button onClick={() => removeTag(tag.id)} className="hover:opacity-60 transition-opacity">
+                                  <X className="w-3 h-3" />
+                                </button>
                               </span>
                             );
                           })}
                         </div>
+
                         <button onClick={() => setShowTagMenu(!showTagMenu)} className="flex items-center gap-1 text-[12px] text-[#2A658F] hover:text-[#1a4a6e] font-medium transition-colors">
                           <Plus className="w-3.5 h-3.5" /> Adicionar tag
                         </button>
+
                         {showTagMenu && (
                           <div className="mt-2 bg-gray-50 rounded-xl p-3 space-y-2 border border-gray-100">
                             {allTags.filter(t => !selectedContact.tags.find(ct => ct.id === t.id)).map(tag => {
                               const tc = getTagColorConfig(tag.color);
                               return (
-                                <button key={tag.id} onClick={() => { addTag(tag.id); setShowTagMenu(false); }} className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-medium ${tc.bg} ${tc.text} hover:opacity-80 transition-opacity`}>
+                                <button
+                                  key={tag.id}
+                                  onClick={() => { addTag(tag.id); setShowTagMenu(false); }}
+                                  className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-medium ${tc.bg} ${tc.text} hover:opacity-80 transition-opacity`}
+                                >
                                   {tag.name}
                                 </button>
                               );
                             })}
+
                             <div className="pt-2 border-t border-gray-200">
                               <p className="text-[10px] text-gray-400 uppercase font-semibold mb-1.5 tracking-wider">Criar nova tag</p>
-                              <input value={newTagName} onChange={(e) => setNewTagName(e.target.value)} placeholder="Nome da tag" className="w-full px-2.5 py-1.5 text-[12px] text-gray-800 bg-white border border-gray-200 rounded-lg outline-none focus:border-[#2A658F] transition-colors" />
+                              <input
+                                value={newTagName}
+                                onChange={(e) => setNewTagName(e.target.value)}
+                                placeholder="Nome da tag"
+                                className="w-full px-2.5 py-1.5 text-[12px] text-gray-800 bg-white border border-gray-200 rounded-lg outline-none focus:border-[#2A658F] transition-colors"
+                              />
                               <div className="flex gap-1.5 mt-2">
                                 {tagColors.map(c => (
-                                  <button key={c.value} onClick={() => setNewTagColor(c.value)} className={`w-5 h-5 rounded-full ${c.bg} transition-all ${newTagColor === c.value ? 'ring-2 ring-offset-1 ring-[#2A658F] scale-110' : 'hover:scale-105'}`} />
+                                  <button
+                                    key={c.value}
+                                    onClick={() => setNewTagColor(c.value)}
+                                    className={`w-5 h-5 rounded-full ${c.bg} transition-all ${newTagColor === c.value ? 'ring-2 ring-offset-1 ring-[#2A658F] scale-110' : 'hover:scale-105'}`}
+                                  />
                                 ))}
                               </div>
-                              <button onClick={() => { createTag(); setShowTagMenu(false); }} disabled={!newTagName.trim()} className="w-full mt-2.5 px-2.5 py-1.5 bg-[#2A658F] text-white text-[11px] font-medium rounded-lg disabled:opacity-40 hover:bg-[#1f5375] transition-colors">
+                              <button
+                                onClick={() => { createTag(); setShowTagMenu(false); }}
+                                disabled={!newTagName.trim()}
+                                className="w-full mt-2.5 px-2.5 py-1.5 bg-[#2A658F] text-white text-[11px] font-medium rounded-lg disabled:opacity-40 hover:bg-[#1f5375] transition-colors"
+                              >
                                 Criar tag
                               </button>
                             </div>
@@ -868,6 +924,7 @@ export default function ConversationsPage() {
                             </button>
                           )}
                         </div>
+
                         {editingNotes ? (
                           <div>
                             <textarea
@@ -899,7 +956,6 @@ export default function ConversationsPage() {
               </div>
             </>
           ) : (
-            /* Empty State */
             <div className="flex-1 flex flex-col items-center justify-center bg-[#eef0f3]">
               <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center mb-5 shadow-sm border border-gray-100">
                 <MessageCircle className="w-9 h-9 text-gray-300" />
@@ -909,128 +965,128 @@ export default function ConversationsPage() {
             </div>
           )}
         </div>
-      </div>
 
-      {/* ══════════════════════════════════════ */}
-      {/* MODAL NOVA CONVERSA                    */}
-      {/* ══════════════════════════════════════ */}
-      {showNewChat && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowNewChat(false)}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl mx-4 max-h-[90vh] overflow-y-auto border border-gray-100" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="text-lg font-semibold text-[#27273D]">Nova Conversa</h2>
-              <button onClick={() => { setShowNewChat(false); setSelectedTemplate(null); setTemplateParams([]); }} className="p-1.5 hover:bg-gray-100 rounded-xl transition-colors">
-                <X className="w-5 h-5 text-gray-400" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Telefone do lead</label>
-                <input
-                  type="text"
-                  value={newChatPhone}
-                  onChange={e => setNewChatPhone(e.target.value)}
-                  placeholder="5583988001234"
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 focus:bg-white outline-none transition-all"
-                />
-                <p className="text-[11px] text-gray-400 mt-1">DDD + número com 9 (sem espaços)</p>
-              </div>
-              <div>
-                <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Nome do lead</label>
-                <input
-                  type="text"
-                  value={newChatName}
-                  onChange={e => setNewChatName(e.target.value)}
-                  placeholder="Maria Silva"
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 focus:bg-white outline-none transition-all"
-                />
+        {/* MODAL NOVA CONVERSA */}
+        {showNewChat && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowNewChat(false)}>
+            <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl mx-4 max-h-[90vh] overflow-y-auto border border-gray-100" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="text-lg font-semibold text-[#27273D]">Nova Conversa</h2>
+                <button onClick={() => { setShowNewChat(false); setSelectedTemplate(null); setTemplateParams([]); }} className="p-1.5 hover:bg-gray-100 rounded-xl transition-colors">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
               </div>
 
-              {/* Seletor de Template */}
-              <div>
-                <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Template da mensagem</label>
-                {loadingTemplates ? (
-                  <div className="flex items-center justify-center py-4">
-                    <Loader2 className="w-5 h-5 text-[#2A658F] animate-spin" />
-                  </div>
-                ) : templates.length === 0 ? (
-                  <button
-                    onClick={loadTemplates}
-                    className="w-full py-2.5 border border-dashed border-gray-300 rounded-xl text-sm text-gray-400 hover:border-[#2A658F] hover:text-[#2A658F] transition-colors"
-                  >
-                    Carregar templates disponíveis
-                  </button>
-                ) : (
-                  <div className="space-y-2">
-                    {templates.map((t: any) => (
-                      <button
-                        key={t.name}
-                        onClick={() => selectTemplate(t)}
-                        className={`w-full text-left px-3.5 py-2.5 rounded-xl border text-sm transition-all ${
-                          selectedTemplate?.name === t.name
-                            ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
-                            : 'border-gray-100 text-gray-700 hover:border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        <p className="font-medium text-[13px]">{t.name.replace(/_/g, ' ')}</p>
-                        <p className="text-[11px] text-gray-400 mt-0.5">{t.language} • {t.parameters.length} variáveis</p>
-                      </button>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Telefone do lead</label>
+                  <input
+                    type="text"
+                    value={newChatPhone}
+                    onChange={e => setNewChatPhone(e.target.value)}
+                    placeholder="5583988001234"
+                    className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 focus:bg-white outline-none transition-all"
+                  />
+                  <p className="text-[11px] text-gray-400 mt-1">DDD + número com 9 (sem espaços)</p>
+                </div>
+
+                <div>
+                  <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Nome do lead</label>
+                  <input
+                    type="text"
+                    value={newChatName}
+                    onChange={e => setNewChatName(e.target.value)}
+                    placeholder="Maria Silva"
+                    className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 focus:bg-white outline-none transition-all"
+                  />
+                </div>
+
+                {/* Seletor de Template */}
+                <div>
+                  <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Template da mensagem</label>
+                  {loadingTemplates ? (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 className="w-5 h-5 text-[#2A658F] animate-spin" />
+                    </div>
+                  ) : templates.length === 0 ? (
+                    <button
+                      onClick={loadTemplates}
+                      className="w-full py-2.5 border border-dashed border-gray-300 rounded-xl text-sm text-gray-400 hover:border-[#2A658F] hover:text-[#2A658F] transition-colors"
+                    >
+                      Carregar templates disponíveis
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      {templates.map((t: any) => (
+                        <button
+                          key={t.name}
+                          onClick={() => selectTemplate(t)}
+                          className={`w-full text-left px-3.5 py-2.5 rounded-xl border text-sm transition-all ${
+                            selectedTemplate?.name === t.name
+                              ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
+                              : 'border-gray-100 text-gray-700 hover:border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <p className="font-medium text-[13px]">{t.name.replace(/_/g, ' ')}</p>
+                          <p className="text-[11px] text-gray-400 mt-0.5">{t.language} • {t.parameters.length} variáveis</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Parâmetros do template */}
+                {selectedTemplate && selectedTemplate.parameters.length > 0 && (
+                  <div className="space-y-3 pt-1">
+                    <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Preencher variáveis</p>
+                    {selectedTemplate.parameters.map((p: string, i: number) => (
+                      <div key={i}>
+                        <label className="block text-[11px] text-gray-500 mb-1">{p} ({'{{'}{i + 1}{'}}'})</label>
+                        <input
+                          type="text"
+                          value={templateParams[i] || ''}
+                          onChange={e => updateParam(i, e.target.value)}
+                          placeholder={`Valor para ${p}`}
+                          className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#2A658F] focus:bg-white outline-none transition-all"
+                        />
+                      </div>
                     ))}
+                  </div>
+                )}
+
+                {/* Preview */}
+                {selectedTemplate && (
+                  <div className="bg-[#eef0f3] rounded-xl p-4">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase mb-2 tracking-wider">Prévia da mensagem</p>
+                    <div className="bg-white rounded-xl px-3.5 py-2.5 shadow-sm border border-gray-100">
+                      <p className="text-[13px] text-gray-800 whitespace-pre-wrap leading-relaxed">{getPreview()}</p>
+                    </div>
                   </div>
                 )}
               </div>
 
-              {/* Parâmetros do template */}
-              {selectedTemplate && selectedTemplate.parameters.length > 0 && (
-                <div className="space-y-3 pt-1">
-                  <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Preencher variáveis</p>
-                  {selectedTemplate.parameters.map((p: string, i: number) => (
-                    <div key={i}>
-                      <label className="block text-[11px] text-gray-500 mb-1">{p} ({'{{'}{i+1}{'}}'})</label>
-                      <input
-                        type="text"
-                        value={templateParams[i] || ''}
-                        onChange={e => updateParam(i, e.target.value)}
-                        placeholder={`Valor para ${p}`}
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#2A658F] focus:bg-white outline-none transition-all"
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Preview */}
-              {selectedTemplate && (
-                <div className="bg-[#eef0f3] rounded-xl p-4">
-                  <p className="text-[10px] font-semibold text-gray-400 uppercase mb-2 tracking-wider">Prévia da mensagem</p>
-                  <div className="bg-white rounded-xl px-3.5 py-2.5 shadow-sm border border-gray-100">
-                    <p className="text-[13px] text-gray-800 whitespace-pre-wrap leading-relaxed">{getPreview()}</p>
-                  </div>
-                </div>
-              )}
+              <button
+                onClick={handleNewChat}
+                disabled={sendingTemplate || !newChatPhone.trim() || !newChatName.trim() || !selectedTemplate}
+                className="w-full mt-6 py-3 bg-[#2A658F] text-white font-medium rounded-xl hover:bg-[#1f5375] hover:shadow-lg hover:shadow-[#2A658F]/20 active:scale-[0.98] transition-all disabled:opacity-40 disabled:active:scale-100 flex items-center justify-center gap-2"
+              >
+                {sendingTemplate ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Enviando...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    Enviar template
+                  </>
+                )}
+              </button>
             </div>
-
-            <button
-              onClick={handleNewChat}
-              disabled={sendingTemplate || !newChatPhone.trim() || !newChatName.trim() || !selectedTemplate}
-              className="w-full mt-6 py-3 bg-[#2A658F] text-white font-medium rounded-xl hover:bg-[#1f5375] hover:shadow-lg hover:shadow-[#2A658F]/20 active:scale-[0.98] transition-all disabled:opacity-40 disabled:active:scale-100 flex items-center justify-center gap-2"
-            >
-              {sendingTemplate ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Enviando...
-                </>
-              ) : (
-                <>
-                  <Send className="w-4 h-4" />
-                  Enviar template
-                </>
-              )}
-            </button>
           </div>
-        </div>
-      )}
+        )}
+
+      </div>
     </AppLayout>
   );
 }

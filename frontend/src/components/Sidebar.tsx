@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { useAuth } from "@/contexts/auth-context"; // CAMINHO CORRIGIDO AQUI
+import { useAuth } from "@/contexts/auth-context";
 import {
   LayoutDashboard,
   MessageCircle,
@@ -18,6 +18,7 @@ import {
   Columns3,
   FlaskConical,
   Calendar as CalendarIcon,
+  Phone,
 } from 'lucide-react';
 
 const menuItems = [
@@ -29,6 +30,7 @@ const menuItems = [
   { href: '/ai-config', label: 'Config IA', icon: Bot },
   { href: '/kanban', label: 'Kanban IA', icon: Columns3 },
   { href: '/ai-test', label: 'Teste IA', icon: FlaskConical },
+  { href: '/calls', label: 'Ligações', icon: Phone },
   { href: '/agenda', label: 'Agenda', icon: CalendarIcon },
 ];
 
