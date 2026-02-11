@@ -69,7 +69,9 @@ async def make_call(data: CallRequest, current_user=Depends(get_current_user)):
     if not to_number.startswith("+"):
         to_number = f"+{to_number}"
 
-    identity = f"user_{current_user.id}_{current_user.name.replace(' ', '_')}"
+    import unicodedata
+    clean_name = unicodedata.normalize('NFKD', current_user.name).encode('ascii', 'ignore').decode('ascii')
+    identity = f"user_{current_user.id}_{clean_name.replace(' ', '_')}"
 
     call = client.calls.create(
         to=to_number,
