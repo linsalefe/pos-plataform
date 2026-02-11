@@ -37,8 +37,12 @@ async def get_voice_token(current_user=Depends(get_current_user)):
     )
     token.add_grant(voice_grant)
 
+    jwt_token = token.to_jwt()
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
     return {
-        "token": token.to_jwt(),
+        "token": jwt_token,
         "identity": identity,
     }
 
