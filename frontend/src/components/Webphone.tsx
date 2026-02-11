@@ -101,14 +101,12 @@ export default function Webphone() {
         return;
       }
 
-      // SDK 2.x: token no construtor
       const device = new window.Twilio.Device(twilioToken, {
         codecPreferences: ['opus', 'pcmu'],
         closeProtection: true,
         logLevel: 1,
       });
 
-      // SDK 2.x: evento 'registered' ao invés de 'ready'
       device.on('registered', () => {
         console.log('📞 Twilio Device registrado e pronto');
         setDeviceReady(true);
@@ -131,7 +129,6 @@ export default function Webphone() {
         setDeviceReady(false);
       });
 
-      // SDK 2.x: chamadas recebidas
       device.on('incoming', (call: any) => {
         callRef.current = call;
         setIncomingFrom(call.parameters?.From || 'Desconhecido');
@@ -142,9 +139,7 @@ export default function Webphone() {
         call.on('reject', () => handleCallEnd());
       });
 
-      // Registrar para receber chamadas
       await device.register();
-
       deviceRef.current = device;
     } catch (err: any) {
       console.error('Erro ao inicializar Twilio:', err);
@@ -183,7 +178,6 @@ export default function Webphone() {
     setError('');
 
     try {
-      // SDK 2.x: connect retorna Promise
       const call = await deviceRef.current.connect({
         params: { To: number },
       });
@@ -272,7 +266,6 @@ export default function Webphone() {
 
   const dialPad = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
 
-  // Chamada recebida
   if (status === 'incoming') {
     return (
       <div className="fixed bottom-6 right-6 z-50 bg-[#0f1b2d] border border-green-500/30 rounded-2xl p-6 shadow-2xl w-[300px] animate-pulse">
@@ -299,7 +292,6 @@ export default function Webphone() {
     );
   }
 
-  // Em chamada
   if (status === 'in-call' || status === 'connecting' || status === 'ringing') {
     return (
       <div className="fixed bottom-6 right-6 z-50 bg-[#0f1b2d] border border-[#2A658F]/30 rounded-2xl p-4 shadow-2xl w-[280px]">
@@ -332,7 +324,6 @@ export default function Webphone() {
     );
   }
 
-  // Botão flutuante + discador
   return (
     <>
       <button
@@ -343,7 +334,7 @@ export default function Webphone() {
       >
         {showDialer ? <X className="w-6 h-6" /> : <Phone className="w-6 h-6" />}
         <span className={`absolute top-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-white ${
-          status === 'in-call' ? 'bg-red-500 animate-pulse' : deviceReady ? 'bg-green-500' : 'bg-gray-400'
+          (status as string) === 'in-call' ? 'bg-red-500 animate-pulse' : deviceReady ? 'bg-green-500' : 'bg-gray-400'
         }`} />
       </button>
 
