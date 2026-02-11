@@ -28,16 +28,16 @@ export default function Webphone() {
   const sdkLoadedRef = useRef(false);
   const initStartedRef = useRef(false);
 
-  // Carregar Twilio Voice SDK 2.x
+  // Carregar Twilio Voice SDK v1.14
   useEffect(() => {
     if (sdkLoadedRef.current) return;
     sdkLoadedRef.current = true;
 
     const script = document.createElement('script');
-    script.src = 'https://sdk.twilio.com/js/client/releases/2.7.3/twilio.min.js';
+    script.src = 'https://sdk.twilio.com/js/client/v1.14/twilio.min.js';
     script.async = true;
     script.onload = () => {
-      console.log('📞 Twilio SDK 2.x carregado');
+      console.log('📞 Twilio SDK 1.14 carregado');
     };
     script.onerror = () => {
       console.error('❌ Erro ao carregar Twilio SDK');
@@ -87,9 +87,7 @@ export default function Webphone() {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      if (!res.ok) {
-        throw new Error('Erro ao obter token de voz');
-      }
+      if (!res.ok) throw new Error('Erro ao obter token de voz');
 
       const data = await res.json();
       const twilioToken = data.token;
@@ -101,31 +99,28 @@ export default function Webphone() {
         return;
       }
 
-      const device = new window.Twilio.Device(twilioToken, {
+      // v1.14 usa .setup()
+      const device = window.Twilio.Device.setup(twilioToken, {
         codecPreferences: ['opus', 'pcmu'],
-        closeProtection: true,
-        logLevel: 1,
+        debug: true,
       });
 
-      device.on('registered', () => {
-        console.log('📞 Twilio Device registrado e pronto');
+      device.on('ready', () => {
+        console.log('📞 Twilio Device pronto');
         setDeviceReady(true);
         setLoading(false);
         setError('');
-      });
-
-      device.on('registering', () => {
-        console.log('📞 Twilio Device registrando...');
       });
 
       device.on('error', (err: any) => {
         console.error('📞 Twilio Error:', err);
         setError(err.message || 'Erro no dispositivo');
         setLoading(false);
+        initStartedRef.current = false;
       });
 
-      device.on('unregistered', () => {
-        console.log('📞 Twilio Device desregistrado');
+      device.on('offline', () => {
+        console.log('📞 Twilio Device offline');
         setDeviceReady(false);
       });
 
@@ -139,7 +134,6 @@ export default function Webphone() {
         call.on('reject', () => handleCallEnd());
       });
 
-      await device.register();
       deviceRef.current = device;
     } catch (err: any) {
       console.error('Erro ao inicializar Twilio:', err);
@@ -167,7 +161,7 @@ export default function Webphone() {
     }, 1000);
   };
 
-  const makeCall = async () => {
+  const makeCall = () => {
     if (!deviceRef.current || !phoneNumber.trim()) return;
 
     let number = phoneNumber.replace(/\D/g, '');
@@ -178,17 +172,11 @@ export default function Webphone() {
     setError('');
 
     try {
-      const call = await deviceRef.current.connect({
-        params: { To: number },
-      });
-
+      // v1.14: connect não retorna promise, é síncrono
+      const call = deviceRef.current.connect({ To: number });
       callRef.current = call;
 
-      call.on('ringing', () => {
-        console.log('📞 Chamando...');
-        setStatus('ringing');
-      });
-
+      // Eventos da v1
       call.on('accept', () => {
         console.log('📞 Chamada aceita');
         setStatus('in-call');
@@ -200,11 +188,6 @@ export default function Webphone() {
         handleCallEnd();
       });
 
-      call.on('cancel', () => {
-        console.log('📞 Chamada cancelada');
-        handleCallEnd();
-      });
-
       call.on('error', (err: any) => {
         console.error('📞 Erro na chamada:', err);
         setError(err.message || 'Erro na chamada');
@@ -212,7 +195,7 @@ export default function Webphone() {
       });
     } catch (err: any) {
       console.error('Erro ao fazer chamada:', err);
-      setError(err.message || 'Erro ao iniciar chamada');
+      setError('Erro ao iniciar chamada');
       setStatus('idle');
     }
   };
@@ -233,12 +216,8 @@ export default function Webphone() {
   };
 
   const hangUp = () => {
-    if (callRef.current) {
-      callRef.current.disconnect();
-    }
-    if (deviceRef.current) {
-      deviceRef.current.disconnectAll();
-    }
+    if (callRef.current) callRef.current.disconnect();
+    if (deviceRef.current) deviceRef.current.disconnectAll();
     handleCallEnd();
   };
 
@@ -274,16 +253,10 @@ export default function Webphone() {
           <p className="text-white font-semibold text-lg">Chamada recebida</p>
           <p className="text-gray-400 text-sm mt-1">{incomingFrom}</p>
           <div className="flex gap-3 mt-5 justify-center">
-            <button
-              onClick={acceptCall}
-              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-2.5 rounded-xl transition-colors"
-            >
+            <button onClick={acceptCall} className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-2.5 rounded-xl transition-colors">
               <Phone className="w-4 h-4" /> Atender
             </button>
-            <button
-              onClick={rejectCall}
-              className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-5 py-2.5 rounded-xl transition-colors"
-            >
+            <button onClick={rejectCall} className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-5 py-2.5 rounded-xl transition-colors">
               <PhoneOff className="w-4 h-4" /> Recusar
             </button>
           </div>
@@ -306,16 +279,11 @@ export default function Webphone() {
           <div className="flex gap-3 mt-4 justify-center">
             <button
               onClick={toggleMute}
-              className={`p-3 rounded-xl transition-colors ${
-                muted ? 'bg-yellow-600/20 text-yellow-400' : 'bg-white/5 text-gray-400 hover:text-white'
-              }`}
+              className={`p-3 rounded-xl transition-colors ${muted ? 'bg-yellow-600/20 text-yellow-400' : 'bg-white/5 text-gray-400 hover:text-white'}`}
             >
               {muted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
             </button>
-            <button
-              onClick={hangUp}
-              className="p-3 rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors"
-            >
+            <button onClick={hangUp} className="p-3 rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors">
               <PhoneOff className="w-5 h-5" />
             </button>
           </div>
@@ -341,18 +309,9 @@ export default function Webphone() {
       {showDialer && (
         <div className="fixed bottom-24 right-6 z-50 bg-[#0f1b2d] border border-white/10 rounded-2xl p-5 shadow-2xl w-[300px]">
           <p className="text-white font-semibold text-sm mb-3">Discador</p>
-
-          {error && (
-            <p className="text-red-400 text-xs mb-2 bg-red-400/10 px-3 py-1.5 rounded-lg">{error}</p>
-          )}
-
-          {loading && (
-            <p className="text-yellow-400 text-xs mb-2 bg-yellow-400/10 px-3 py-1.5 rounded-lg">Conectando ao servidor de voz...</p>
-          )}
-
-          {deviceReady && (
-            <p className="text-green-400 text-xs mb-2 bg-green-400/10 px-3 py-1.5 rounded-lg">Pronto para ligações</p>
-          )}
+          {error && <p className="text-red-400 text-xs mb-2 bg-red-400/10 px-3 py-1.5 rounded-lg">{error}</p>}
+          {loading && <p className="text-yellow-400 text-xs mb-2 bg-yellow-400/10 px-3 py-1.5 rounded-lg">Conectando ao servidor...</p>}
+          {deviceReady && <p className="text-green-400 text-xs mb-2 bg-green-400/10 px-3 py-1.5 rounded-lg">Pronto para ligações</p>}
 
           <input
             type="tel"
@@ -364,21 +323,14 @@ export default function Webphone() {
 
           <div className="grid grid-cols-3 gap-2 mb-4">
             {dialPad.map((key) => (
-              <button
-                key={key}
-                onClick={() => setPhoneNumber((prev) => prev + key)}
-                className="bg-white/5 hover:bg-white/10 text-white text-lg font-medium py-2.5 rounded-xl transition-colors"
-              >
+              <button key={key} onClick={() => setPhoneNumber((prev) => prev + key)} className="bg-white/5 hover:bg-white/10 text-white text-lg font-medium py-2.5 rounded-xl transition-colors">
                 {key}
               </button>
             ))}
           </div>
 
           <div className="flex gap-2">
-            <button
-              onClick={() => setPhoneNumber((prev) => prev.slice(0, -1))}
-              className="flex-1 bg-white/5 hover:bg-white/10 text-gray-400 py-2.5 rounded-xl text-sm transition-colors"
-            >
+            <button onClick={() => setPhoneNumber((prev) => prev.slice(0, -1))} className="flex-1 bg-white/5 hover:bg-white/10 text-gray-400 py-2.5 rounded-xl text-sm transition-colors">
               Apagar
             </button>
             <button
