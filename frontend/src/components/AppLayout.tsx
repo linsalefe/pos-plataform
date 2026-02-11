@@ -34,7 +34,7 @@ export default function AppLayout({ children, fullWidth = false }: { children: R
       <main className={`flex-1 flex flex-col overflow-hidden transition-all duration-200 ${fullWidth ? '' : 'p-6'}`}>
         {children}
       </main>
-      {/* <Webphone /> */}
+      <Webphone />
     </div>
   );
 }
