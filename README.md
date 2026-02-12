@@ -23,14 +23,15 @@ Permite que a equipe comercial gerencie leads, responda conversas em tempo real,
 13. [ETAPA 9 — Integração Exact Spotter (CRM)](#-etapa-9--integração-exact-spotter-crm)
 14. [ETAPA 10 — Agente de IA (Nat)](#-etapa-10--agente-de-ia-nat)
 15. [ETAPA 11 — Google Calendar](#-etapa-11--google-calendar)
-16. [Funcionalidades](#-funcionalidades)
-17. [Estrutura de Pastas](#-estrutura-de-pastas)
-18. [Banco de Dados — Tabelas](#-banco-de-dados--tabelas)
-19. [API — Endpoints](#-api--endpoints)
-20. [Variáveis de Ambiente](#-variáveis-de-ambiente)
-21. [Comandos Úteis](#-comandos-úteis)
-22. [Solução de Problemas](#-solução-de-problemas)
-23. [Licença](#-licença)
+16. [ETAPA 12 — VoIP Twilio (Ligações)](#-etapa-12--voip-twilio-ligações)
+17. [Funcionalidades](#-funcionalidades)
+18. [Estrutura de Pastas](#-estrutura-de-pastas)
+19. [Banco de Dados — Tabelas](#-banco-de-dados--tabelas)
+20. [API — Endpoints](#-api--endpoints)
+21. [Variáveis de Ambiente](#-variáveis-de-ambiente)
+22. [Comandos Úteis](#-comandos-úteis)
+23. [Solução de Problemas](#-solução-de-problemas)
+24. [Licença](#-licença)
 
 ---
 
@@ -53,6 +54,8 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 - Anotações automáticas na timeline do Exact Spotter quando IA é desligada
 - Página de agenda com calendário Google embutido e painel de disponibilidade
 - Chat de teste da IA para simular conversas antes de ativar em produção
+- Ligações VoIP via Twilio (browser → celular e celular → browser)
+- Gravação automática de chamadas com upload ao Google Drive
 
 **URL de Produção:** `https://hub.cenatdata.online`
 
@@ -91,7 +94,8 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 │  - Config IA     │  │  - AI Engine (GPT-5 + RAG)         │
 │  - Kanban IA     │  │  - Google Calendar API              │
 │  - Teste IA      │  │  - Anotações Exact Spotter         │
-│  - Agenda        │  │                                    │
+│  - Agenda        │  │  - Twilio Voice (VoIP)              │
+│  - Ligações      │  │  - Google Drive (gravações)          │
 └──────────────────┘  └──────────┬───────────────────────┘
                                  │
                                  ▼
@@ -113,6 +117,7 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
                       │    sation_       │
                       │    summaries     │
                       │  - ai_messages   │
+                      │  - call_logs     │
                       └──────────────────┘
 
 ┌──────────────────────┐  ┌──────────────────────┐
@@ -134,6 +139,15 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 │  - Embeddings        │  │  - Criar eventos     │
 │    (RAG)             │  │    automaticamente   │
 └──────────────────────┘  └──────────────────────┘
+
+┌──────────────────────┐
+│     Twilio Voice      │
+│                      │
+│  - WebRTC (browser)  │
+│  - PSTN (celular)    │
+│  - Gravações         │
+│  - TwiML Engine      │
+└──────────────────────┘
 ```
 
 ### Fluxo de uma mensagem recebida
@@ -193,6 +207,8 @@ O **Cenat Hub** é uma plataforma web completa de CRM e atendimento via WhatsApp
 | **Embeddings** | OpenAI text-embedding-3-small | latest |
 | **Calendário** | Google Calendar API v3 | — |
 | **Google Auth** | google-api-python-client + google-auth | latest |
+| **VoIP** | Twilio Voice SDK | 2.x |
+| **Twilio JS** | @twilio/voice-sdk | 2.18+ |
 | **Servidor Web** | Nginx | 1.18 |
 | **SSL** | Certbot (Let's Encrypt) | auto |
 | **Hospedagem** | AWS Lightsail | Ubuntu 22.04 |
@@ -210,6 +226,7 @@ Antes de começar, você precisa ter:
 - **Conta Exact Spotter** com token de API (para integração CRM)
 - **Conta OpenAI** com API key (para o agente de IA)
 - **Conta Google Cloud** com Calendar API ativada + Service Account
+- **Conta Twilio** com créditos e número brasileiro com Voice habilitado
 - **Conta AWS** (para hospedagem em produção)
 - **Domínio** apontando para o IP do servidor
 - **Git e GitHub** configurados na máquina local
@@ -324,7 +341,9 @@ pos-plataform/
 │   │   ├── kanban_routes.py        # Rotas Kanban IA
 │   │   ├── calendar_routes.py      # Rotas Google Calendar
 │   │   ├── google_calendar.py      # Integração Google Calendar API
-│   │   ├── migrate_ai.py           # Script migração tabelas IA
+│   │   ├── twilio_routes.py        # Rotas VoIP: token, TwiML, webhooks, gravações
+│   │   ├── google_drive.py         # Upload gravações ao Google Drive
+│   │   ├── migrate_ai.py          # Script migração tabelas IA
 │   │   └── create_tables.py        # Script para criar tabelas
 │   ├── requirements.txt
 │   ├── google-credentials.json     # Chave Service Account Google (NÃO commitar)
@@ -342,11 +361,13 @@ pos-plataform/
 │   │   │   ├── kanban/page.tsx
 │   │   │   ├── ai-test/page.tsx
 │   │   │   ├── agenda/page.tsx
+│   │   │   ├── calls/page.tsx
 │   │   │   ├── layout.tsx
 │   │   │   └── page.tsx
 │   │   ├── components/
 │   │   │   ├── Sidebar.tsx
-│   │   │   └── AppLayout.tsx
+│   │   │   ├── AppLayout.tsx
+│   │   │   └── Webphone.tsx
 │   │   ├── contexts/
 │   │   │   └── auth-context.tsx
 │   │   └── lib/
@@ -391,6 +412,7 @@ openai
 numpy
 google-api-python-client
 google-auth
+twilio
 ```
 
 ### 3.3 — Criar arquivo `.env`
@@ -414,6 +436,14 @@ EXACT_SPOTTER_TOKEN=seu_token_exact_spotter_aqui
 
 # OpenAI (IA)
 OPENAI_API_KEY=sua_chave_openai
+
+# Twilio Voice (VoIP)
+TWILIO_ACCOUNT_SID=seu_account_sid
+TWILIO_AUTH_TOKEN=seu_auth_token
+TWILIO_API_KEY_SID=sua_api_key_sid
+TWILIO_API_KEY_SECRET=seu_api_key_secret
+TWILIO_TWIML_APP_SID=seu_twiml_app_sid
+TWILIO_PHONE_NUMBER=+553123916801
 ```
 
 > ⚠️ **Nunca commite o `.env`!** Adicione ao `.gitignore`.
@@ -743,6 +773,12 @@ DATABASE_URL=postgresql+asyncpg://cenat:CenatHub2024#@localhost:5432/cenat_whats
 JWT_SECRET=cenat-hub-prod-secret-2024-x7k9m
 EXACT_SPOTTER_TOKEN=seu_token_exact_spotter_aqui
 OPENAI_API_KEY=sua_chave_openai
+TWILIO_ACCOUNT_SID=seu_account_sid
+TWILIO_AUTH_TOKEN=seu_auth_token
+TWILIO_API_KEY_SID=sua_api_key_sid
+TWILIO_API_KEY_SECRET=seu_api_key_secret
+TWILIO_TWIML_APP_SID=seu_twiml_app_sid
+TWILIO_PHONE_NUMBER=+553123916801
 EOF
 ```
 
@@ -1352,6 +1388,60 @@ CALENDARS = {
 
 ---
 
+## 📞 ETAPA 12 — VoIP Twilio (Ligações)
+
+### 12.1 — Visão Geral
+
+O Cenat Hub integra ligações telefônicas via Twilio Voice, permitindo que a equipe comercial:
+
+- Ligue para leads diretamente do navegador (WebRTC → PSTN)
+- Receba chamadas no navegador quando alguém liga para o número Twilio
+- Grave todas as chamadas automaticamente
+- Armazene gravações no Google Drive organizado por consultora
+- Ouça gravações diretamente na plataforma
+
+### 12.2 — Pré-requisitos
+
+- Conta Twilio com créditos
+- Regulatory Bundle aprovado (obrigatório para números BR)
+- Número brasileiro com Voice habilitado
+- TwiML App configurado
+- API Key ativa
+
+### 12.3 — Configuração
+
+Consulte o arquivo **`TWILIO_VOIP_GUIDE.md`** na raiz do projeto para o guia completo de implementação, incluindo problemas conhecidos e soluções.
+
+### 12.4 — Variáveis de Ambiente
+
+```env
+TWILIO_ACCOUNT_SID=ACxxxxxxxx
+TWILIO_AUTH_TOKEN=xxxxxxxx
+TWILIO_API_KEY_SID=SKxxxxxxxx
+TWILIO_API_KEY_SECRET=xxxxxxxx
+TWILIO_TWIML_APP_SID=APxxxxxxxx
+TWILIO_PHONE_NUMBER=+553123916801
+```
+
+### 12.5 — URLs Configuradas no Twilio Console
+
+| Local | Campo | URL |
+|-------|-------|-----|
+| TwiML App | Voice Request URL | `https://hub.cenatdata.online/api/twilio/voice` |
+| Phone Number | A call comes in | `https://hub.cenatdata.online/api/twilio/voice-incoming` |
+| Phone Number | Call status changes | `https://hub.cenatdata.online/api/twilio/call-status` |
+
+### 12.6 — Componentes
+
+| Componente | Arquivo | Descrição |
+|-----------|---------|-----------|
+| Webphone flutuante | `frontend/src/components/Webphone.tsx` | Botão + discador popup em todas as páginas |
+| Página Ligações | `frontend/src/app/calls/page.tsx` | Página dedicada com histórico |
+| Rotas VoIP | `backend/app/twilio_routes.py` | Token, TwiML, webhooks, proxy |
+| Google Drive | `backend/app/google_drive.py` | Upload de gravações |
+
+---
+
 ## 🎯 Funcionalidades
 
 ### Dashboard
@@ -1439,6 +1529,18 @@ CALENDARS = {
 - Indicadores visuais de disponibilidade (verde/amarelo/vermelho)
 - Atualização em tempo real
 
+### Ligações VoIP (`/calls`)
+
+- Ligações de saída: browser → celular via WebRTC/PSTN
+- Ligações de entrada: celular → browser com notificação em tempo real
+- Webphone flutuante disponível em todas as páginas
+- Página dedicada de ligações com discador profissional
+- Gravação automática de todas as chamadas
+- Upload automático das gravações ao Google Drive (organizado por consultora)
+- Reprodução de gravações diretamente na plataforma (proxy sem credenciais Twilio)
+- Histórico completo com direção, duração, status e links
+- Discador com teclado numérico e formatação automática (+55)
+
 ### Gerenciar Usuários (Admin)
 
 - Lista de todos os usuários
@@ -1483,6 +1585,8 @@ pos-plataform/
 │   │   ├── kanban_routes.py         # Rotas Kanban IA
 │   │   ├── calendar_routes.py       # Rotas Google Calendar
 │   │   ├── google_calendar.py       # Integração Google Calendar API
+│   │   ├── twilio_routes.py         # Rotas VoIP: token, TwiML, webhooks, gravações
+│   │   ├── google_drive.py          # Upload gravações ao Google Drive
 │   │   ├── migrate_ai.py            # Script migração tabelas IA
 │   │   └── create_tables.py         # Script para criar todas as tabelas
 │   ├── requirements.txt
@@ -1513,11 +1617,14 @@ pos-plataform/
 │   │   │   │   └── page.tsx         # Kanban IA (pipeline de qualificação)
 │   │   │   ├── ai-test/
 │   │   │   │   └── page.tsx         # Teste da IA (chat simulado)
-│   │   │   └── agenda/
-│   │   │       └── page.tsx         # Agenda (Calendar + disponibilidade)
+│   │   │   ├── agenda/
+│   │   │   │   └── page.tsx         # Agenda (Calendar + disponibilidade)
+│   │   │   └── calls/
+│   │   │       └── page.tsx         # Página de ligações (discador + histórico)
 │   │   ├── components/
 │   │   │   ├── Sidebar.tsx          # Menu lateral com logo, navegação, logout
-│   │   │   └── AppLayout.tsx        # Wrapper com proteção de rota
+│   │   │   ├── AppLayout.tsx        # Wrapper com proteção de rota
+│   │   │   └── Webphone.tsx         # Webphone flutuante (VoIP)
 │   │   ├── contexts/
 │   │   │   └── auth-context.tsx     # Provider de autenticação (JWT + localStorage)
 │   │   └── lib/
@@ -1531,6 +1638,7 @@ pos-plataform/
 │   ├── .env.production
 │   └── tailwind.config.ts
 │
+├── TWILIO_VOIP_GUIDE.md
 └── README.md
 ```
 
@@ -1676,6 +1784,28 @@ pos-plataform/
 | tokens_used | INTEGER | Tokens consumidos |
 | created_at | TIMESTAMP | Data de criação |
 
+### `call_logs`
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | SERIAL PK | ID interno |
+| call_sid | VARCHAR | ID da chamada no Twilio |
+| from_number | VARCHAR | Número de origem |
+| to_number | VARCHAR | Número de destino |
+| direction | VARCHAR | outbound ou inbound |
+| status | VARCHAR | initiated, ringing, completed, no-answer, busy, failed |
+| duration | INTEGER | Duração em segundos |
+| recording_url | VARCHAR | URL da gravação no Twilio |
+| recording_sid | VARCHAR | ID da gravação no Twilio |
+| drive_file_url | VARCHAR | Link do Google Drive |
+| user_id | INTEGER FK | Usuário que fez/recebeu |
+| user_name | VARCHAR | Nome do usuário |
+| contact_wa_id | VARCHAR | WhatsApp ID do contato |
+| contact_name | VARCHAR | Nome do contato |
+| channel_id | INTEGER FK | Canal vinculado |
+| created_at | TIMESTAMP | Data de criação |
+| updated_at | TIMESTAMP | Última atualização |
+
 ---
 
 ## 🔌 API — Endpoints
@@ -1775,6 +1905,18 @@ pos-plataform/
 | GET | `/api/calendar/available-slots/{key}/{date}` | Horários livres de um dia específico |
 | POST | `/api/calendar/book` | Agendar reunião (cria evento no Calendar) |
 
+### VoIP (Twilio)
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/twilio/token` | Gerar Access Token para WebRTC |
+| POST | `/api/twilio/voice` | TwiML para chamadas de saída (browser) |
+| POST | `/api/twilio/voice-incoming` | TwiML para chamadas de entrada (PSTN) |
+| POST | `/api/twilio/call-status` | Webhook: status da chamada |
+| POST | `/api/twilio/recording-status` | Webhook: gravação finalizada |
+| GET | `/api/twilio/recording/{sid}` | Proxy para reproduzir gravação |
+| GET | `/api/twilio/call-logs` | Histórico de ligações |
+
 ### Webhook
 
 | Método | Rota | Descrição |
@@ -1805,6 +1947,14 @@ EXACT_SPOTTER_TOKEN=token_da_api_exact_spotter
 
 # OpenAI (obrigatório para IA)
 OPENAI_API_KEY=sua_chave_openai
+
+# Twilio Voice (VoIP)
+TWILIO_ACCOUNT_SID=seu_account_sid
+TWILIO_AUTH_TOKEN=seu_auth_token
+TWILIO_API_KEY_SID=sua_api_key_sid
+TWILIO_API_KEY_SECRET=seu_api_key_secret
+TWILIO_TWIML_APP_SID=seu_twiml_app_sid
+TWILIO_PHONE_NUMBER=+553123916801
 ```
 
 **Arquivos sensíveis (NÃO commitar):**
@@ -1880,6 +2030,7 @@ sudo -u postgres psql cenat_whatsapp
 # SELECT COUNT(*), sub_source FROM exact_leads GROUP BY sub_source ORDER BY count DESC;
 # SELECT * FROM ai_configs;
 # SELECT * FROM ai_conversation_summaries ORDER BY updated_at DESC LIMIT 10;
+# SELECT * FROM call_logs ORDER BY created_at DESC LIMIT 10;
 
 # ═══════════════════════════════════════
 # RENOVAR SSL
@@ -2062,6 +2213,32 @@ curl -s -X POST "https://api.exactspotter.com/v3/timelineAdd" \
 
 - O prompt de detecção inclui "O ano atual é 2026"
 - Se o GPT extrair ano errado, verificar o prompt em `google_calendar.py` na função `detect_and_create_event`
+
+### Twilio: "JWT is invalid"
+
+```bash
+# Verificar se API Key está ativa
+curl -u "ACCOUNT_SID:AUTH_TOKEN" https://api.twilio.com/2010-04-01/Accounts/ACCOUNT_SID.json
+
+# Se necessário, criar nova key via API
+curl -X POST "https://api.twilio.com/2010-04-01/Accounts/ACCOUNT_SID/Keys.json" \
+  -u "ACCOUNT_SID:AUTH_TOKEN" \
+  -d "FriendlyName=nova-key"
+```
+
+### Gravações pedem login do Twilio
+
+O player de áudio usa um proxy no backend. Verifique se a rota `/api/twilio/recording/{sid}` está funcionando:
+
+```bash
+curl https://hub.cenatdata.online/api/twilio/recording/RE_RECORDING_SID --output teste.mp3
+```
+
+### Chamada de entrada não aparece no browser
+
+1. Verifique se o Webphone está com bolinha verde (Device registrado)
+2. Verifique a URL no Twilio Console: deve ser `/api/twilio/voice-incoming`
+3. Verifique se a identity no `voice-incoming` bate com a do token
 
 ---
 
