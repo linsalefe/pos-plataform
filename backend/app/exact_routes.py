@@ -195,10 +195,17 @@ async def bulk_send_template(
 
         phone = phone.replace("+", "").replace(" ", "").replace("-", "")
 
-        # Monta parâmetros por lead: {{1}}=nome, {{2}}=curso
+        # Monta parâmetros por lead conforme quantidade de variáveis do template
         lead_name = lead.name.split()[0] if lead.name else "Aluno(a)"
         lead_course = extract_course_name(lead.sub_source) if lead.sub_source else "Pós-Graduação"
-        lead_params = [lead_name, lead_course]
+        param_count = len(parameters) if parameters else 0
+
+        if param_count == 0:
+            lead_params = None
+        elif param_count == 1:
+            lead_params = [lead_name]
+        else:
+            lead_params = [lead_name, lead_course]
 
         try:
             result = await send_template_message(
@@ -220,7 +227,7 @@ async def bulk_send_template(
                     await db.flush()
 
                 # Salvar mensagem
-                content_text = f"[Template] {template_name}: {lead_name}, {lead_course}"
+                content_text = f"[Template] {template_name}: {', '.join(lead_params)}" if lead_params else f"[Template] {template_name}"
 
                 msg = Message(
                     wa_message_id=result["messages"][0]["id"],
