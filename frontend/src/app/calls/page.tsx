@@ -2,9 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Phone, PhoneOff, PhoneIncoming, PhoneOutgoing, PhoneMissed,
-  Mic, MicOff, Delete, Clock, User, ExternalLink, Play, ArrowDownLeft, ArrowUpRight,
-  RefreshCw
+  Phone, PhoneOff, PhoneIncoming, PhoneMissed,
+  Mic, MicOff, Delete, Clock, User, ExternalLink, Play,
+  ArrowDownLeft, ArrowUpRight, RefreshCw
 } from 'lucide-react';
 import { Device, Call } from '@twilio/voice-sdk';
 
@@ -26,7 +26,6 @@ interface CallLogEntry {
 }
 
 export default function CallsPage() {
-  // Dialer state
   const [status, setStatus] = useState<CallStatus>('idle');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [callDuration, setCallDuration] = useState(0);
@@ -34,62 +33,24 @@ export default function CallsPage() {
   const [error, setError] = useState('');
   const [deviceReady, setDeviceReady] = useState(false);
   const [loading, setLoading] = useState(false);
-
-  // History state
   const [callLogs, setCallLogs] = useState<CallLogEntry[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(true);
+  const [playingAudio, setPlayingAudio] = useState<string | null>(null);
 
-  // Refs
   const deviceRef = useRef<Device | null>(null);
   const callRef = useRef<Call | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const initStartedRef = useRef(false);
 
-  // --- UX: Máscara de Telefone ---
-  const applyMask = (value: string) => {
-    const numbers = value.replace(/\D/g, '');
-    if (numbers.length <= 11) {
-      return numbers
-        .replace(/^(\d{2})(\d)/g, '($1) $2')
-        .replace(/(\d{5})(\d)/, '$1-$2')
-        .replace(/(-\d{4})\d+?$/, '$1');
-    }
-    return numbers.slice(0, 11);
-  };
-
-  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setPhoneNumber(applyMask(e.target.value));
-  };
-
-  // Init Twilio on page load
   useEffect(() => {
     initDevice();
     fetchCallLogs();
     return () => {
-      if (deviceRef.current) {
-        try { deviceRef.current.destroy(); } catch (e) {}
-      }
+      if (deviceRef.current) { try { deviceRef.current.destroy(); } catch (e) {} }
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
-
-  // --- UX: Atalhos de Teclado ---
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (status !== 'idle') return;
-      if (/[0-9*#]/.test(e.key) && document.activeElement?.tagName !== 'INPUT') {
-        setPhoneNumber(prev => applyMask(prev + e.key));
-      }
-      if (e.key === 'Backspace' && document.activeElement?.tagName !== 'INPUT') {
-        setPhoneNumber(prev => applyMask(prev.slice(0, -1)));
-      }
-      if (e.key === 'Enter' && phoneNumber.replace(/\D/g, '').length >= 10 && deviceReady) {
-        makeCall();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [phoneNumber, deviceReady, status]);
 
   const fetchCallLogs = async () => {
     try {
@@ -115,346 +76,341 @@ export default function CallsPage() {
     initStartedRef.current = true;
     setLoading(true);
     setError('');
-
     try {
       const token = localStorage.getItem('token');
-      if (!token) {
-        setError('Faça login primeiro');
-        initStartedRef.current = false;
-        setLoading(false);
-        return;
-      }
-
+      if (!token) { setError('Faça login'); initStartedRef.current = false; setLoading(false); return; }
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://hub.cenatdata.online/api';
-      const res = await fetch(`${API_URL}/twilio/token`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (!res.ok) throw new Error('Erro ao obter token de voz');
+      const res = await fetch(`${API_URL}/twilio/token`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error('Erro ao obter token');
       const data = await res.json();
-
       const device = new Device(data.token, {
         codecPreferences: [Call.Codec.Opus, Call.Codec.PCMU],
-        closeProtection: true,
-        logLevel: 1,
+        closeProtection: true, logLevel: 1,
       });
-
-      device.on('registered', () => {
-        setDeviceReady(true);
-        setLoading(false);
-        setError('');
-      });
-
-      device.on('error', (err: any) => {
-        setError(err.message || 'Erro no dispositivo');
-        setLoading(false);
-      });
-
+      device.on('registered', () => { setDeviceReady(true); setLoading(false); setError(''); });
+      device.on('error', (err: any) => { setError(err.message || 'Erro'); setLoading(false); });
       device.on('unregistered', () => setDeviceReady(false));
-
       device.on('incoming', (call: Call) => {
         callRef.current = call;
-        setPhoneNumber(applyMask(call.parameters?.From || ''));
+        setPhoneNumber(call.parameters?.From || 'Desconhecido');
         setStatus('incoming');
         call.on('disconnect', () => handleCallEnd());
         call.on('cancel', () => handleCallEnd());
         call.on('reject', () => handleCallEnd());
       });
-
       await device.register();
       deviceRef.current = device;
     } catch (err: any) {
       setError(err?.message || 'Erro ao conectar');
-      initStartedRef.current = false;
-      setLoading(false);
+      initStartedRef.current = false; setLoading(false);
     }
   }, []);
 
   const handleCallEnd = () => {
-    setStatus('idle');
-    setCallDuration(0);
-    setMuted(false);
-    callRef.current = null;
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
+    setStatus('idle'); setCallDuration(0); setMuted(false); callRef.current = null;
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setTimeout(() => fetchCallLogs(), 2000);
   };
 
   const startTimer = () => {
     setCallDuration(0);
-    timerRef.current = setInterval(() => {
-      setCallDuration((prev) => prev + 1);
-    }, 1000);
+    timerRef.current = setInterval(() => setCallDuration((p) => p + 1), 1000);
   };
 
   const makeCall = async () => {
     if (!deviceRef.current || !phoneNumber.trim()) return;
-
     let number = phoneNumber.replace(/\D/g, '');
     if (!number.startsWith('55')) number = '55' + number;
     number = '+' + number;
-
-    setStatus('connecting');
-    setError('');
-
+    setStatus('connecting'); setError('');
     try {
       const call = await deviceRef.current.connect({ params: { To: number } });
       callRef.current = call;
-
       call.on('ringing', () => setStatus('ringing'));
       call.on('accept', () => { setStatus('in-call'); startTimer(); });
       call.on('disconnect', () => handleCallEnd());
+      call.on('cancel', () => handleCallEnd());
       call.on('error', (err: any) => { setError(err.message || 'Erro'); handleCallEnd(); });
-    } catch (err: any) {
-      setError(err?.message || 'Erro ao iniciar chamada');
-      setStatus('idle');
-    }
+    } catch (err: any) { setError(err?.message || 'Erro'); setStatus('idle'); }
   };
 
-  const acceptCall = () => {
-    if (callRef.current) {
-      callRef.current.accept();
-      setStatus('in-call');
-      startTimer();
-    }
-  };
-
-  const rejectCall = () => {
-    if (callRef.current) {
-      callRef.current.reject();
-      handleCallEnd();
-    }
-  };
-
+  const acceptCall = () => { if (callRef.current) { callRef.current.accept(); setStatus('in-call'); startTimer(); } };
+  const rejectCall = () => { if (callRef.current) { callRef.current.reject(); handleCallEnd(); } };
   const hangUp = () => {
     if (callRef.current) callRef.current.disconnect();
     if (deviceRef.current) deviceRef.current.disconnectAll();
     handleCallEnd();
   };
-
   const toggleMute = () => {
-    if (callRef.current) {
-      const newMuted = !muted;
-      callRef.current.mute(newMuted);
-      setMuted(newMuted);
-    }
+    if (callRef.current) { const m = !muted; callRef.current.mute(m); setMuted(m); }
   };
 
-  const formatDuration = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
+  const fmt = (s: number) => `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;
 
   const formatPhone = (phone: string) => {
     if (!phone) return '';
-    const clean = phone.replace(/\D/g, '');
-    if (clean.length >= 10) {
-      const ddd = clean.startsWith('55') ? clean.slice(2, 4) : clean.slice(0, 2);
-      const num = clean.startsWith('55') ? clean.slice(4) : clean.slice(2);
-      return `(${ddd}) ${num.length === 9 ? num.slice(0, 5) : num.slice(0, 4)}-${num.slice(-4)}`;
+    const c = phone.replace(/\D/g, '');
+    if (c.startsWith('55') && c.length >= 12) {
+      const ddd = c.slice(2, 4), num = c.slice(4);
+      if (num.length === 9) return `(${ddd}) ${num.slice(0,5)}-${num.slice(5)}`;
+      if (num.length === 8) return `(${ddd}) ${num.slice(0,4)}-${num.slice(4)}`;
     }
     return phone;
   };
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const days = Math.floor(diff / 86400000);
-    if (days === 0) return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    if (days === 1) return 'Ontem ' + date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  const formatDate = (d: string) => {
+    const date = new Date(d), now = new Date();
+    const days = Math.floor((now.getTime() - date.getTime()) / 86400000);
+    const time = date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    if (days === 0) return `Hoje ${time}`;
+    if (days === 1) return `Ontem ${time}`;
+    return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ` ${time}`;
   };
 
-  const getStatusColor = (s: string) => {
-    switch (s) {
-      case 'completed': return 'text-emerald-400';
-      case 'no-answer': return 'text-amber-400';
-      case 'busy': return 'text-orange-400';
-      case 'failed': case 'canceled': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
+  const statusLabel = (s: string) => {
+    const map: Record<string, string> = { completed: 'Completada', 'no-answer': 'Sem resposta', busy: 'Ocupado', failed: 'Falhou', canceled: 'Cancelada', initiated: 'Iniciada', ringing: 'Chamando' };
+    return map[s] || s;
   };
 
-  const getStatusLabel = (s: string) => {
-    switch (s) {
-      case 'completed': return 'Completada';
-      case 'no-answer': return 'Sem resposta';
-      case 'busy': return 'Ocupado';
-      case 'failed': return 'Falhou';
-      case 'canceled': return 'Cancelada';
-      default: return s;
-    }
+  const statusColor = (s: string) => {
+    const map: Record<string, string> = { completed: 'text-emerald-600 bg-emerald-50', 'no-answer': 'text-amber-600 bg-amber-50', busy: 'text-orange-600 bg-orange-50', failed: 'text-red-600 bg-red-50', canceled: 'text-red-600 bg-red-50' };
+    return map[s] || 'text-gray-500 bg-gray-50';
   };
 
   const dialPad = [
-    { key: '1', sub: '' }, { key: '2', sub: 'ABC' }, { key: '3', sub: 'DEF' },
-    { key: '4', sub: 'GHI' }, { key: '5', sub: 'JKL' }, { key: '6', sub: 'MNO' },
-    { key: '7', sub: 'PQRS' }, { key: '8', sub: 'TUV' }, { key: '9', sub: 'WXYZ' },
-    { key: '*', sub: '' }, { key: '0', sub: '+' }, { key: '#', sub: '' },
+    { k: '1', s: '' }, { k: '2', s: 'ABC' }, { k: '3', s: 'DEF' },
+    { k: '4', s: 'GHI' }, { k: '5', s: 'JKL' }, { k: '6', s: 'MNO' },
+    { k: '7', s: 'PQRS' }, { k: '8', s: 'TUV' }, { k: '9', s: 'WXYZ' },
+    { k: '*', s: '' }, { k: '0', s: '+' }, { k: '#', s: '' },
   ];
 
-  const isInCall = status === 'in-call' || status === 'connecting' || status === 'ringing';
-  const isIncoming = status === 'incoming';
+  const isActive = status === 'in-call' || status === 'connecting' || status === 'ringing';
 
   return (
-    <div className="h-full flex gap-0 bg-[#070c17] text-slate-200">
-      
-      {/* ===== LADO ESQUERDO: DISCADOR ===== */}
-      <div className="w-[420px] min-w-[420px] flex flex-col items-center justify-center relative border-r border-white/5"
-        style={{ background: 'linear-gradient(180deg, #0a1628 0%, #0f1f3d 50%, #0a1628 100%)' }}
-      >
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full opacity-[0.04]"
-            style={{ background: 'radial-gradient(circle, #4d9fd4 0%, transparent 70%)' }}
-          />
+    <div className="h-full flex bg-gray-50">
+
+      {/* ===== DISCADOR ===== */}
+      <div className="w-[400px] min-w-[400px] bg-[#0c1929] flex flex-col items-center justify-between py-8 relative overflow-hidden">
+
+        {/* Glow decorativo */}
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] rounded-full opacity-[0.06] pointer-events-none"
+          style={{ background: 'radial-gradient(ellipse, #2A658F 0%, transparent 70%)' }} />
+
+        {/* Status */}
+        <div className="relative z-10 flex items-center gap-2 px-4 py-2 rounded-full border"
+          style={{
+            backgroundColor: deviceReady ? 'rgba(16, 185, 129, 0.08)' : loading ? 'rgba(245, 158, 11, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+            borderColor: deviceReady ? 'rgba(16, 185, 129, 0.15)' : loading ? 'rgba(245, 158, 11, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+          }}>
+          <span className={`w-2 h-2 rounded-full ${deviceReady ? 'bg-emerald-400' : loading ? 'bg-amber-400 animate-pulse' : 'bg-red-400'}`} />
+          <span className={`text-xs font-medium ${deviceReady ? 'text-emerald-400' : loading ? 'text-amber-400' : 'text-red-400'}`}>
+            {deviceReady ? 'Pronto' : loading ? 'Conectando...' : 'Offline'}
+          </span>
         </div>
 
-        {/* Status Badge */}
-        <div className="relative z-10 mb-8">
-          <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-[10px] uppercase font-bold tracking-widest border transition-all duration-500 ${
-            deviceReady ? 'bg-emerald-500/5 text-emerald-400 border-emerald-500/20' : 'bg-red-500/5 text-red-400 border-red-500/20'
-          }`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${deviceReady ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
-            {deviceReady ? 'Conectado' : 'Offline'}
-          </div>
-        </div>
+        {/* Centro */}
+        <div className="relative z-10 w-full max-w-[300px] flex-1 flex flex-col items-center justify-center">
 
-        <div className="h-64 flex items-center justify-center w-full relative z-10">
-          {isIncoming && (
-            <div className="text-center animate-in fade-in zoom-in duration-300">
-              <div className="w-20 h-20 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center mx-auto mb-4 animate-bounce">
-                <PhoneIncoming className="w-8 h-8 text-emerald-400" />
+          {/* INCOMING */}
+          {status === 'incoming' && (
+            <div className="text-center">
+              <div className="w-20 h-20 rounded-full bg-emerald-500/10 border-2 border-emerald-500/25 flex items-center justify-center mx-auto mb-5 animate-pulse">
+                <PhoneIncoming className="w-9 h-9 text-emerald-400" />
               </div>
-              <p className="text-white text-2xl font-light mb-6">{phoneNumber}</p>
+              <p className="text-white/40 text-xs uppercase tracking-[0.2em] mb-2">Chamada recebida</p>
+              <p className="text-white text-2xl font-light mb-8">{formatPhone(phoneNumber)}</p>
               <div className="flex gap-4 justify-center">
-                <button onClick={acceptCall} className="bg-emerald-600 hover:bg-emerald-500 p-5 rounded-2xl transition-transform active:scale-90 shadow-lg shadow-emerald-900/40"><Phone /></button>
-                <button onClick={rejectCall} className="bg-red-600 hover:bg-red-500 p-5 rounded-2xl transition-transform active:scale-90 shadow-lg shadow-red-900/40"><PhoneOff /></button>
+                <button onClick={acceptCall} className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-white px-7 py-3 rounded-xl font-medium transition-all hover:scale-105">
+                  <Phone className="w-5 h-5" /> Atender
+                </button>
+                <button onClick={rejectCall} className="flex items-center gap-2 bg-red-500 hover:bg-red-400 text-white px-7 py-3 rounded-xl font-medium transition-all hover:scale-105">
+                  <PhoneOff className="w-5 h-5" /> Recusar
+                </button>
               </div>
             </div>
           )}
 
-          {isInCall && (
-            <div className="text-center animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <p className="text-[#4d9fd4] text-5xl font-extralight font-mono mb-2 tracking-tighter">
-                {formatDuration(callDuration)}
+          {/* IN CALL */}
+          {isActive && (
+            <div className="text-center">
+              <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 border-2 ${
+                status === 'in-call' ? 'bg-emerald-500/10 border-emerald-500/25' : 'bg-[#2A658F]/10 border-[#2A658F]/25 animate-pulse'
+              }`}>
+                <Phone className={`w-10 h-10 ${status === 'in-call' ? 'text-emerald-400' : 'text-[#4d9fd4]'}`} />
+              </div>
+              <p className="text-white/30 text-xs uppercase tracking-[0.25em] mb-2">
+                {status === 'connecting' ? 'Conectando' : status === 'ringing' ? 'Chamando' : 'Em chamada'}
               </p>
-              <p className="text-white/40 text-xs mb-8 tracking-[0.3em] uppercase">{status === 'in-call' ? 'Em chamada' : 'Conectando...'}</p>
-              <div className="flex gap-4 justify-center">
-                <button onClick={toggleMute} className={`p-4 rounded-2xl border transition-all ${muted ? 'bg-amber-500/20 border-amber-500/40 text-amber-400' : 'bg-white/5 border-white/10 text-white/40'}`}>
-                  {muted ? <MicOff /> : <Mic />}
+              <p className="text-white text-xl font-light mb-3">{formatPhone(phoneNumber)}</p>
+              {status === 'in-call' && (
+                <p className="text-[#4d9fd4] text-4xl font-light font-mono tracking-wider mb-8">{fmt(callDuration)}</p>
+              )}
+              <div className="flex gap-5 justify-center mt-4">
+                <button onClick={toggleMute}
+                  className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${
+                    muted ? 'bg-amber-500/15 text-amber-400 border border-amber-500/25' : 'bg-white/5 text-white/50 border border-white/10 hover:bg-white/10'
+                  }`}>
+                  {muted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
                 </button>
-                <button onClick={hangUp} className="bg-red-600 hover:bg-red-500 p-4 rounded-2xl shadow-xl shadow-red-900/40 transition-transform active:scale-90">
-                  <PhoneOff />
+                <button onClick={hangUp}
+                  className="w-14 h-14 rounded-2xl bg-red-500 hover:bg-red-400 text-white flex items-center justify-center transition-all hover:scale-105 shadow-lg shadow-red-500/25">
+                  <PhoneOff className="w-6 h-6" />
                 </button>
               </div>
             </div>
           )}
 
-          {!isInCall && !isIncoming && (
-            <div className="w-full max-w-[300px] px-2 animate-in fade-in duration-500">
-              <div className="relative mb-6">
+          {/* IDLE - DISCADOR */}
+          {status === 'idle' && (
+            <>
+              {/* Input */}
+              <div className="w-full mb-5 relative">
                 <input
                   type="tel"
-                  placeholder="(00) 00000-0000"
+                  placeholder="DDD + Número"
                   value={phoneNumber}
-                  onChange={handlePhoneChange}
-                  className="w-full bg-transparent text-white text-center text-3xl font-light tracking-tighter placeholder-white/10 focus:outline-none"
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  className="w-full bg-transparent border-b-2 border-white/10 focus:border-[#2A658F]/60 px-2 py-3 text-white text-center text-2xl font-light tracking-wider placeholder-white/15 focus:outline-none transition-colors"
                 />
                 {phoneNumber && (
-                  <button onClick={() => setPhoneNumber('')} className="absolute -right-4 top-1/2 -translate-y-1/2 text-white/10 hover:text-white/40 transition-colors">
-                    <Delete size={18} />
+                  <button onClick={() => setPhoneNumber(p => p.slice(0, -1))}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 text-white/20 hover:text-white/50 transition-colors p-1">
+                    <Delete className="w-5 h-5" />
                   </button>
                 )}
               </div>
-              <div className="grid grid-cols-3 gap-3">
-                {dialPad.map(({ key, sub }) => (
-                  <button
-                    key={key}
-                    onClick={() => setPhoneNumber(prev => applyMask(prev + key))}
-                    className="h-14 rounded-xl bg-white/[0.02] border border-white/[0.05] hover:bg-white/[0.06] hover:border-white/20 transition-all active:bg-white/10 flex flex-col items-center justify-center group"
-                  >
-                    <span className="text-xl font-light">{key}</span>
-                    <span className="text-[8px] text-white/20 tracking-widest uppercase">{sub}</span>
+
+              {error && !loading && (
+                <p className="text-red-400 text-xs text-center mb-3 w-full">{error}</p>
+              )}
+
+              {/* Dial pad */}
+              <div className="grid grid-cols-3 gap-2.5 w-full mb-5">
+                {dialPad.map(({ k, s }) => (
+                  <button key={k} onClick={() => setPhoneNumber(p => p + k)}
+                    className="h-[58px] rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.06] hover:border-white/[0.12] flex flex-col items-center justify-center transition-all active:scale-95">
+                    <span className="text-white text-xl font-light leading-none">{k}</span>
+                    {s && <span className="text-white/20 text-[9px] tracking-[0.15em] mt-1">{s}</span>}
                   </button>
                 ))}
               </div>
-              <button
-                onClick={makeCall}
-                disabled={!phoneNumber.trim() || !deviceReady}
-                className="w-full mt-6 h-14 rounded-2xl bg-[#2A658F] hover:bg-[#347ab0] disabled:opacity-20 transition-all flex items-center justify-center gap-3 font-medium shadow-lg shadow-blue-900/20"
-              >
-                <Phone className="w-5 h-5" /> Ligar
+
+              {/* Call button */}
+              <button onClick={makeCall} disabled={!phoneNumber.trim() || !deviceReady}
+                className="w-full h-[52px] rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:bg-white/[0.04] disabled:text-white/15 disabled:border disabled:border-white/[0.06] text-white font-medium flex items-center justify-center gap-2.5 transition-all hover:shadow-lg hover:shadow-emerald-500/20 active:scale-[0.98] disabled:cursor-not-allowed disabled:hover:shadow-none">
+                <Phone className="w-5 h-5" />
+                Ligar
               </button>
-            </div>
+            </>
           )}
         </div>
 
-        <div className="absolute bottom-8 opacity-20 cursor-default">
-          <p className="text-[10px] tracking-[0.4em] uppercase font-bold">CENAT VOICE HUB</p>
-        </div>
+        {/* Footer */}
+        <p className="relative z-10 text-white/[0.07] text-[10px] uppercase tracking-[0.35em]">CENAT Hub Voice</p>
       </div>
 
-      {/* ===== LADO DIREITO: HISTÓRICO ===== */}
-      <div className="flex-1 bg-[#070c17] flex flex-col min-h-0">
-        <div className="px-8 py-6 flex items-center justify-between border-b border-white/5">
-          <h2 className="text-xl font-light tracking-tight text-white/90">Histórico de Ligações</h2>
-          <button onClick={() => { setLoadingLogs(true); fetchCallLogs(); }} className="p-2 rounded-lg hover:bg-white/5 transition-colors text-white/20 hover:text-white">
+      {/* ===== HISTÓRICO ===== */}
+      <div className="flex-1 flex flex-col min-h-0 bg-white">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-7 py-5 border-b border-gray-100">
+          <div>
+            <h2 className="text-gray-800 text-lg font-semibold">Histórico de Ligações</h2>
+            <p className="text-gray-400 text-sm">{callLogs.length} ligações</p>
+          </div>
+          <button onClick={() => { setLoadingLogs(true); fetchCallLogs(); }}
+            className="p-2.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors">
             <RefreshCw className={`w-4 h-4 ${loadingLogs ? 'animate-spin' : ''}`} />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-2">
+        {/* Lista */}
+        <div className="flex-1 overflow-y-auto">
           {loadingLogs ? (
-            <div className="flex items-center justify-center h-40 opacity-20"><RefreshCw className="animate-spin" /></div>
-          ) : callLogs.map((log) => (
-            <div 
-              key={log.id} 
-              className="group flex items-center gap-4 p-4 my-1 rounded-2xl hover:bg-white/[0.03] transition-all cursor-pointer border border-transparent hover:border-white/5"
-              onClick={() => setPhoneNumber(applyMask(log.direction === 'outbound' ? log.to_number : log.from_number))}
-            >
-              <div className={`w-11 h-11 rounded-full flex items-center justify-center ${
-                log.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'
-              }`}>
-                {log.direction === 'outbound' ? <ArrowUpRight size={18}/> : <ArrowDownLeft size={18}/>}
-              </div>
-              
-              <div className="flex-1">
-                <p className="text-sm font-medium text-white/80">
-                  {log.contact_name || formatPhone(log.direction === 'outbound' ? log.to_number : log.from_number)}
-                </p>
-                <div className="flex items-center gap-2 text-[11px] text-white/30 mt-0.5">
-                  <span className={getStatusColor(log.status)}>{getStatusLabel(log.status)}</span>
-                  <span>•</span>
-                  <span>{formatDate(log.created_at)}</span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                 <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                    {log.recording_url && (
-                      <button onClick={(e) => e.stopPropagation()} className="p-2 text-white/20 hover:text-white"><Play size={14}/></button>
-                    )}
-                    <button className="p-2.5 bg-[#2A658F]/20 text-[#4d9fd4] rounded-xl hover:bg-[#2A658F]/40 transition-colors">
-                      <Phone size={14} />
-                    </button>
-                 </div>
-                 <span className="text-[11px] text-white/10 tabular-nums">{log.duration > 0 ? formatDuration(log.duration) : '--:--'}</span>
-              </div>
+            <div className="flex items-center justify-center h-40">
+              <div className="w-6 h-6 border-2 border-gray-200 border-t-[#2A658F] rounded-full animate-spin" />
             </div>
-          ))}
+          ) : callLogs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-64 text-gray-300">
+              <Phone className="w-12 h-12 mb-3" />
+              <p className="text-sm">Nenhuma ligação registrada</p>
+              <p className="text-xs text-gray-300 mt-1">Faça sua primeira ligação usando o discador</p>
+            </div>
+          ) : (
+            <div>
+              {callLogs.map((log, i) => {
+                const isOutbound = log.direction === 'outbound';
+                const number = isOutbound ? log.to_number : log.from_number;
+                const completed = log.status === 'completed';
+
+                return (
+                  <div key={log.id}
+                    className="flex items-center gap-4 px-7 py-4 hover:bg-gray-50/80 transition-colors cursor-pointer group border-b border-gray-50"
+                    onClick={() => setPhoneNumber(number.replace('+55', ''))}
+                  >
+                    {/* Ícone */}
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      completed
+                        ? isOutbound ? 'bg-blue-50 text-[#2A658F]' : 'bg-emerald-50 text-emerald-600'
+                        : 'bg-red-50 text-red-500'
+                    }`}>
+                      {completed
+                        ? isOutbound ? <ArrowUpRight className="w-5 h-5" /> : <ArrowDownLeft className="w-5 h-5" />
+                        : <PhoneMissed className="w-5 h-5" />
+                      }
+                    </div>
+
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2.5">
+                        <p className="text-gray-800 text-sm font-medium truncate">
+                          {log.contact_name || formatPhone(number)}
+                        </p>
+                        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${statusColor(log.status)}`}>
+                          {statusLabel(log.status)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 mt-1">
+                        <span className="text-gray-400 text-xs">{isOutbound ? 'Saída' : 'Entrada'}</span>
+                        {log.user_name && (
+                          <span className="text-gray-300 text-xs flex items-center gap-1">
+                            <User className="w-3 h-3" /> {log.user_name}
+                          </span>
+                        )}
+                        {log.duration > 0 && (
+                          <span className="text-gray-300 text-xs flex items-center gap-1">
+                            <Clock className="w-3 h-3" /> {fmt(log.duration)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Data + ações */}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="text-gray-300 text-xs">{formatDate(log.created_at)}</span>
+
+                      {log.drive_file_url && (
+                        <a href={log.drive_file_url} target="_blank" rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-300 hover:text-[#2A658F] transition-colors opacity-0 group-hover:opacity-100">
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      )}
+
+                      {/* Botão de religar */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setPhoneNumber(number.replace('+55', '')); }}
+                        className="p-1.5 rounded-lg hover:bg-emerald-50 text-gray-300 hover:text-emerald-600 transition-colors opacity-0 group-hover:opacity-100">
+                        <Phone className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
-
-      <style jsx global>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.05); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.1); }
-      `}</style>
     </div>
   );
 }
