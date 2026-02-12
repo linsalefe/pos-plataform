@@ -211,7 +211,10 @@ export default function CallsPage() {
                         <div className="flex items-center gap-2">
                           {call.recording_url && (
                             <audio controls className="h-8 w-36" preload="none">
-                              <source src={call.recording_url} type="audio/mpeg" />
+                              <source
+                                src={`https://hub.cenatdata.online/api/twilio/recording/${call.recording_url.match(/Recordings\/(RE[^.]+)/)?.[1] || ''}`}
+                                type="audio/mpeg"
+                              />
                             </audio>
                           )}
                           {call.drive_file_url && (
