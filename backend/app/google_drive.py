@@ -6,11 +6,11 @@ from googleapiclient.http import MediaInMemoryUpload
 from datetime import datetime
 
 CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), "..", "google-credentials.json")
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 DRIVE_FOLDER_NAME = "Gravações CENAT"
 
-_drive_service = None
-_folder_id = None
+_drive_service = None  # reset cache
+_folder_id = "1-xXfqt_pgwqSZwXCQO3LpTeAtXd_hmMl"
 
 
 def get_drive_service():
