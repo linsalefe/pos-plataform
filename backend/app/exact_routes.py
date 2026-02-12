@@ -184,6 +184,8 @@ async def bulk_send_template(
     failed = 0
     errors = []
 
+    from app.exact_spotter import extract_course_name
+
     for lead in leads:
         phone = lead.phone1
         if not phone:
@@ -193,11 +195,16 @@ async def bulk_send_template(
 
         phone = phone.replace("+", "").replace(" ", "").replace("-", "")
 
+        # Monta parâmetros por lead: {{1}}=nome, {{2}}=curso
+        lead_name = lead.name.split()[0] if lead.name else "Aluno(a)"
+        lead_course = extract_course_name(lead.sub_source) if lead.sub_source else "Pós-Graduação"
+        lead_params = [lead_name, lead_course]
+
         try:
             result = await send_template_message(
                 phone, template_name, language,
                 channel.phone_number_id, channel.whatsapp_token,
-                parameters if parameters else None
+                lead_params
             )
 
             if "messages" in result:
@@ -213,9 +220,7 @@ async def bulk_send_template(
                     await db.flush()
 
                 # Salvar mensagem
-                content_text = f"[Template] {template_name}"
-                if parameters:
-                    content_text = f"[Template] " + ", ".join(parameters)
+                content_text = f"[Template] {template_name}: {lead_name}, {lead_course}"
 
                 msg = Message(
                     wa_message_id=result["messages"][0]["id"],
