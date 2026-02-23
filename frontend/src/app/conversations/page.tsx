@@ -189,19 +189,20 @@ export default function ConversationsPage() {
     }
   }, [activeChannel]);
 
+  const selectedWaId = selectedContact?.wa_id || null;
+
   useEffect(() => {
-    if (selectedContact) {
+    if (selectedWaId) {
       prevMsgCountRef.current = 0;
-      setShowScrollDown(false);
       setLoadingMessages(true);
       setMessages([]);
-      loadMessages(selectedContact.wa_id);
-      setNotesValue(selectedContact.notes || '');
-      api.post(`/contacts/${selectedContact.wa_id}/read`).then(() => loadContacts()).catch(() => {});
-      const interval = setInterval(() => loadMessages(selectedContact.wa_id), 3000);
+      loadMessages(selectedWaId);
+      setNotesValue(selectedContact?.notes || '');
+      api.post(`/contacts/${selectedWaId}/read`).then(() => loadContacts()).catch(() => {});
+      const interval = setInterval(() => loadMessages(selectedWaId), 3000);
       return () => clearInterval(interval);
     }
-  }, [selectedContact]);
+  }, [selectedWaId]);
 
   // Scroll simples: sempre vai pro final quando mensagens mudam
   useEffect(() => {
