@@ -17,7 +17,10 @@ import {
   Calendar,
   ChevronDown,
   Radio,
-  Loader2
+  Loader2,
+  SlidersHorizontal,
+  Bot,
+  Hash
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
@@ -122,10 +125,41 @@ export default function ConversationsPage() {
   const [showLeadSuggestions, setShowLeadSuggestions] = useState(false);
   const [searchingLeads, setSearchingLeads] = useState(false);
   const [sendFeedback, setSendFeedback] = useState<'ok' | 'error' | null>(null);
+  const [tagFilter, setTagFilter] = useState<number[]>([]);
+  const [unreadFilter, setUnreadFilter] = useState(false);
+  const [aiFilter, setAiFilter] = useState<'all' | 'on' | 'off'>('all');
+  const [showFilters, setShowFilters] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const prevMsgCountRef = useRef<number>(0);
+  const isTabFocusedRef = useRef<boolean>(true);
+  const notifAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
+
+  // Inicializar áudio de notificação
+  useEffect(() => {
+    notifAudioRef.current = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1pbJF/f3R1eYiNjI2Uf39sZnJ+goOHkZaOgHVqcHuDh4qPkpCIe3FrbnZ+hIuRk5KOh31zbHB3gIeMkZOTj4d9c21udoCGi5KUk4+Ie3Jtb3eAhouRlJOPiHxybnB4gIaMkZSTj4h7cm5wd4CGjJGUk4+IfHJub3iAho2RlJOQiHxybm94f4aNkZSTkId9cm5vd4CGjZGUk5CIfXJub3eAho2RlJOQiHxybm94f4aNkZSTkIh8cm5veICGjZKUk5CIfHJub3h/ho2SlJOQiHxybm94f4aNkpSTkIh8cm5veICGjZKUk5CIfHJucHh/ho2SlJOQiHxybm94gIaNkpSTkIh8cm5veICGjZKVk5CIfHJucHh/ho2SlJOPiHxybm94gIaNkpSUkIh8cW5veICHjZKUk5CIfHFucHmAho2SlJSQiHxybm94gIeNkpSTkIh8cm5veICGjZKVk5GIfHFub3mAho6SlJSQiHxxbm94gIeOkpWUkIh8cW1veYCHjpKVlJCIfHFub3mAh46SlZSQiHxxbm94gIeOk5WUkIl8cG1weYCHj5OVlJCJe3FtcHmBh4+TlZSQiXxxbXB5gIePk5WVkIl7cW1veYCHj5OVlZCJfHBtcHmBh4+UlZWQiXxwbXB5gIeQlJaVkIl7cG1weYGHkJSWlZCJe3FtcHmAh5CUlpWRiXtwbXB5gYeQlJaWkIl7cG1xeYCIkJSWlpGJe3BtcHqBh5GUlpaRiXtwbHB6gYiRlZaWkYl7cGxxeoCIkZWWlpGJe3BscXqBiJGVl5aRiXtwbHF6gYiRlZeXkYl6cGxxeoGIkpaXl5GJe3BscXqBiJKWl5eRiXtwbHF6gYiSlpeXkol6b2xxeoGIkpeYl5KJe29scXuBiZKXmJeSiXtvbHF7gYmTl5iXkol6b2xxe4GJk5eYl5KKem9scXuCiZOXmJiSinpvbHF7gYmTmJiYkop6b2txe4KJk5iYmJKKem9rcXyCiZOYmZiSinpva3F8gomUmJmYk4p5b2txfIKJlJmZmJOKeW9rcXyCipSZmZmTinpva3F8gomUmZqZk4p5b2txfIKKlJmamZOKem9rcXyCipSZmpqTi3luanJ8goqVmpqak4t5bmtzfIKKlZqampOLem5rc3yCi5WampuTi3luanN8g4uWmpubk4t5bmtzfYOLlpucm5OLeW5qc32Di5abnJyTjHluanN9g4uWm5ycl');
+    notifAudioRef.current.volume = 0.3;
+  }, []);
+
+  // Detectar foco da aba
+  useEffect(() => {
+    const onFocus = () => { isTabFocusedRef.current = true; setUnreadCount(0); };
+    const onBlur = () => { isTabFocusedRef.current = false; };
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onBlur);
+    return () => { window.removeEventListener('focus', onFocus); window.removeEventListener('blur', onBlur); };
+  }, []);
+
+  // Atualizar título da aba com contador
+  useEffect(() => {
+    document.title = unreadCount > 0 ? `(${unreadCount}) Conversas - Cenat Hub` : 'Conversas - Cenat Hub';
+  }, [unreadCount]);
 
   useEffect(() => {
     loadChannels();
@@ -142,17 +176,29 @@ export default function ConversationsPage() {
 
   useEffect(() => {
     if (selectedContact) {
+      prevMsgCountRef.current = 0;
+      setShowScrollDown(false);
+      setLoadingMessages(true);
+      setMessages([]);
       loadMessages(selectedContact.wa_id);
       setNotesValue(selectedContact.notes || '');
-      // Marcar mensagens como lidas
       api.post(`/contacts/${selectedContact.wa_id}/read`).then(() => loadContacts()).catch(() => {});
       const interval = setInterval(() => loadMessages(selectedContact.wa_id), 3000);
       return () => clearInterval(interval);
     }
   }, [selectedContact]);
 
+  // Scroll inteligente
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = chatContainerRef.current;
+    if (!container) return;
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    if (isNearBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      setShowScrollDown(false);
+    } else if (messages.length > 0) {
+      setShowScrollDown(true);
+    }
   }, [messages]);
 
   const loadChannels = async () => {
@@ -186,9 +232,24 @@ export default function ConversationsPage() {
   const loadMessages = async (waId: string) => {
     try {
       const res = await api.get(`/contacts/${waId}/messages`);
-      setMessages(res.data);
+      const newMsgs: Message[] = res.data;
+
+      // Detectar novas mensagens inbound para notificação
+      if (prevMsgCountRef.current > 0 && newMsgs.length > prevMsgCountRef.current) {
+        const newOnes = newMsgs.slice(prevMsgCountRef.current);
+        const hasInbound = newOnes.some(m => m.direction === 'inbound');
+        if (hasInbound && !isTabFocusedRef.current) {
+          setUnreadCount(prev => prev + newOnes.filter(m => m.direction === 'inbound').length);
+          try { notifAudioRef.current?.play(); } catch {}
+        }
+      }
+      prevMsgCountRef.current = newMsgs.length;
+
+      setMessages(newMsgs);
+      setLoadingMessages(false);
     } catch (err) {
       console.error('Erro:', err);
+      setLoadingMessages(false);
     }
   };
 
@@ -403,8 +464,21 @@ export default function ConversationsPage() {
   const filteredContacts = contacts.filter(c => {
     const ms = c.name.toLowerCase().includes(search.toLowerCase()) || c.wa_id.includes(search);
     const mst = statusFilter === 'todos' || c.lead_status === statusFilter;
-    return ms && mst;
+    const mtag = tagFilter.length === 0 || c.tags.some(t => tagFilter.includes(t.id));
+    const mur = !unreadFilter || c.unread > 0;
+    const mai = aiFilter === 'all' || (aiFilter === 'on' ? c.ai_active : !c.ai_active);
+    return ms && mst && mtag && mur && mai;
   });
+
+  const hasActiveFilters = tagFilter.length > 0 || unreadFilter || aiFilter !== 'all';
+
+  const clearAllFilters = () => {
+    setStatusFilter('todos');
+    setTagFilter([]);
+    setUnreadFilter(false);
+    setAiFilter('all');
+    setShowFilters(false);
+  };
 
   const groupedMessages: { date: string; msgs: Message[] }[] = [];
   messages.forEach((msg) => {
@@ -549,18 +623,115 @@ export default function ConversationsPage() {
               })}
             </div>
 
+            {/* Filtros avançados toggle */}
+            <div className="flex items-center justify-between">
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                  showFilters || hasActiveFilters
+                    ? 'bg-[#2A658F]/10 text-[#2A658F]'
+                    : 'text-gray-400 hover:bg-gray-50'
+                }`}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                Filtros
+                {hasActiveFilters && (
+                  <span className="w-4 h-4 bg-[#2A658F] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+                    {(tagFilter.length > 0 ? 1 : 0) + (unreadFilter ? 1 : 0) + (aiFilter !== 'all' ? 1 : 0)}
+                  </span>
+                )}
+              </button>
+              <span className="text-[11px] text-gray-400 tabular-nums">
+                {filteredContacts.length} contato{filteredContacts.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+
+            {/* Painel de filtros avançados */}
+            {showFilters && (
+              <div className="space-y-2.5 pb-1">
+                {/* Tag filter */}
+                {allTags.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Tags</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {allTags.map(tag => {
+                        const tc = getTagColorConfig(tag.color);
+                        const isActive = tagFilter.includes(tag.id);
+                        return (
+                          <button
+                            key={tag.id}
+                            onClick={() => setTagFilter(prev => isActive ? prev.filter(id => id !== tag.id) : [...prev, tag.id])}
+                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-all ${
+                              isActive ? `${tc.bg} ${tc.text}` : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                            }`}
+                          >
+                            <Hash className="w-2.5 h-2.5" />
+                            {tag.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Quick filters */}
+                <div className="flex gap-1.5 flex-wrap">
+                  <button
+                    onClick={() => setUnreadFilter(!unreadFilter)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      unreadFilter ? 'bg-[#2A658F]/10 text-[#2A658F]' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <MessageCircle className="w-3 h-3" />
+                    Não lidos
+                  </button>
+                  <button
+                    onClick={() => setAiFilter(aiFilter === 'on' ? 'all' : 'on')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      aiFilter === 'on' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Bot className="w-3 h-3" />
+                    IA ativa
+                  </button>
+                  <button
+                    onClick={() => setAiFilter(aiFilter === 'off' ? 'all' : 'off')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      aiFilter === 'off' ? 'bg-red-50 text-red-600' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Bot className="w-3 h-3" />
+                    IA off
+                  </button>
+                </div>
+
+                {/* Clear all */}
+                {hasActiveFilters && (
+                  <button
+                    onClick={clearAllFilters}
+                    className="text-[11px] text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    ✕ Limpar filtros
+                  </button>
+                )}
+              </div>
+            )}
+
           </div>
 
           {/* Contacts List */}
           <div className="flex-1 overflow-y-auto border-t border-gray-100">
             {loading ? (
-              <div className="animate-pulse space-y-0 p-2">
-                {[...Array(6)].map((_, i) => (
-                  <div key={i} className="flex items-center gap-3 p-3 rounded-xl">
-                    <div className="w-11 h-11 bg-gray-100 rounded-full flex-shrink-0" />
-                    <div className="flex-1 space-y-2">
-                      <div className="h-3.5 bg-gray-100 rounded w-28" />
-                      <div className="h-3 bg-gray-100 rounded w-40" />
+              <div className="space-y-0 p-1.5">
+                {[...Array(8)].map((_, i) => (
+                  <div key={i} className="flex items-center gap-3 px-3 py-3" style={{ opacity: 1 - i * 0.08 }}>
+                    <div className="w-11 h-11 bg-gray-100 rounded-full flex-shrink-0 animate-pulse" />
+                    <div className="flex-1 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="h-3.5 bg-gray-100 rounded-md animate-pulse" style={{ width: `${70 + (i % 3) * 20}px` }} />
+                        <div className="h-2.5 bg-gray-100 rounded-md animate-pulse w-10" />
+                      </div>
+                      <div className="h-3 bg-gray-50 rounded-md animate-pulse" style={{ width: `${100 + (i % 4) * 25}px` }} />
                     </div>
                   </div>
                 ))}
@@ -691,7 +862,34 @@ export default function ConversationsPage() {
 
                 {/* Messages */}
                 <div className="flex-1 flex flex-col min-w-0">
-                  <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1 bg-[#eef0f3]">
+                  <div
+                    ref={chatContainerRef}
+                    onScroll={() => {
+                      const c = chatContainerRef.current;
+                      if (c) setShowScrollDown(c.scrollHeight - c.scrollTop - c.clientHeight > 150);
+                    }}
+                    className="flex-1 overflow-y-auto px-4 py-4 space-y-1 bg-[#eef0f3] relative"
+                  >
+                    {loadingMessages ? (
+                      <div className="space-y-3 py-4">
+                        {[
+                          { dir: 'in', w: '55%' },
+                          { dir: 'in', w: '35%' },
+                          { dir: 'out', w: '45%' },
+                          { dir: 'in', w: '60%' },
+                          { dir: 'out', w: '40%' },
+                          { dir: 'out', w: '50%' },
+                        ].map((s, i) => (
+                          <div key={i} className={`flex ${s.dir === 'out' ? 'justify-end' : 'justify-start'}`}>
+                            <div
+                              className={`rounded-2xl animate-pulse ${s.dir === 'out' ? 'bg-[#2A658F]/20' : 'bg-white/80'}`}
+                              style={{ width: s.w, height: `${32 + (i % 3) * 12}px`, opacity: 1 - i * 0.1 }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                    <>
                     {groupedMessages.map((group) => (
                       <div key={group.date}>
                         <div className="flex justify-center my-3">
@@ -752,6 +950,21 @@ export default function ConversationsPage() {
                       </div>
                     ))}
                     <div ref={messagesEndRef} />
+                    </>
+                    )}
+
+                    {/* Botão scroll para baixo */}
+                    {showScrollDown && (
+                      <button
+                        onClick={() => {
+                          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                          setShowScrollDown(false);
+                        }}
+                        className="sticky bottom-4 left-1/2 -translate-x-1/2 w-10 h-10 bg-white border border-gray-200 rounded-full flex items-center justify-center shadow-lg hover:bg-gray-50 transition-all z-10"
+                      >
+                        <ChevronDown className="w-5 h-5 text-gray-500" />
+                      </button>
+                    )}
                   </div>
 
                   {/* Input */}
