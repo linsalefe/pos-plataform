@@ -284,6 +284,9 @@ async def list_contacts(channel_id: Optional[int] = None, db: AsyncSession = Dep
             "created_at": c.created_at.isoformat() if c.created_at else None,
         })
 
+    # Ordenar pela última mensagem (mais recente primeiro)
+    contacts_list.sort(key=lambda x: x["last_message_time"] or "", reverse=True)
+
     return contacts_list
 
 
@@ -349,6 +352,21 @@ async def remove_tag_from_contact(wa_id: str, tag_id: int, db: AsyncSession = De
 
 
 # === Mensagens ===
+
+@router.post("/contacts/{wa_id}/read")
+async def mark_as_read(wa_id: str, db: AsyncSession = Depends(get_db)):
+    """Marca todas as mensagens inbound do contato como lidas."""
+    from sqlalchemy import update
+    await db.execute(
+        update(Message).where(
+            Message.contact_wa_id == wa_id,
+            Message.direction == "inbound",
+            Message.status == "received"
+        ).values(status="read")
+    )
+    await db.commit()
+    return {"status": "ok"}
+
 
 @router.get("/contacts/{wa_id}/messages")
 async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db)):

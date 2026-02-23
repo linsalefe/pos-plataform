@@ -121,6 +121,7 @@ export default function ConversationsPage() {
   const [exactLeadResults, setExactLeadResults] = useState<ExactLeadResult[]>([]);
   const [showLeadSuggestions, setShowLeadSuggestions] = useState(false);
   const [searchingLeads, setSearchingLeads] = useState(false);
+  const [sendFeedback, setSendFeedback] = useState<'ok' | 'error' | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -143,6 +144,8 @@ export default function ConversationsPage() {
     if (selectedContact) {
       loadMessages(selectedContact.wa_id);
       setNotesValue(selectedContact.notes || '');
+      // Marcar mensagens como lidas
+      api.post(`/contacts/${selectedContact.wa_id}/read`).then(() => loadContacts()).catch(() => {});
       const interval = setInterval(() => loadMessages(selectedContact.wa_id), 3000);
       return () => clearInterval(interval);
     }
@@ -201,6 +204,7 @@ export default function ConversationsPage() {
   const handleSend = async () => {
     if (!newMessage.trim() || !selectedContact || !activeChannel || sending) return;
     setSending(true);
+    setSendFeedback(null);
     try {
       await api.post('/send/text', {
         to: selectedContact.wa_id,
@@ -208,10 +212,14 @@ export default function ConversationsPage() {
         channel_id: activeChannel.id,
       });
       setNewMessage('');
+      setSendFeedback('ok');
+      setTimeout(() => setSendFeedback(null), 2000);
       await loadMessages(selectedContact.wa_id);
       await loadContacts();
     } catch (err) {
       console.error('Erro:', err);
+      setSendFeedback('error');
+      setTimeout(() => setSendFeedback(null), 3000);
     } finally {
       setSending(false);
     }
@@ -747,7 +755,17 @@ export default function ConversationsPage() {
                   </div>
 
                   {/* Input */}
-                  <div className="px-4 py-3 border-t border-gray-100 bg-white">
+                  <div className="px-4 py-3 border-t border-gray-100 bg-white relative">
+                    {/* Feedback de envio */}
+                    {sendFeedback && (
+                      <div className={`absolute -top-10 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-lg text-xs font-medium shadow-lg transition-all ${
+                        sendFeedback === 'ok'
+                          ? 'bg-emerald-500 text-white'
+                          : 'bg-red-500 text-white'
+                      }`}>
+                        {sendFeedback === 'ok' ? '✓ Mensagem enviada' : '✕ Erro ao enviar'}
+                      </div>
+                    )}
                     <div className="flex items-end gap-2">
                       <textarea
                         value={newMessage}
