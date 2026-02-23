@@ -188,17 +188,9 @@ export default function ConversationsPage() {
     }
   }, [selectedContact]);
 
-  // Scroll inteligente
+  // Scroll simples: sempre vai pro final quando mensagens mudam
   useEffect(() => {
-    const container = chatContainerRef.current;
-    if (!container) return;
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
-    if (isNearBottom) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      setShowScrollDown(false);
-    } else if (messages.length > 0) {
-      setShowScrollDown(true);
-    }
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const loadChannels = async () => {
@@ -863,11 +855,6 @@ export default function ConversationsPage() {
                 {/* Messages */}
                 <div className="flex-1 flex flex-col min-w-0">
                   <div
-                    ref={chatContainerRef}
-                    onScroll={() => {
-                      const c = chatContainerRef.current;
-                      if (c) setShowScrollDown(c.scrollHeight - c.scrollTop - c.clientHeight > 150);
-                    }}
                     className="flex-1 overflow-y-auto px-4 py-4 space-y-1 bg-[#eef0f3] relative"
                   >
                     {loadingMessages ? (
@@ -951,19 +938,6 @@ export default function ConversationsPage() {
                     ))}
                     <div ref={messagesEndRef} />
                     </>
-                    )}
-
-                    {/* Botão scroll para baixo */}
-                    {showScrollDown && (
-                      <button
-                        onClick={() => {
-                          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-                          setShowScrollDown(false);
-                        }}
-                        className="sticky bottom-4 left-1/2 -translate-x-1/2 w-10 h-10 bg-white border border-gray-200 rounded-full flex items-center justify-center shadow-lg hover:bg-gray-50 transition-all z-10"
-                      >
-                        <ChevronDown className="w-5 h-5 text-gray-500" />
-                      </button>
                     )}
                   </div>
 
