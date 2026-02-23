@@ -341,9 +341,19 @@ export default function LeadsPosPage() {
                       </div>
                     </td>
                     <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-2">
                         <Phone className="w-3 h-3 text-gray-400" />
                         <span className="text-[13px] text-gray-500 tabular-nums">{formatPhone(lead.phone1)}</span>
+                        {lead.phone1 && (
+                          <a
+                            href={`tel:+${lead.phone1}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center gap-1 px-2 py-1 bg-green-50 text-green-600 rounded-lg text-[11px] font-medium hover:bg-green-100 active:scale-95 transition-all opacity-0 group-hover:opacity-100"
+                            title="Ligar"
+                          >
+                            📱 Ligar
+                          </a>
+                        )}
                       </div>
                     </td>
                     <td className="px-5 py-3.5">
