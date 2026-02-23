@@ -345,14 +345,16 @@ export default function LeadsPosPage() {
                         <Phone className="w-3 h-3 text-gray-400" />
                         <span className="text-[13px] text-gray-500 tabular-nums">{formatPhone(lead.phone1)}</span>
                         {lead.phone1 && (
-                          <a
-                            href={`tel:+${lead.phone1}`}
-                            onClick={(e) => e.stopPropagation()}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              window.dispatchEvent(new CustomEvent('cenat-call', { detail: { phone: lead.phone1 } }));
+                            }}
                             className="flex items-center gap-1 px-2 py-1 bg-green-50 text-green-600 rounded-lg text-[11px] font-medium hover:bg-green-100 active:scale-95 transition-all opacity-0 group-hover:opacity-100"
-                            title="Ligar"
+                            title="Ligar via VoIP"
                           >
                             📱 Ligar
-                          </a>
+                          </button>
                         )}
                       </div>
                     </td>
