@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel
@@ -9,7 +9,7 @@ SP_TZ = timezone(timedelta(hours=-3))
 
 from app.database import get_db
 from app.models import Channel, Contact, Message, Tag, contact_tags
-from app.whatsapp import send_text_message, send_template_message
+from app.whatsapp import send_text_message, send_template_message, upload_media, send_media_message
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -231,6 +231,64 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
             direction="outbound",
             message_type="template",
             content=content_text,
+            timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
+            status="sent",
+        )
+        db.add(message)
+        await db.commit()
+
+    return result
+
+
+@router.post("/send/media")
+async def send_media(
+    file: UploadFile = File(...),
+    to: str = Form(...),
+    channel_id: int = Form(...),
+    type: str = Form(...),  # image, document, audio
+    db: AsyncSession = Depends(get_db),
+):
+    channel = await get_channel(channel_id, db)
+    file_bytes = await file.read()
+    mime_type = file.content_type or "application/octet-stream"
+    filename = file.filename or "file"
+
+    # Mapear tipo para media_type da Meta
+    media_type_map = {
+        "image": "image",
+        "document": "document",
+        "audio": "audio",
+        "video": "video",
+    }
+    media_type = media_type_map.get(type, "document")
+
+    # 1. Upload da mídia para Meta
+    media_id = await upload_media(file_bytes, mime_type, filename, channel.phone_number_id, channel.whatsapp_token)
+
+    # 2. Enviar mensagem com mídia
+    caption = filename if media_type == "document" else None
+    result = await send_media_message(to, media_id, media_type, channel.phone_number_id, channel.whatsapp_token, caption)
+
+    if "messages" in result:
+        wa_id = result.get("contacts", [{}])[0].get("wa_id", to)
+
+        contact_result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
+        contact = contact_result.scalar_one_or_none()
+        if not contact:
+            contact = Contact(wa_id=wa_id, name="", channel_id=channel_id)
+            db.add(contact)
+            await db.flush()
+
+        # Salvar referência da mídia: media:{media_id}|{mime_type}|{filename}
+        content = f"media:{media_id}|{mime_type}|{filename}"
+
+        message = Message(
+            wa_message_id=result["messages"][0]["id"],
+            contact_wa_id=wa_id,
+            channel_id=channel_id,
+            direction="outbound",
+            message_type=media_type,
+            content=content,
             timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
         )

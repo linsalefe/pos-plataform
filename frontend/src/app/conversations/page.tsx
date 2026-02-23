@@ -20,7 +20,13 @@ import {
   Loader2,
   SlidersHorizontal,
   Bot,
-  Hash
+  Hash,
+  Paperclip,
+  Mic,
+  Image as ImageIcon,
+  FileText,
+  Square,
+  Trash2
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
@@ -132,12 +138,21 @@ export default function ConversationsPage() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const prevMsgCountRef = useRef<number>(0);
   const isTabFocusedRef = useRef<boolean>(true);
   const notifAudioRef = useRef<HTMLAudioElement | null>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -281,6 +296,128 @@ export default function ConversationsPage() {
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
+
+  // === Upload de mídia ===
+  const handleFileUpload = async (file: File, type: 'image' | 'document') => {
+    if (!selectedContact || !activeChannel) return;
+    setSending(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('to', selectedContact.wa_id);
+      formData.append('channel_id', String(activeChannel.id));
+      formData.append('type', type);
+      await api.post('/send/media', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setSendFeedback('ok');
+      setTimeout(() => setSendFeedback(null), 2000);
+      await loadMessages(selectedContact.wa_id);
+      await loadContacts();
+    } catch (err) {
+      console.error('Erro ao enviar arquivo:', err);
+      setSendFeedback('error');
+      setTimeout(() => setSendFeedback(null), 3000);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // === Gravação de áudio ===
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/ogg; codecs=opus' });
+        if (audioBlob.size > 0 && selectedContact && activeChannel) {
+          setSending(true);
+          const formData = new FormData();
+          formData.append('file', audioBlob, 'audio.ogg');
+          formData.append('to', selectedContact.wa_id);
+          formData.append('channel_id', String(activeChannel.id));
+          formData.append('type', 'audio');
+          try {
+            await api.post('/send/media', formData, {
+              headers: { 'Content-Type': 'multipart/form-data' },
+            });
+            setSendFeedback('ok');
+            setTimeout(() => setSendFeedback(null), 2000);
+            await loadMessages(selectedContact.wa_id);
+            await loadContacts();
+          } catch (err) {
+            console.error('Erro ao enviar áudio:', err);
+            setSendFeedback('error');
+            setTimeout(() => setSendFeedback(null), 3000);
+          } finally {
+            setSending(false);
+          }
+        }
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+    } catch (err) {
+      console.error('Erro ao acessar microfone:', err);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+    setRecordingTime(0);
+  };
+
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.ondataavailable = null;
+      mediaRecorderRef.current.onstop = () => {
+        mediaRecorderRef.current?.stream?.getTracks().forEach(t => t.stop());
+      };
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+    setRecordingTime(0);
+  };
+
+  const formatRecordingTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  // Fechar menu de anexo ao clicar fora
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
+        setShowAttachMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const toggleAI = async () => {
     if (!selectedContact) return;
@@ -953,23 +1090,118 @@ export default function ConversationsPage() {
                         {sendFeedback === 'ok' ? '✓ Mensagem enviada' : '✕ Erro ao enviar'}
                       </div>
                     )}
-                    <div className="flex items-end gap-2">
-                      <textarea
-                        value={newMessage}
-                        onChange={(e) => setNewMessage(e.target.value)}
-                        onKeyDown={handleKeyPress}
-                        placeholder="Digite uma mensagem..."
-                        rows={1}
-                        className="flex-1 px-4 py-2.5 bg-gray-50 border border-gray-100 rounded-xl text-sm text-gray-800 placeholder:text-gray-400 resize-none focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 focus:bg-white transition-all outline-none"
-                      />
-                      <button
-                        onClick={handleSend}
-                        disabled={!newMessage.trim() || sending}
-                        className="flex items-center justify-center w-10 h-10 bg-[#2A658F] rounded-xl text-white hover:bg-[#1f5375] active:scale-95 transition-all disabled:opacity-40 disabled:active:scale-100 flex-shrink-0"
-                      >
-                        {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                      </button>
-                    </div>
+
+                    {isRecording ? (
+                      /* Modo gravação */
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={cancelRecording}
+                          className="p-2 rounded-full hover:bg-red-50 text-red-500 transition-all"
+                          title="Cancelar"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                        <div className="flex-1 flex items-center gap-3 px-4 py-2.5 bg-red-50 rounded-xl">
+                          <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse" />
+                          <span className="text-sm font-medium text-red-600 tabular-nums">{formatRecordingTime(recordingTime)}</span>
+                          <span className="text-xs text-red-400">Gravando...</span>
+                        </div>
+                        <button
+                          onClick={stopRecording}
+                          className="flex items-center justify-center w-10 h-10 bg-[#2A658F] rounded-xl text-white hover:bg-[#1f5375] active:scale-95 transition-all"
+                          title="Enviar áudio"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      /* Modo normal */
+                      <div className="flex items-end gap-2">
+                        {/* Botão anexar */}
+                        <div className="relative" ref={attachMenuRef}>
+                          <button
+                            onClick={() => setShowAttachMenu(!showAttachMenu)}
+                            className={`p-2.5 rounded-xl transition-all ${showAttachMenu ? 'text-[#2A658F] bg-[#2A658F]/10 rotate-45' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'}`}
+                            title="Anexar"
+                          >
+                            <Paperclip className="w-5 h-5 transition-transform" />
+                          </button>
+                          {showAttachMenu && (
+                            <div className="absolute bottom-12 left-0 z-50 bg-white rounded-xl border border-gray-200 shadow-xl overflow-hidden min-w-[180px]">
+                              <button
+                                onClick={() => { imageInputRef.current?.click(); setShowAttachMenu(false); }}
+                                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left"
+                              >
+                                <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
+                                  <ImageIcon className="w-4 h-4 text-purple-600" />
+                                </div>
+                                <span className="text-[13px] text-gray-700">Fotos e vídeos</span>
+                              </button>
+                              <button
+                                onClick={() => { fileInputRef.current?.click(); setShowAttachMenu(false); }}
+                                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left"
+                              >
+                                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                                  <FileText className="w-4 h-4 text-blue-600" />
+                                </div>
+                                <span className="text-[13px] text-gray-700">Documento</span>
+                              </button>
+                            </div>
+                          )}
+                          <input
+                            ref={imageInputRef}
+                            type="file"
+                            accept="image/*,video/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleFileUpload(file, 'image');
+                              e.target.value = '';
+                            }}
+                          />
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.rar"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleFileUpload(file, 'document');
+                              e.target.value = '';
+                            }}
+                          />
+                        </div>
+
+                        {/* Input de texto */}
+                        <textarea
+                          value={newMessage}
+                          onChange={(e) => setNewMessage(e.target.value)}
+                          onKeyDown={handleKeyPress}
+                          placeholder="Digite uma mensagem..."
+                          rows={1}
+                          className="flex-1 px-4 py-2.5 bg-gray-50 border border-gray-100 rounded-xl text-sm text-gray-800 placeholder:text-gray-400 resize-none focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 focus:bg-white transition-all outline-none"
+                        />
+
+                        {/* Enviar ou Mic */}
+                        {newMessage.trim() ? (
+                          <button
+                            onClick={handleSend}
+                            disabled={sending}
+                            className="flex items-center justify-center w-10 h-10 bg-[#2A658F] rounded-xl text-white hover:bg-[#1f5375] active:scale-95 transition-all disabled:opacity-40 disabled:active:scale-100 flex-shrink-0"
+                          >
+                            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={startRecording}
+                            className="flex items-center justify-center w-10 h-10 rounded-xl text-gray-400 hover:text-[#2A658F] hover:bg-[#2A658F]/10 transition-all flex-shrink-0"
+                            title="Gravar áudio"
+                          >
+                            <Mic className="w-5 h-5" />
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
