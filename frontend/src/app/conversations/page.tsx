@@ -150,6 +150,7 @@ export default function ConversationsPage() {
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -299,8 +300,30 @@ export default function ConversationsPage() {
   };
 
   // === Upload de mídia ===
-  const handleFileUpload = async (file: File, type: 'image' | 'document') => {
+  const FILE_SIZE_LIMITS: Record<string, number> = {
+    image: 5 * 1024 * 1024,      // 5MB
+    video: 16 * 1024 * 1024,     // 16MB
+    audio: 16 * 1024 * 1024,     // 16MB
+    document: 100 * 1024 * 1024, // 100MB
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  };
+
+  const handleFileUpload = async (file: File, type: 'image' | 'document' | 'audio') => {
     if (!selectedContact || !activeChannel) return;
+
+    // Validar tamanho
+    const limit = FILE_SIZE_LIMITS[type] || FILE_SIZE_LIMITS.document;
+    if (file.size > limit) {
+      setSendFeedback('error');
+      setTimeout(() => setSendFeedback(null), 4000);
+      alert(`Arquivo muito grande (${formatFileSize(file.size)}). Limite para ${type}: ${formatFileSize(limit)}`);
+      return;
+    }
+
     setSending(true);
     try {
       const formData = new FormData();
@@ -1147,6 +1170,15 @@ export default function ConversationsPage() {
                                 </div>
                                 <span className="text-[13px] text-gray-700">Documento</span>
                               </button>
+                              <button
+                                onClick={() => { audioInputRef.current?.click(); setShowAttachMenu(false); }}
+                                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left"
+                              >
+                                <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+                                  <Mic className="w-4 h-4 text-green-600" />
+                                </div>
+                                <span className="text-[13px] text-gray-700">Áudio</span>
+                              </button>
                             </div>
                           )}
                           <input
@@ -1156,7 +1188,7 @@ export default function ConversationsPage() {
                             className="hidden"
                             onChange={(e) => {
                               const file = e.target.files?.[0];
-                              if (file) handleFileUpload(file, 'image');
+                              if (file) handleFileUpload(file, file.type.startsWith('video/') ? 'image' : 'image');
                               e.target.value = '';
                             }}
                           />
@@ -1168,6 +1200,17 @@ export default function ConversationsPage() {
                             onChange={(e) => {
                               const file = e.target.files?.[0];
                               if (file) handleFileUpload(file, 'document');
+                              e.target.value = '';
+                            }}
+                          />
+                          <input
+                            ref={audioInputRef}
+                            type="file"
+                            accept=".mp3,.ogg,.opus,.m4a,.wav,audio/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleFileUpload(file, 'audio');
                               e.target.value = '';
                             }}
                           />
