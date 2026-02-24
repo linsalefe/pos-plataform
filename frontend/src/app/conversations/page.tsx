@@ -199,7 +199,8 @@ export default function ConversationsPage() {
       setMessages([]);
       loadMessages(selectedWaId);
       setNotesValue(selectedContact?.notes || '');
-      api.post(`/contacts/${selectedWaId}/read`).then(() => loadContacts()).catch(() => {});
+      // Marcar como lido sem forçar reload da lista
+      api.post(`/contacts/${selectedWaId}/read`).catch(() => {});
       const interval = setInterval(() => loadMessages(selectedWaId), 3000);
       return () => clearInterval(interval);
     }
@@ -229,7 +230,16 @@ export default function ConversationsPage() {
       setContacts(res.data);
       if (selectedContact) {
         const updated = res.data.find((c: Contact) => c.wa_id === selectedContact.wa_id);
-        if (updated) setSelectedContact(updated);
+        if (updated) {
+          // Só atualiza se algo mudou de verdade
+          const changed = updated.name !== selectedContact.name
+            || updated.lead_status !== selectedContact.lead_status
+            || updated.notes !== selectedContact.notes
+            || updated.ai_active !== selectedContact.ai_active
+            || updated.unread !== selectedContact.unread
+            || JSON.stringify(updated.tags) !== JSON.stringify(selectedContact.tags);
+          if (changed) setSelectedContact(updated);
+        }
       }
     } catch (err) {
       console.error('Erro:', err);
@@ -449,8 +459,9 @@ export default function ConversationsPage() {
     try {
       const newValue = !selectedContact.ai_active;
       await api.patch(`/ai/contacts/${selectedContact.wa_id}/toggle`, { ai_active: newValue });
-      setSelectedContact({ ...selectedContact, ai_active: newValue });
-      loadContacts();
+      // Atualizar diretamente sem criar objeto novo + recarregar
+      selectedContact.ai_active = newValue;
+      setSelectedContact({ ...selectedContact });
     } catch (err) {
       console.error("Erro ao alternar IA:", err);
     } finally {
