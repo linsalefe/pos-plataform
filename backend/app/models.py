@@ -39,6 +39,7 @@ class Contact(Base):
     channel_id = Column(Integer, ForeignKey("channels.id"))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     messages = relationship("Message", back_populates="contact")
     tags = relationship("Tag", secondary=contact_tags, back_populates="contacts")
@@ -179,7 +180,7 @@ class CallLog(Base):
 
     user = relationship("User", backref="call_logs")
     channel = relationship("Channel", backref="call_logs")
-    
+
 class CourseAlias(Base):
     __tablename__ = "course_aliases"
 
