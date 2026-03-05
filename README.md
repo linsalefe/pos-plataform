@@ -2244,4 +2244,4 @@ curl https://hub.cenatdata.online/api/twilio/recording/RE_RECORDING_SID --output
 
 ## 📄 Licença
 
-Projeto proprietário — CENAT © 2026. Todos os direitos reservados.
+Projeto proprietário — CENAT © 2026. Todos os direitos reservados...
