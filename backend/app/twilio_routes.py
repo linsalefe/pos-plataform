@@ -359,20 +359,19 @@ async def voice_incoming_twiml(request: "Request"):
     
     return Response(content=str(response), media_type="application/xml")
 
-@router.get("/recording/{recording_sid}")
-async def stream_recording(recording_sid: str):
-    """Proxy para servir gravações sem expor credenciais Twilio."""
-    import httpx
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Recordings/{recording_sid}.mp3"
-    
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, auth=(account_sid, auth_token), follow_redirects=True)
-        if resp.status_code != 200:
-            return Response(content="Gravação não encontrada", status_code=404)
-        return Response(
-            content=resp.content,
-            media_type="audio/mpeg",
-            headers={"Content-Disposition": f"inline; filename={recording_sid}.mp3"}
-        )
+@router.get("/recording/{call_sid}")
+async def stream_recording(call_sid: str):
+    """Serve gravação salva localmente."""
+    from fastapi.responses import FileResponse
+    import os
+
+    local_path = f"/home/ubuntu/pos-plataform/recordings/{call_sid}.mp3"
+
+    if not os.path.exists(local_path):
+        return Response(content="Gravação não encontrada", status_code=404)
+
+    return FileResponse(
+        path=local_path,
+        media_type="audio/mpeg",
+        filename=f"{call_sid}.mp3",
+    )
