@@ -170,6 +170,10 @@ class CallLog(Base):
     recording_url = Column(Text, nullable=True)
     recording_sid = Column(String(100), nullable=True)
     drive_file_url = Column(Text, nullable=True)
+    local_recording_path = Column(String(500), nullable=True)
+    transcription = Column(Text, nullable=True)
+    transcription_insights = Column(Text, nullable=True)
+    transcription_status = Column(String(30), nullable=True)  # pending, processing, done, error
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     user_name = Column(String(255), nullable=True)
     contact_wa_id = Column(String(20), nullable=True)
