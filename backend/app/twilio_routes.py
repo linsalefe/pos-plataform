@@ -307,6 +307,8 @@ async def list_call_logs(
                 "user_name": log.user_name,
                 "contact_name": log.contact_name,
                 "transcription_status": log.transcription_status,
+                "transcription": log.transcription,
+                "transcription_insights": log.transcription_insights,
                 "created_at": log.created_at.isoformat() if log.created_at else None,
             }
             for log in logs
