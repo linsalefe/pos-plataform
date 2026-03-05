@@ -193,6 +193,7 @@ async def recording_status_webhook(request: Request):
     import httpx, os
 
     form = await request.form()
+    print(f"📥 Recording webhook: CallSid={form.get('CallSid')} RecordingSid={form.get('RecordingSid')} Status={form.get('RecordingStatus')}")
     call_sid = form.get("CallSid", "")
     recording_sid = form.get("RecordingSid", "")
     recording_url = form.get("RecordingUrl", "")
