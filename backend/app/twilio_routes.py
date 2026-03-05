@@ -415,3 +415,30 @@ async def stream_recording(call_sid: str):
         media_type="audio/mpeg",
         filename=f"{call_sid}.mp3",
     )
+
+@router.delete("/recording/{call_sid}")
+async def delete_recording(call_sid: str, current_user=Depends(get_current_user)):
+    """Apaga gravação do disco e limpa o campo no banco."""
+    from app.database import async_session
+    from app.models import CallLog
+    from sqlalchemy import select
+    import os
+
+    async with async_session() as db:
+        result = await db.execute(select(CallLog).where(CallLog.call_sid == call_sid))
+        call_log = result.scalar_one_or_none()
+
+        if not call_log:
+            raise HTTPException(status_code=404, detail="Ligação não encontrada")
+
+        local_path = call_log.local_recording_path
+
+        if local_path and os.path.exists(local_path):
+            os.remove(local_path)
+            print(f"🗑️ Gravação apagada: {local_path}")
+
+        call_log.local_recording_path = None
+        call_log.transcription_status = None
+        await db.commit()
+
+    return {"success": True}
