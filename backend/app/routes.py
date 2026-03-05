@@ -8,7 +8,7 @@ from typing import Optional
 SP_TZ = timezone(timedelta(hours=-3))
 
 from app.database import get_db
-from app.models import Channel, Contact, Message, Tag, contact_tags
+from app.models import Channel, Contact, Message, Tag, contact_tags, CourseAlias
 from app.whatsapp import send_text_message, send_template_message, upload_media, send_media_message
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -542,3 +542,54 @@ async def get_media(media_id: str, channel_id: int = 1, db: AsyncSession = Depen
         media_type=url_data.get("mime_type", "application/octet-stream"),
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+# === Course Aliases (Mapeamento de cursos) ===
+
+@router.get("/course-aliases")
+async def list_course_aliases(db: AsyncSession = Depends(get_db)):
+    """Lista todos os mapeamentos de cursos."""
+    result = await db.execute(select(CourseAlias).where(CourseAlias.is_active == True).order_by(CourseAlias.short_name))
+    aliases = result.scalars().all()
+    return [
+        {
+            "id": a.id,
+            "alias": a.alias,
+            "full_name": a.full_name,
+            "short_name": a.short_name,
+            "is_active": a.is_active,
+        }
+        for a in aliases
+    ]
+
+
+@router.get("/course-aliases/resolve/{alias}")
+async def resolve_course_alias(alias: str, db: AsyncSession = Depends(get_db)):
+    """Resolve um alias para o nome completo do curso."""
+    result = await db.execute(
+        select(CourseAlias).where(
+            func.lower(CourseAlias.alias) == func.lower(alias),
+            CourseAlias.is_active == True,
+        )
+    )
+    course = result.scalar_one_or_none()
+    if not course:
+        return {"alias": alias, "full_name": alias, "short_name": alias, "found": False}
+    return {
+        "alias": course.alias,
+        "full_name": course.full_name,
+        "short_name": course.short_name,
+        "found": True,
+    }
+
+
+async def resolve_course_name(alias: str, db: AsyncSession) -> str:
+    """Helper interno: retorna short_name se existir, senão retorna o alias original."""
+    result = await db.execute(
+        select(CourseAlias).where(
+            func.lower(CourseAlias.alias) == func.lower(alias),
+            CourseAlias.is_active == True,
+        )
+    )
+    course = result.scalar_one_or_none()
+    return course.short_name if course else alias
