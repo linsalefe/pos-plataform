@@ -231,6 +231,20 @@ async def recording_status_webhook(request: Request):
             result = await db.execute(select(CallLog).where(CallLog.call_sid == call_sid))
             call_log = result.scalar_one_or_none()
 
+            # Fallback: busca pelo Parent Call SID
+            if not call_log:
+                try:
+                    from twilio.rest import Client
+                    twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+                    recording = twilio_client.recordings(recording_sid).fetch()
+                    parent_sid = recording.call_sid
+                    if parent_sid and parent_sid != call_sid:
+                        result2 = await db.execute(select(CallLog).where(CallLog.call_sid == parent_sid))
+                        call_log = result2.scalar_one_or_none()
+                        print(f"🔁 Fallback SID: {call_sid} -> {parent_sid}")
+                except Exception as e:
+                    print(f"❌ Erro no fallback SID: {e}")
+
             if call_log:
                 call_log.recording_sid = recording_sid
                 call_log.recording_url = mp3_url
@@ -238,6 +252,9 @@ async def recording_status_webhook(request: Request):
                     call_log.local_recording_path = local_path
                     call_log.transcription_status = "pending"
                 await db.commit()
+                print(f"✅ CallLog atualizado: {call_log.call_sid}")
+            else:
+                print(f"⚠️ CallLog não encontrado para SID: {call_sid}")
 
     return Response(content="", media_type="application/xml")
 
