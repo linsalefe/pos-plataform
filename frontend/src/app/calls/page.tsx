@@ -212,7 +212,7 @@ export default function CallsPage() {
                           {call.recording_url && (
                             <audio controls className="h-8 w-36" preload="none">
                               <source
-                                src={`https://hub.cenatdata.online/api/twilio/recording/${call.recording_url.match(/Recordings\/(RE[^.]+)/)?.[1] || ''}`}
+                                src={`https://hub.cenatdata.online/api/twilio/recording/${call.call_sid}`}
                                 type="audio/mpeg"
                               />
                             </audio>
