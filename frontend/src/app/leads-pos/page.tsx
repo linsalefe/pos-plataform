@@ -41,6 +41,13 @@ interface LeadDetails {
   qualifications: { origin_stage: string | null; stage: string | null; score: number | null; qualification_date: string | null; meeting_date: string | null; user_action: string | null; }[];
 }
 
+interface CourseAlias {
+  id: number;
+  alias: string;
+  full_name: string;
+  short_name: string;
+}
+
 const stageColors: Record<string, string> = {
   'Entrada': 'bg-blue-50 text-blue-700',
   'Pré Qualificado': 'bg-purple-50 text-purple-700',
@@ -74,6 +81,7 @@ export default function LeadsPosPage() {
   const [leadDetails, setLeadDetails] = useState<LeadDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [courseAliases, setCourseAliases] = useState<CourseAlias[]>([]);
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -86,6 +94,7 @@ export default function LeadsPosPage() {
   useEffect(() => {
     if (user) {
       loadData();
+      loadCourseAliases();
     }
   }, [user]);
 
@@ -102,6 +111,21 @@ export default function LeadsPosPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadCourseAliases = async () => {
+    try {
+      const res = await api.get('/course-aliases');
+      setCourseAliases(res.data);
+    } catch (err) {
+      console.error('Erro ao carregar aliases:', err);
+    }
+  };
+
+  const resolveCourse = (alias: string | null): string => {
+    if (!alias) return '-';
+    const found = courseAliases.find(c => c.alias.toLowerCase() === alias.toLowerCase());
+    return found ? found.short_name : alias;
   };
 
   const handleSync = async () => {
@@ -300,7 +324,7 @@ export default function LeadsPosPage() {
               >
                 <option value="">Todos os cursos</option>
                 {subSources.map((s) => (
-                  <option key={s} value={s}>{s} ({stats?.by_sub_source[s]})</option>
+                  <option key={s} value={s}>{resolveCourse(s)} ({stats?.by_sub_source[s]})</option>
                 ))}
               </select>
               {hasActiveFilters && (
@@ -359,7 +383,7 @@ export default function LeadsPosPage() {
                       </div>
                     </td>
                     <td className="px-5 py-3.5">
-                      <span className="text-[13px] text-gray-500">{lead.sub_source || '-'}</span>
+                      <span className="text-[13px] text-gray-500">{resolveCourse(lead.sub_source)}</span>
                     </td>
                     <td className="px-5 py-3.5">
                       <span className={`inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium ${stageColors[lead.stage || ''] || 'bg-gray-100 text-gray-600'}`}>
@@ -412,7 +436,7 @@ export default function LeadsPosPage() {
                     <span className={`inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium ${stageColors[selectedLead.stage || ''] || 'bg-gray-100 text-gray-600'}`}>
                       {selectedLead.stage || '-'}
                     </span>
-                    <span className="text-[12px] text-gray-400">{selectedLead.sub_source || '-'}</span>
+                    <span className="text-[12px] text-gray-400">{resolveCourse(selectedLead.sub_source)}</span>
                   </div>
                 </div>
               </div>
@@ -477,7 +501,7 @@ export default function LeadsPosPage() {
                         </div>
                         <div>
                           <p className="text-[11px] text-gray-400 mb-0.5">Curso</p>
-                          <p className="text-[13px] font-medium text-gray-700">{selectedLead.sub_source || '-'}</p>
+                          <p className="text-[13px] font-medium text-gray-700">{resolveCourse(selectedLead.sub_source)}</p>
                         </div>
                         <div>
                           <p className="text-[11px] text-gray-400 mb-0.5">SDR</p>
