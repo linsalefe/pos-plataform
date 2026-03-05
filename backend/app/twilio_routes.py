@@ -270,9 +270,11 @@ async def list_call_logs(
                 "status": log.status,
                 "duration": log.duration,
                 "recording_url": log.recording_url,
+                "local_recording_path": log.local_recording_path,
                 "drive_file_url": log.drive_file_url,
                 "user_name": log.user_name,
                 "contact_name": log.contact_name,
+                "transcription_status": log.transcription_status,
                 "created_at": log.created_at.isoformat() if log.created_at else None,
             }
             for log in logs

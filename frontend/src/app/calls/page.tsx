@@ -25,6 +25,8 @@ interface CallLog {
   user_name: string | null;
   contact_name: string | null;
   created_at: string | null;
+  local_recording_path: string | null;
+  transcription_status: string | null;
 }
 
 export default function CallsPage() {
@@ -208,30 +210,16 @@ export default function CallsPage() {
                       <td className="px-5 py-3.5 text-sm text-gray-600 font-mono">{formatDuration(call.duration)}</td>
                       <td className="px-5 py-3.5 text-sm text-gray-500">{formatDate(call.created_at)}</td>
                       <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-2">
-                          {call.recording_url && (
-                            <audio controls className="h-8 w-36" preload="none">
-                              <source
-                                src={`https://hub.cenatdata.online/api/twilio/recording/${call.call_sid}`}
-                                type="audio/mpeg"
-                              />
-                            </audio>
-                          )}
-                          {call.drive_file_url && (
-                            <a
-                              href={call.drive_file_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-[#2A658F] hover:text-[#347aab] transition-colors"
-                              title="Abrir no Google Drive"
-                            >
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
-                          )}
-                          {!call.recording_url && !call.drive_file_url && (
-                            <span className="text-xs text-gray-400">-</span>
-                          )}
-                        </div>
+                        {call.local_recording_path || call.recording_url ? (
+                          <audio controls className="h-8 w-36" preload="none">
+                            <source
+                              src={`https://hub.cenatdata.online/api/twilio/recording/${call.call_sid}`}
+                              type="audio/mpeg"
+                            />
+                          </audio>
+                        ) : (
+                          <span className="text-xs text-gray-400">-</span>
+                        )}
                       </td>
                     </tr>
                   );
