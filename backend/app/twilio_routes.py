@@ -449,3 +449,51 @@ async def delete_recording(call_sid: str, current_user=Depends(get_current_user)
         await db.commit()
 
     return {"success": True}
+
+@router.post("/transcribe/{call_id}")
+async def transcribe_call(call_id: int, current_user=Depends(get_current_user)):
+    """Aciona transcrição e geração de insights de uma ligação."""
+    from app.database import async_session
+    from app.models import CallLog
+    from app.transcription import transcribe_audio, generate_insights
+    from sqlalchemy import select
+
+    async with async_session() as db:
+        result = await db.execute(select(CallLog).where(CallLog.id == call_id))
+        call_log = result.scalar_one_or_none()
+
+        if not call_log:
+            raise HTTPException(status_code=404, detail="Ligação não encontrada")
+
+        if not call_log.local_recording_path:
+            raise HTTPException(status_code=400, detail="Gravação não disponível")
+
+        call_log.transcription_status = "processing"
+        await db.commit()
+
+    try:
+        transcription = await transcribe_audio(call_log.local_recording_path)
+        insights = await generate_insights(
+            transcription=transcription,
+            duration=call_log.duration or 0,
+            user_name=call_log.user_name or "N/A",
+        )
+
+        async with async_session() as db:
+            result = await db.execute(select(CallLog).where(CallLog.id == call_id))
+            call_log = result.scalar_one_or_none()
+            call_log.transcription = transcription
+            call_log.transcription_insights = insights
+            call_log.transcription_status = "done"
+            await db.commit()
+
+        return {"status": "done", "transcription": transcription, "insights": insights}
+
+    except Exception as e:
+        async with async_session() as db:
+            result = await db.execute(select(CallLog).where(CallLog.id == call_id))
+            call_log = result.scalar_one_or_none()
+            if call_log:
+                call_log.transcription_status = "error"
+                await db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
