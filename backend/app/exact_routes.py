@@ -2,10 +2,31 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.database import get_db
-from app.models import ExactLead
+from app.models import ExactLead, CourseAlias
 from app.exact_spotter import sync_exact_leads
 
 router = APIRouter(prefix="/api/exact-leads", tags=["exact-leads"])
+
+
+async def resolve_course_name(sub_source: str, db: AsyncSession) -> str:
+    """Resolve alias do curso para nome legivel via tabela course_aliases."""
+    if not sub_source:
+        return "Pós-Graduação"
+    result = await db.execute(
+        select(CourseAlias).where(
+            func.lower(CourseAlias.alias) == func.lower(sub_source),
+            CourseAlias.is_active == True,
+        )
+    )
+    course = result.scalar_one_or_none()
+    if course:
+        return course.short_name
+    # Fallback: remove prefixo pos e formata
+    name = sub_source
+    if name.lower().startswith("pos"):
+        name = name[3:]
+    name = name.replace("_", " ").replace("-", " ").strip()
+    return name if name else "Pós-Graduação"
 
 
 @router.get("")
@@ -169,7 +190,7 @@ async def bulk_send_template(
     if not template_name or not lead_ids:
         raise HTTPException(status_code=400, detail="template_name e lead_ids são obrigatórios")
 
-    # Buscar canal
+    # Buscar leads
     result = await db.execute(select(ExactLead).where(ExactLead.id.in_(lead_ids)))
     leads = result.scalars().all()
 
@@ -184,8 +205,6 @@ async def bulk_send_template(
     failed = 0
     errors = []
 
-    from app.exact_spotter import extract_course_name
-
     for lead in leads:
         phone = lead.phone1
         if not phone:
@@ -197,7 +216,7 @@ async def bulk_send_template(
 
         # Monta parâmetros por lead conforme quantidade de variáveis do template
         lead_name = lead.name.split()[0] if lead.name else "Aluno(a)"
-        lead_course = extract_course_name(lead.sub_source) if lead.sub_source else "Pós-Graduação"
+        lead_course = await resolve_course_name(lead.sub_source, db)
         param_count = len(parameters) if parameters else 0
 
         if param_count == 0:
