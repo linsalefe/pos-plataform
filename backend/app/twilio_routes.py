@@ -232,17 +232,23 @@ async def recording_status_webhook(request: Request):
             result = await db.execute(select(CallLog).where(CallLog.call_sid == call_sid))
             call_log = result.scalar_one_or_none()
 
-            # Fallback: busca pelo Parent Call SID
+            # Fallback: busca pelo Parent Call SID via API Twilio
             if not call_log:
                 try:
-                    from twilio.rest import Client
-                    twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-                    recording = twilio_client.recordings(recording_sid).fetch()
-                    parent_sid = recording.call_sid
-                    if parent_sid and parent_sid != call_sid:
-                        result2 = await db.execute(select(CallLog).where(CallLog.call_sid == parent_sid))
-                        call_log = result2.scalar_one_or_none()
+                    import httpx as _httpx
+                    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+                    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+                    async with _httpx.AsyncClient() as _client:
+                        rec_resp = await _client.get(
+                            f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Recordings/{recording_sid}.json",
+                            auth=(account_sid, auth_token),
+                        )
+                        rec_data = rec_resp.json()
+                        parent_sid = rec_data.get("call_sid", "")
                         print(f"🔁 Fallback SID: {call_sid} -> {parent_sid}")
+                        if parent_sid and parent_sid != call_sid:
+                            result2 = await db.execute(select(CallLog).where(CallLog.call_sid == parent_sid))
+                            call_log = result2.scalar_one_or_none()
                 except Exception as e:
                     print(f"❌ Erro no fallback SID: {e}")
 
