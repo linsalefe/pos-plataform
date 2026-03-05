@@ -179,3 +179,13 @@ class CallLog(Base):
 
     user = relationship("User", backref="call_logs")
     channel = relationship("Channel", backref="call_logs")
+    
+class CourseAlias(Base):
+    __tablename__ = "course_aliases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alias = Column(String(150), unique=True, nullable=False, index=True)
+    full_name = Column(String(500), nullable=False)
+    short_name = Column(String(150), nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
