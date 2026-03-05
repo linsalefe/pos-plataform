@@ -1,11 +1,13 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
 import {
   Phone, PhoneIncoming, PhoneOutgoing, Clock,
-  RefreshCw, Trash2, Sparkles, X, FileText, Loader2
+  RefreshCw, Trash2, Sparkles, X, FileText, Loader2,
+  Play, Volume2, ChevronRight, Mic, TrendingUp,
+  CheckCircle2, AlertCircle, PhoneMissed
 } from 'lucide-react';
 
 interface CallLog {
@@ -32,6 +34,7 @@ export default function CallsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedCall, setSelectedCall] = useState<CallLog | null>(null);
   const [transcribing, setTranscribing] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<'recording' | 'transcription' | 'insights'>('recording');
 
   const fetchCalls = async () => {
     try {
@@ -64,8 +67,8 @@ export default function CallsPage() {
     }
   };
 
-  const transcribeCall = async (call: CallLog, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const transcribeCall = async (call: CallLog, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setTranscribing(call.id);
     try {
       const token = localStorage.getItem('token');
@@ -74,7 +77,8 @@ export default function CallsPage() {
         timeout: 120000,
       });
       await fetchCalls();
-      setSelectedCall({ ...call, ...res.data });
+      setSelectedCall(prev => prev ? { ...prev, ...res.data } : null);
+      setActiveTab('transcription');
     } catch (err) {
       console.error('Erro ao transcrever:', err);
     } finally {
@@ -82,7 +86,10 @@ export default function CallsPage() {
     }
   };
 
-  const openDrawer = (call: CallLog) => setSelectedCall(call);
+  const openDrawer = (call: CallLog) => {
+    setSelectedCall(call);
+    setActiveTab('recording');
+  };
 
   const formatDuration = (seconds: number) => {
     if (!seconds) return '0s';
@@ -105,18 +112,18 @@ export default function CallsPage() {
     return phone;
   };
 
-  const statusLabel: Record<string, { text: string; color: string }> = {
-    completed: { text: 'Completada', color: 'bg-green-500/10 text-green-400' },
-    'no-answer': { text: 'Sem resposta', color: 'bg-yellow-500/10 text-yellow-400' },
-    busy: { text: 'Ocupado', color: 'bg-orange-500/10 text-orange-400' },
-    failed: { text: 'Falhou', color: 'bg-red-500/10 text-red-400' },
-    initiated: { text: 'Iniciada', color: 'bg-blue-500/10 text-blue-400' },
-    ringing: { text: 'Chamando', color: 'bg-blue-500/10 text-blue-400' },
-    'in-progress': { text: 'Em andamento', color: 'bg-blue-500/10 text-blue-400' },
+  const statusConfig: Record<string, { text: string; color: string; bg: string; icon: React.ReactNode }> = {
+    completed: { text: 'Completada', color: 'text-emerald-600', bg: 'bg-emerald-50', icon: <CheckCircle2 className="w-3 h-3" /> },
+    'no-answer': { text: 'Sem resposta', color: 'text-amber-600', bg: 'bg-amber-50', icon: <PhoneMissed className="w-3 h-3" /> },
+    busy: { text: 'Ocupado', color: 'text-orange-600', bg: 'bg-orange-50', icon: <AlertCircle className="w-3 h-3" /> },
+    failed: { text: 'Falhou', color: 'text-red-600', bg: 'bg-red-50', icon: <AlertCircle className="w-3 h-3" /> },
+    initiated: { text: 'Iniciada', color: 'text-blue-600', bg: 'bg-blue-50', icon: <Phone className="w-3 h-3" /> },
+    ringing: { text: 'Chamando', color: 'text-blue-600', bg: 'bg-blue-50', icon: <Phone className="w-3 h-3" /> },
+    'in-progress': { text: 'Em andamento', color: 'text-blue-600', bg: 'bg-blue-50', icon: <Phone className="w-3 h-3" /> },
   };
 
   const getStatus = (status: string) =>
-    statusLabel[status] || { text: status, color: 'bg-gray-500/10 text-gray-400' };
+    statusConfig[status] || { text: status, color: 'text-gray-600', bg: 'bg-gray-100', icon: null };
 
   const totalCalls = calls.length;
   const completedCalls = calls.filter(c => c.status === 'completed').length;
@@ -124,133 +131,208 @@ export default function CallsPage() {
   const inboundCalls = calls.filter(c => c.direction === 'inbound').length;
 
   const formatInsights = (text: string) => {
-    return text.split('\n').map((line, i) => {
-      if (line.startsWith('**') && line.endsWith('**')) {
-        return <p key={i} className="font-bold text-gray-800 mt-4 mb-1">{line.replace(/\*\*/g, '')}</p>;
+    const sections: { title: string; items: string[] }[] = [];
+    let currentSection: { title: string; items: string[] } | null = null;
+
+    text.split('\n').forEach(line => {
+      if (line.match(/^\d+\.\s\*\*/) || (line.startsWith('**') && line.endsWith('**'))) {
+        if (currentSection) sections.push(currentSection);
+        currentSection = { title: line.replace(/\*\*/g, '').replace(/^\d+\.\s/, '').trim(), items: [] };
+      } else if ((line.startsWith('   - ') || line.startsWith('- ')) && currentSection) {
+        currentSection.items.push(line.replace(/^\s*-\s/, '').trim());
+      } else if (line.trim() && currentSection && !line.startsWith('**')) {
+        currentSection.items.push(line.trim());
       }
-      if (line.match(/^\d+\.\s\*\*/)) {
-        const clean = line.replace(/\*\*/g, '');
-        return <p key={i} className="font-semibold text-gray-700 mt-4 mb-1">{clean}</p>;
-      }
-      if (line.startsWith('   - ') || line.startsWith('- ')) {
-        return <p key={i} className="text-gray-600 text-sm pl-3 before:content-['•'] before:mr-2">{line.replace(/^\s*-\s/, '')}</p>;
-      }
-      if (line.trim() === '') return <br key={i} />;
-      return <p key={i} className="text-gray-600 text-sm">{line}</p>;
     });
+    if (currentSection) sections.push(currentSection);
+
+    if (sections.length === 0) {
+      return <p className="text-sm text-gray-600 leading-relaxed">{text}</p>;
+    }
+
+    const sectionColors = [
+      { bg: 'bg-blue-50', border: 'border-blue-100', title: 'text-blue-700', dot: 'bg-blue-400' },
+      { bg: 'bg-purple-50', border: 'border-purple-100', title: 'text-purple-700', dot: 'bg-purple-400' },
+      { bg: 'bg-emerald-50', border: 'border-emerald-100', title: 'text-emerald-700', dot: 'bg-emerald-400' },
+      { bg: 'bg-amber-50', border: 'border-amber-100', title: 'text-amber-700', dot: 'bg-amber-400' },
+    ];
+
+    return (
+      <div className="space-y-3">
+        {sections.map((section, i) => {
+          const colors = sectionColors[i % sectionColors.length];
+          return (
+            <div key={i} className={`rounded-2xl border ${colors.bg} ${colors.border} p-4`}>
+              <p className={`text-[10px] font-bold uppercase tracking-widest mb-2 ${colors.title}`}>{section.title}</p>
+              <ul className="space-y-1.5">
+                {section.items.map((item, j) => (
+                  <li key={j} className="flex items-start gap-2 text-sm text-gray-700">
+                    <span className={`w-1.5 h-1.5 rounded-full ${colors.dot} mt-1.5 flex-shrink-0`} />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    );
   };
+
+  const phoneDisplay = selectedCall
+    ? selectedCall.direction === 'outbound' ? selectedCall.to_number : selectedCall.from_number
+    : '';
+
+  const hasRecording = selectedCall && (selectedCall.local_recording_path || selectedCall.recording_url);
+  const hasTranscription = selectedCall?.transcription_status === 'done';
+
+  const tabs = [
+    { id: 'recording' as const, label: 'Gravação', icon: <Volume2 className="w-3.5 h-3.5" />, show: true },
+    { id: 'transcription' as const, label: 'Transcrição', icon: <Mic className="w-3.5 h-3.5" />, show: hasTranscription },
+    { id: 'insights' as const, label: 'Insights', icon: <TrendingUp className="w-3.5 h-3.5" />, show: hasTranscription && !!selectedCall?.transcription_insights },
+  ].filter(t => t.show);
 
   return (
     <AppLayout>
       <div className="flex-1 overflow-auto">
-        <div className="flex items-center justify-between mb-6">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-7">
           <div>
-            <h1 className="text-2xl font-bold text-gray-800">Ligações</h1>
-            <p className="text-sm text-gray-500 mt-1">Histórico de chamadas via VoIP</p>
+            <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Ligações</h1>
+            <p className="text-sm text-gray-400 mt-0.5">Histórico de chamadas via VoIP</p>
           </div>
-          <button onClick={fetchCalls} className="flex items-center gap-2 px-4 py-2 bg-[#2A658F] text-white rounded-xl text-sm hover:bg-[#347aab] transition-colors">
+          <button
+            onClick={fetchCalls}
+            className="flex items-center gap-2 px-4 py-2.5 bg-[#2A658F] text-white rounded-xl text-sm font-medium hover:bg-[#347aab] transition-all shadow-sm hover:shadow-md"
+          >
             <RefreshCw className="w-4 h-4" /> Atualizar
           </button>
         </div>
 
+        {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[
-            { icon: <Phone className="w-5 h-5 text-blue-500" />, bg: 'bg-blue-50', value: totalCalls, label: 'Total de ligações' },
-            { icon: <PhoneOutgoing className="w-5 h-5 text-green-500" />, bg: 'bg-green-50', value: completedCalls, label: 'Completadas' },
-            { icon: <Clock className="w-5 h-5 text-purple-500" />, bg: 'bg-purple-50', value: formatDuration(totalDuration), label: 'Tempo total' },
-            { icon: <PhoneIncoming className="w-5 h-5 text-orange-500" />, bg: 'bg-orange-50', value: inboundCalls, label: 'Recebidas' },
+            { icon: <Phone className="w-5 h-5 text-[#2A658F]" />, bg: 'bg-[#2A658F]/10', value: totalCalls, label: 'Total de ligações', accent: 'text-[#2A658F]' },
+            { icon: <PhoneOutgoing className="w-5 h-5 text-emerald-600" />, bg: 'bg-emerald-50', value: completedCalls, label: 'Completadas', accent: 'text-emerald-600' },
+            { icon: <Clock className="w-5 h-5 text-violet-600" />, bg: 'bg-violet-50', value: formatDuration(totalDuration), label: 'Tempo total', accent: 'text-violet-600' },
+            { icon: <PhoneIncoming className="w-5 h-5 text-orange-500" />, bg: 'bg-orange-50', value: inboundCalls, label: 'Recebidas', accent: 'text-orange-500' },
           ].map((card, i) => (
-            <div key={i} className="bg-white rounded-xl p-4 border border-gray-100">
-              <div className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-xl ${card.bg} flex items-center justify-center`}>{card.icon}</div>
+            <div key={i} className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3.5">
+                <div className={`w-11 h-11 rounded-xl ${card.bg} flex items-center justify-center flex-shrink-0`}>
+                  {card.icon}
+                </div>
                 <div>
-                  <p className="text-2xl font-bold text-gray-800">{card.value}</p>
-                  <p className="text-xs text-gray-500">{card.label}</p>
+                  <p className={`text-2xl font-bold ${card.accent}`}>{card.value}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{card.label}</p>
                 </div>
               </div>
             </div>
           ))}
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        {/* Table */}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
           {loading ? (
-            <div className="flex items-center justify-center py-20">
-              <div className="animate-spin w-6 h-6 border-2 border-[#2A658F] border-t-transparent rounded-full" />
+            <div className="flex flex-col items-center justify-center py-24 gap-3">
+              <div className="animate-spin w-7 h-7 border-2 border-[#2A658F] border-t-transparent rounded-full" />
+              <p className="text-sm text-gray-400">Carregando ligações...</p>
             </div>
           ) : calls.length === 0 ? (
-            <div className="text-center py-20">
-              <Phone className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500">Nenhuma ligação registrada</p>
+            <div className="text-center py-24">
+              <div className="w-16 h-16 rounded-2xl bg-gray-50 flex items-center justify-center mx-auto mb-4">
+                <Phone className="w-8 h-8 text-gray-300" />
+              </div>
+              <p className="text-gray-500 font-medium">Nenhuma ligação registrada</p>
+              <p className="text-sm text-gray-400 mt-1">As chamadas aparecerão aqui automaticamente</p>
             </div>
           ) : (
             <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-100 bg-gray-50/50">
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase">Direção</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase">De / Para</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase">Atendente</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase">Status</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase">Duração</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase">Data</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase">Gravação</th>
+                <tr className="border-b border-gray-100 bg-gray-50/70">
+                  <th className="text-left px-5 py-3.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Direção</th>
+                  <th className="text-left px-5 py-3.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest">De / Para</th>
+                  <th className="text-left px-5 py-3.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Atendente</th>
+                  <th className="text-left px-5 py-3.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Status</th>
+                  <th className="text-left px-5 py-3.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Duração</th>
+                  <th className="text-left px-5 py-3.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Data</th>
+                  <th className="text-left px-5 py-3.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Gravação</th>
                 </tr>
               </thead>
               <tbody>
                 {calls.map((call) => {
                   const st = getStatus(call.status);
-                  const phoneDisplay = call.direction === 'outbound' ? call.to_number : call.from_number;
-                  const hasRecording = call.local_recording_path || call.recording_url;
+                  const phone = call.direction === 'outbound' ? call.to_number : call.from_number;
+                  const hasRec = call.local_recording_path || call.recording_url;
+                  const isSelected = selectedCall?.id === call.id;
                   return (
                     <tr
                       key={call.id}
                       onClick={() => openDrawer(call)}
-                      className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors cursor-pointer"
+                      className={`border-b border-gray-50 transition-colors cursor-pointer group ${isSelected ? 'bg-blue-50/60' : 'hover:bg-gray-50/70'}`}
                     >
                       <td className="px-5 py-3.5">
-                        {call.direction === 'outbound'
-                          ? <PhoneOutgoing className="w-4 h-4 text-blue-500" />
-                          : <PhoneIncoming className="w-4 h-4 text-orange-500" />}
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${call.direction === 'outbound' ? 'bg-blue-50 group-hover:bg-blue-100' : 'bg-orange-50 group-hover:bg-orange-100'}`}>
+                          {call.direction === 'outbound'
+                            ? <PhoneOutgoing className="w-3.5 h-3.5 text-blue-500" />
+                            : <PhoneIncoming className="w-3.5 h-3.5 text-orange-500" />}
+                        </div>
                       </td>
                       <td className="px-5 py-3.5">
-                        <p className="text-sm text-gray-800 font-medium">{call.contact_name || formatPhone(phoneDisplay)}</p>
-                        <p className="text-xs text-gray-400">{formatPhone(phoneDisplay)}</p>
+                        <p className="text-sm text-gray-900 font-semibold">{call.contact_name || formatPhone(phone)}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{formatPhone(phone)}</p>
                       </td>
-                      <td className="px-5 py-3.5 text-sm text-gray-600">{call.user_name || '-'}</td>
                       <td className="px-5 py-3.5">
-                        <span className={`text-xs font-medium px-2.5 py-1 rounded-lg ${st.color}`}>{st.text}</span>
+                        {call.user_name
+                          ? <span className="text-sm text-gray-600 font-medium">{call.user_name}</span>
+                          : <span className="text-sm text-gray-300">—</span>}
                       </td>
-                      <td className="px-5 py-3.5 text-sm text-gray-600 font-mono">{formatDuration(call.duration)}</td>
-                      <td className="px-5 py-3.5 text-sm text-gray-500">{formatDate(call.created_at)}</td>
+                      <td className="px-5 py-3.5">
+                        <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg ${st.color} ${st.bg}`}>
+                          {st.icon} {st.text}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <span className="text-sm text-gray-600 font-mono tabular-nums">{formatDuration(call.duration)}</span>
+                      </td>
+                      <td className="px-5 py-3.5 text-sm text-gray-400">{formatDate(call.created_at)}</td>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                          {hasRecording && (
-                            <audio controls className="h-8 w-36" preload="none">
-                              <source src={`https://hub.cenatdata.online/api/twilio/recording/${call.call_sid}`} type="audio/mpeg" />
-                            </audio>
+                          {hasRec && (
+                            <button
+                              onClick={() => openDrawer(call)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-[#2A658F] hover:text-white text-gray-600 rounded-lg text-xs font-medium transition-all"
+                            >
+                              <Play className="w-3 h-3" /> Ouvir
+                            </button>
                           )}
-                          {hasRecording && call.transcription_status !== 'done' && (
+                          {hasRec && call.transcription_status !== 'done' && (
                             <button
                               onClick={(e) => transcribeCall(call, e)}
                               disabled={transcribing === call.id}
-                              className="text-purple-500 hover:text-purple-700 transition-colors"
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 hover:bg-violet-100 text-violet-600 rounded-lg text-xs font-medium transition-all disabled:opacity-60"
                               title="Transcrever com IA"
                             >
                               {transcribing === call.id
-                                ? <Loader2 className="w-4 h-4 animate-spin" />
-                                : <Sparkles className="w-4 h-4" />}
+                                ? <Loader2 className="w-3 h-3 animate-spin" />
+                                : <Sparkles className="w-3 h-3" />}
                             </button>
                           )}
                           {call.transcription_status === 'done' && (
-                            <span className="text-xs text-purple-500 font-medium flex items-center gap-1">
+                            <span className="flex items-center gap-1 text-xs text-violet-500 font-semibold">
                               <FileText className="w-3 h-3" /> Insights
                             </span>
                           )}
-                          {hasRecording && (
-                            <button onClick={(e) => deleteRecording(call.call_sid, e)} className="text-red-400 hover:text-red-600 transition-colors" title="Apagar gravação">
-                              <Trash2 className="w-4 h-4" />
+                          {hasRec && (
+                            <button
+                              onClick={(e) => deleteRecording(call.call_sid, e)}
+                              className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-300 hover:bg-red-50 hover:text-red-500 transition-all"
+                              title="Apagar gravação"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           )}
-                          {!hasRecording && <span className="text-xs text-gray-400">-</span>}
+                          {!hasRec && <span className="text-gray-300 text-sm">—</span>}
                         </div>
                       </td>
                     </tr>
@@ -262,77 +344,230 @@ export default function CallsPage() {
         </div>
       </div>
 
-      {/* Drawer lateral */}
+      {/* Drawer */}
       {selectedCall && (
         <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/20" onClick={() => setSelectedCall(null)} />
-          <div className="relative w-[480px] h-full bg-white shadow-2xl flex flex-col overflow-hidden">
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-[2px]" onClick={() => setSelectedCall(null)} />
+          <div className="relative w-[520px] h-full bg-white shadow-2xl flex flex-col" style={{ animation: 'slideIn 0.25s ease-out' }}>
+
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <div>
-                <p className="font-semibold text-gray-800">
-                  {selectedCall.contact_name || formatPhone(selectedCall.direction === 'outbound' ? selectedCall.to_number : selectedCall.from_number)}
-                </p>
-                <p className="text-xs text-gray-400">{formatDate(selectedCall.created_at)} · {formatDuration(selectedCall.duration)}</p>
+            <div className="px-6 pt-6 pb-4 border-b border-gray-100">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={`w-11 h-11 rounded-2xl flex items-center justify-center ${selectedCall.direction === 'outbound' ? 'bg-blue-50' : 'bg-orange-50'}`}>
+                    {selectedCall.direction === 'outbound'
+                      ? <PhoneOutgoing className="w-5 h-5 text-blue-500" />
+                      : <PhoneIncoming className="w-5 h-5 text-orange-500" />}
+                  </div>
+                  <div>
+                    <p className="font-bold text-gray-900 text-base leading-tight">
+                      {selectedCall.contact_name || formatPhone(phoneDisplay)}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {formatDate(selectedCall.created_at)} · {formatDuration(selectedCall.duration)}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedCall(null)}
+                  className="w-8 h-8 flex items-center justify-center rounded-xl text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-all"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <button onClick={() => setSelectedCall(null)} className="text-gray-400 hover:text-gray-600">
-                <X className="w-5 h-5" />
-              </button>
+
+              <div className="mt-3 flex items-center gap-2 flex-wrap">
+                {(() => {
+                  const st = getStatus(selectedCall.status);
+                  return (
+                    <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl ${st.color} ${st.bg}`}>
+                      {st.icon} {st.text}
+                    </span>
+                  );
+                })()}
+                {selectedCall.user_name && (
+                  <span className="text-xs text-gray-500 bg-gray-100 px-3 py-1.5 rounded-xl font-medium">
+                    👤 {selectedCall.user_name}
+                  </span>
+                )}
+              </div>
+
+              {tabs.length > 1 && (
+                <div className="flex gap-1 mt-4 bg-gray-100 p-1 rounded-xl">
+                  {tabs.map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-all ${
+                        activeTab === tab.id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      {tab.icon} {tab.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-              {/* Player */}
-              {(selectedCall.local_recording_path || selectedCall.recording_url) && (
-                <div className="bg-gray-50 rounded-xl p-4">
-                  <p className="text-xs font-semibold text-gray-500 uppercase mb-2">Gravação</p>
-                  <audio controls className="w-full" preload="none">
-                    <source src={`https://hub.cenatdata.online/api/twilio/recording/${selectedCall.call_sid}`} type="audio/mpeg" />
-                  </audio>
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+
+              {activeTab === 'recording' && (
+                <>
+                  {hasRecording ? (
+                    <>
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Áudio da chamada</p>
+                        <div className="bg-gradient-to-br from-[#2A658F]/5 to-[#347aab]/10 rounded-2xl p-5 border border-[#2A658F]/10">
+                          <div className="flex items-center gap-3 mb-4">
+                            <div className="w-10 h-10 rounded-xl bg-[#2A658F] flex items-center justify-center flex-shrink-0">
+                              <Volume2 className="w-5 h-5 text-white" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-gray-800">Gravação da chamada</p>
+                              <p className="text-xs text-gray-400">Duração: {formatDuration(selectedCall.duration)}</p>
+                            </div>
+                          </div>
+                          <audio controls className="w-full rounded-xl" preload="metadata">
+                            <source src={`https://hub.cenatdata.online/api/twilio/recording/${selectedCall.call_sid}`} type="audio/mpeg" />
+                          </audio>
+                        </div>
+                      </div>
+
+                      {hasTranscription && selectedCall.transcription && (
+                        <div>
+                          <div className="flex items-center justify-between mb-3">
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Transcrição</p>
+                            <button onClick={() => setActiveTab('transcription')} className="text-xs text-[#2A658F] font-semibold flex items-center gap-1 hover:underline">
+                              Ver completa <ChevronRight className="w-3 h-3" />
+                            </button>
+                          </div>
+                          <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 max-h-44 overflow-y-auto">
+                            <p className="text-sm text-gray-700 leading-relaxed">{selectedCall.transcription}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {!hasTranscription && (
+                        <div>
+                          <button
+                            onClick={() => transcribeCall(selectedCall)}
+                            disabled={transcribing === selectedCall.id}
+                            className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-violet-500 to-purple-600 text-white hover:from-violet-600 hover:to-purple-700 rounded-2xl text-sm font-semibold transition-all shadow-sm hover:shadow-md disabled:opacity-60"
+                          >
+                            {transcribing === selectedCall.id
+                              ? <><Loader2 className="w-4 h-4 animate-spin" /> Processando transcrição...</>
+                              : <><Sparkles className="w-4 h-4" /> Gerar Transcrição com IA</>}
+                          </button>
+                          <p className="text-xs text-gray-400 text-center mt-2">Powered by OpenAI Whisper + GPT-4o</p>
+                        </div>
+                      )}
+
+                      {hasTranscription && selectedCall.transcription_insights && (
+                        <div>
+                          <div className="flex items-center justify-between mb-3">
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Insights da IA</p>
+                            <button onClick={() => setActiveTab('insights')} className="text-xs text-violet-600 font-semibold flex items-center gap-1 hover:underline">
+                              Ver todos <ChevronRight className="w-3 h-3" />
+                            </button>
+                          </div>
+                          <div className="bg-violet-50 rounded-2xl p-4 border border-violet-100">
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <Sparkles className="w-4 h-4 text-violet-500" />
+                              <span className="text-xs font-bold text-violet-600 uppercase tracking-wider">Análise disponível</span>
+                            </div>
+                            <p className="text-sm text-violet-700">Clique em "Ver todos" para acessar a análise completa da chamada.</p>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-16 text-center">
+                      <div className="w-16 h-16 rounded-2xl bg-gray-50 flex items-center justify-center mb-4">
+                        <Phone className="w-8 h-8 text-gray-200" />
+                      </div>
+                      <p className="text-gray-500 font-medium">Sem gravação</p>
+                      <p className="text-sm text-gray-400 mt-1">Esta chamada não possui gravação disponível</p>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {activeTab === 'transcription' && (
+                <div className="space-y-4">
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Transcrição da chamada</p>
+                  {selectedCall?.transcription ? (
+                    <div className="bg-gray-50 rounded-2xl p-5 border border-gray-100">
+                      <div className="flex items-center gap-2 mb-3 pb-3 border-b border-gray-200">
+                        <Mic className="w-4 h-4 text-gray-400" />
+                        <span className="text-xs font-semibold text-gray-500">Gerado com Whisper AI</span>
+                      </div>
+                      <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{selectedCall.transcription}</p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400 text-center py-10">Transcrição não disponível</p>
+                  )}
+                  {hasRecording && (
+                    <div>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Acompanhar no áudio</p>
+                      <audio controls className="w-full rounded-xl" preload="metadata">
+                        <source src={`https://hub.cenatdata.online/api/twilio/recording/${selectedCall!.call_sid}`} type="audio/mpeg" />
+                      </audio>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* Botão transcrever */}
-              {(selectedCall.local_recording_path || selectedCall.recording_url) && selectedCall.transcription_status !== 'done' && (
+              {activeTab === 'insights' && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-violet-100 flex items-center justify-center">
+                      <Sparkles className="w-4 h-4 text-violet-600" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-gray-800">Análise da IA</p>
+                      <p className="text-xs text-gray-400">Gerado com GPT-4o</p>
+                    </div>
+                  </div>
+                  {selectedCall?.transcription_insights
+                    ? formatInsights(selectedCall.transcription_insights)
+                    : <p className="text-sm text-gray-400 text-center py-10">Insights não disponíveis</p>}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50/50 flex items-center gap-2">
+              {hasRecording && (
                 <button
-                  onClick={(e) => transcribeCall(selectedCall, e)}
-                  disabled={transcribing === selectedCall.id}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-purple-50 text-purple-600 hover:bg-purple-100 rounded-xl text-sm font-medium transition-colors"
+                  onClick={(e) => deleteRecording(selectedCall!.call_sid, e)}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-red-500 hover:bg-red-50 rounded-xl transition-all"
                 >
-                  {transcribing === selectedCall.id
-                    ? <><Loader2 className="w-4 h-4 animate-spin" /> Processando...</>
-                    : <><Sparkles className="w-4 h-4" /> Gerar Transcrição e Insights</>}
+                  <Trash2 className="w-3.5 h-3.5" /> Apagar gravação
                 </button>
               )}
-
-              {/* Transcrição */}
-              {selectedCall.transcription && (
-                <div className="bg-gray-50 rounded-xl p-4">
-                  <p className="text-xs font-semibold text-gray-500 uppercase mb-2">Transcrição</p>
-                  <p className="text-sm text-gray-700 leading-relaxed">{selectedCall.transcription}</p>
-                </div>
-              )}
-
-              {/* Insights */}
-              {selectedCall.transcription_insights && (
-                <div className="bg-purple-50 rounded-xl p-4">
-                  <p className="text-xs font-semibold text-purple-500 uppercase mb-2 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3" /> Insights da IA
-                  </p>
-                  <div className="text-sm">{formatInsights(selectedCall.transcription_insights)}</div>
-                </div>
-              )}
-
-              {/* Sem gravação */}
-              {!selectedCall.local_recording_path && !selectedCall.recording_url && (
-                <div className="text-center py-10 text-gray-400">
-                  <Phone className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                  <p className="text-sm">Nenhuma gravação disponível</p>
-                </div>
+              {hasRecording && !hasTranscription && (
+                <button
+                  onClick={() => transcribeCall(selectedCall!)}
+                  disabled={transcribing === selectedCall!.id}
+                  className="ml-auto flex items-center gap-1.5 px-4 py-2 bg-violet-600 text-white text-xs font-semibold rounded-xl hover:bg-violet-700 transition-all disabled:opacity-60"
+                >
+                  {transcribing === selectedCall!.id
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Processando...</>
+                    : <><Sparkles className="w-3.5 h-3.5" /> Transcrever</>}
+                </button>
               )}
             </div>
           </div>
         </div>
       )}
+
+      <style jsx global>{`
+        @keyframes slideIn {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+      `}</style>
     </AppLayout>
   );
 }
