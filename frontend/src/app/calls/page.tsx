@@ -6,7 +6,7 @@ import api from '@/lib/api';
 import {
   Phone, PhoneIncoming, PhoneOutgoing, Clock,
   RefreshCw, Trash2, Sparkles, X, FileText, Loader2,
-  Play, Volume2, ChevronRight, Mic, TrendingUp,
+  Play, Volume2, Mic,
   CheckCircle2, AlertCircle, PhoneMissed
 } from 'lucide-react';
 
@@ -34,7 +34,7 @@ export default function CallsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedCall, setSelectedCall] = useState<CallLog | null>(null);
   const [transcribing, setTranscribing] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'recording' | 'transcription' | 'insights'>('recording');
+
 
   const fetchCalls = async () => {
     try {
@@ -78,7 +78,6 @@ export default function CallsPage() {
       });
       await fetchCalls();
       setSelectedCall(prev => prev ? { ...prev, ...res.data } : null);
-      setActiveTab('transcription');
     } catch (err) {
       console.error('Erro ao transcrever:', err);
     } finally {
@@ -88,7 +87,6 @@ export default function CallsPage() {
 
   const openDrawer = (call: CallLog) => {
     setSelectedCall(call);
-    setActiveTab('recording');
   };
 
   const formatDuration = (seconds: number) => {
@@ -186,11 +184,7 @@ export default function CallsPage() {
   const hasRecording = selectedCall && (selectedCall.local_recording_path || selectedCall.recording_url);
   const hasTranscription = selectedCall?.transcription_status === 'done';
 
-  const tabs = [
-    { id: 'recording' as const, label: 'Gravação', icon: <Volume2 className="w-3.5 h-3.5" />, show: true },
-    { id: 'transcription' as const, label: 'Transcrição', icon: <Mic className="w-3.5 h-3.5" />, show: hasTranscription && !!selectedCall?.transcription },
-    { id: 'insights' as const, label: 'Insights', icon: <TrendingUp className="w-3.5 h-3.5" />, show: hasTranscription && !!selectedCall?.transcription_insights },
-  ].filter(t => t.show);
+
 
   return (
     <AppLayout>
@@ -392,148 +386,81 @@ export default function CallsPage() {
                 )}
               </div>
 
-              {tabs.length > 1 && (
-                <div className="flex gap-1 mt-4 bg-gray-100 p-1 rounded-xl">
-                  {tabs.map(tab => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveTab(tab.id)}
-                      className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-all ${
-                        activeTab === tab.id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                      }`}
-                    >
-                      {tab.icon} {tab.label}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
 
-            {/* Body */}
-            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+            {/* Body — tudo em sequência, sem abas */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
 
-              {activeTab === 'recording' && (
-                <>
-                  {hasRecording ? (
-                    <>
+              {/* Gravação */}
+              {hasRecording ? (
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Áudio da chamada</p>
+                  <div className="bg-gradient-to-br from-[#2A658F]/5 to-[#347aab]/10 rounded-2xl p-5 border border-[#2A658F]/10">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 rounded-xl bg-[#2A658F] flex items-center justify-center flex-shrink-0">
+                        <Volume2 className="w-5 h-5 text-white" />
+                      </div>
                       <div>
-                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Áudio da chamada</p>
-                        <div className="bg-gradient-to-br from-[#2A658F]/5 to-[#347aab]/10 rounded-2xl p-5 border border-[#2A658F]/10">
-                          <div className="flex items-center gap-3 mb-4">
-                            <div className="w-10 h-10 rounded-xl bg-[#2A658F] flex items-center justify-center flex-shrink-0">
-                              <Volume2 className="w-5 h-5 text-white" />
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold text-gray-800">Gravação da chamada</p>
-                              <p className="text-xs text-gray-400">Duração: {formatDuration(selectedCall.duration)}</p>
-                            </div>
-                          </div>
-                          <audio controls className="w-full rounded-xl" preload="metadata">
-                            <source src={`https://hub.cenatdata.online/api/twilio/recording/${selectedCall.call_sid}`} type="audio/mpeg" />
-                          </audio>
-                        </div>
+                        <p className="text-sm font-semibold text-gray-800">Gravação da chamada</p>
+                        <p className="text-xs text-gray-400">Duração: {formatDuration(selectedCall.duration)}</p>
                       </div>
-
-                      {hasTranscription && selectedCall.transcription && (
-                        <div>
-                          <div className="flex items-center justify-between mb-3">
-                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Transcrição</p>
-                            <button onClick={() => setActiveTab('transcription')} className="text-xs text-[#2A658F] font-semibold flex items-center gap-1 hover:underline">
-                              Ver completa <ChevronRight className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 max-h-44 overflow-y-auto">
-                            <p className="text-sm text-gray-700 leading-relaxed">{selectedCall.transcription}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      {!hasTranscription && (
-                        <div>
-                          <button
-                            onClick={() => transcribeCall(selectedCall)}
-                            disabled={transcribing === selectedCall.id}
-                            className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-violet-500 to-purple-600 text-white hover:from-violet-600 hover:to-purple-700 rounded-2xl text-sm font-semibold transition-all shadow-sm hover:shadow-md disabled:opacity-60"
-                          >
-                            {transcribing === selectedCall.id
-                              ? <><Loader2 className="w-4 h-4 animate-spin" /> Processando transcrição...</>
-                              : <><Sparkles className="w-4 h-4" /> Gerar Transcrição com IA</>}
-                          </button>
-                          <p className="text-xs text-gray-400 text-center mt-2">Powered by OpenAI Whisper + GPT-4o</p>
-                        </div>
-                      )}
-
-                      {hasTranscription && selectedCall.transcription_insights && (
-                        <div>
-                          <div className="flex items-center justify-between mb-3">
-                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Insights da IA</p>
-                            <button onClick={() => setActiveTab('insights')} className="text-xs text-violet-600 font-semibold flex items-center gap-1 hover:underline">
-                              Ver todos <ChevronRight className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <div className="bg-violet-50 rounded-2xl p-4 border border-violet-100">
-                            <div className="flex items-center gap-2 mb-1.5">
-                              <Sparkles className="w-4 h-4 text-violet-500" />
-                              <span className="text-xs font-bold text-violet-600 uppercase tracking-wider">Análise disponível</span>
-                            </div>
-                            <p className="text-sm text-violet-700">Clique em "Ver todos" para acessar a análise completa da chamada.</p>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-16 text-center">
-                      <div className="w-16 h-16 rounded-2xl bg-gray-50 flex items-center justify-center mb-4">
-                        <Phone className="w-8 h-8 text-gray-200" />
-                      </div>
-                      <p className="text-gray-500 font-medium">Sem gravação</p>
-                      <p className="text-sm text-gray-400 mt-1">Esta chamada não possui gravação disponível</p>
                     </div>
-                  )}
-                </>
-              )}
-
-              {activeTab === 'transcription' && (
-                <div className="space-y-4">
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Transcrição da chamada</p>
-                  {selectedCall?.transcription ? (
-                    <div className="bg-gray-50 rounded-2xl p-5 border border-gray-100">
-                      <div className="flex items-center gap-2 mb-3 pb-3 border-b border-gray-200">
-                        <Mic className="w-4 h-4 text-gray-400" />
-                        <span className="text-xs font-semibold text-gray-500">Gerado com Whisper AI</span>
-                      </div>
-                      <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{selectedCall.transcription}</p>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-400 text-center py-10">Transcrição não disponível</p>
-                  )}
-                  {hasRecording && (
-                    <div>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Acompanhar no áudio</p>
-                      <audio controls className="w-full rounded-xl" preload="metadata">
-                        <source src={`https://hub.cenatdata.online/api/twilio/recording/${selectedCall!.call_sid}`} type="audio/mpeg" />
-                      </audio>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {activeTab === 'insights' && (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-violet-100 flex items-center justify-center">
-                      <Sparkles className="w-4 h-4 text-violet-600" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-gray-800">Análise da IA</p>
-                      <p className="text-xs text-gray-400">Gerado com GPT-4o</p>
-                    </div>
+                    <audio controls className="w-full rounded-xl" preload="metadata">
+                      <source src={`https://hub.cenatdata.online/api/twilio/recording/${selectedCall.call_sid}`} type="audio/mpeg" />
+                    </audio>
                   </div>
-                  {selectedCall?.transcription_insights
-                    ? formatInsights(selectedCall.transcription_insights)
-                    : <p className="text-sm text-gray-400 text-center py-10">Insights não disponíveis</p>}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-10 text-center">
+                  <div className="w-14 h-14 rounded-2xl bg-gray-50 flex items-center justify-center mb-3">
+                    <Phone className="w-7 h-7 text-gray-200" />
+                  </div>
+                  <p className="text-gray-500 font-medium text-sm">Sem gravação</p>
+                  <p className="text-xs text-gray-400 mt-1">Esta chamada não possui gravação disponível</p>
                 </div>
               )}
+
+              {/* Botão transcrever */}
+              {hasRecording && !hasTranscription && (
+                <div>
+                  <button
+                    onClick={() => transcribeCall(selectedCall!)}
+                    disabled={transcribing === selectedCall!.id}
+                    className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-violet-500 to-purple-600 text-white hover:from-violet-600 hover:to-purple-700 rounded-2xl text-sm font-semibold transition-all shadow-sm hover:shadow-md disabled:opacity-60"
+                  >
+                    {transcribing === selectedCall!.id
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Processando transcrição...</>
+                      : <><Sparkles className="w-4 h-4" /> Gerar Transcrição com IA</>}
+                  </button>
+                  <p className="text-xs text-gray-400 text-center mt-2">Powered by OpenAI Whisper + GPT-4o</p>
+                </div>
+              )}
+
+              {/* Transcrição */}
+              {selectedCall?.transcription && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Mic className="w-3.5 h-3.5 text-gray-400" />
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Transcrição</p>
+                  </div>
+                  <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
+                    <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{selectedCall.transcription}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Insights */}
+              {selectedCall?.transcription_insights && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Sparkles className="w-3.5 h-3.5 text-violet-500" />
+                    <p className="text-[10px] font-bold text-violet-500 uppercase tracking-widest">Insights da IA</p>
+                    <span className="text-[10px] text-gray-400 ml-1">· GPT-4o</span>
+                  </div>
+                  {formatInsights(selectedCall.transcription_insights)}
+                </div>
+              )}
+
             </div>
 
             {/* Footer */}
