@@ -189,8 +189,8 @@ async def recording_status_webhook(request: Request):
     """Webhook que recebe URL da gravação quando finalizada."""
     from app.database import async_session
     from app.models import CallLog
-    from app.google_drive import upload_recording_to_drive
     from sqlalchemy import select
+    import httpx, os
 
     form = await request.form()
     call_sid = form.get("CallSid", "")
@@ -201,6 +201,32 @@ async def recording_status_webhook(request: Request):
     if recording_status == "completed" and recording_url:
         mp3_url = f"{recording_url}.mp3"
 
+        # Baixar e salvar no disco
+        recordings_dir = "/home/ubuntu/pos-plataform/recordings"
+        os.makedirs(recordings_dir, exist_ok=True)
+        local_path = f"{recordings_dir}/{call_sid}.mp3"
+
+        try:
+            account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+            auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    mp3_url,
+                    auth=(account_sid, auth_token),
+                    follow_redirects=True,
+                    timeout=60,
+                )
+                if resp.status_code == 200:
+                    with open(local_path, "wb") as f:
+                        f.write(resp.content)
+                    print(f"✅ Gravação salva em {local_path}")
+                else:
+                    print(f"❌ Erro ao baixar gravação: {resp.status_code}")
+                    local_path = None
+        except Exception as e:
+            print(f"❌ Erro ao salvar gravação: {e}")
+            local_path = None
+
         async with async_session() as db:
             result = await db.execute(select(CallLog).where(CallLog.call_sid == call_sid))
             call_log = result.scalar_one_or_none()
@@ -208,28 +234,12 @@ async def recording_status_webhook(request: Request):
             if call_log:
                 call_log.recording_sid = recording_sid
                 call_log.recording_url = mp3_url
-
-                # Upload ao Google Drive
-                try:
-                    drive_link = await upload_recording_to_drive(
-                        recording_url=mp3_url,
-                        call_sid=call_sid,
-                        from_number=call_log.from_number,
-                        to_number=call_log.to_number,
-                        user_name=call_log.user_name or "Geral",
-                        duration=call_log.duration or 0,
-                    )
-                    if drive_link:
-                        call_log.drive_file_url = drive_link
-                except Exception as e:
-                    print(f"❌ Erro upload Drive: {e}")
-
+                if local_path:
+                    call_log.local_recording_path = local_path
+                    call_log.transcription_status = "pending"
                 await db.commit()
 
-        print(f"🎙️ Gravação salva: {call_sid} -> {mp3_url}")
-
     return Response(content="", media_type="application/xml")
-
 
 @router.get("/call-logs")
 async def list_call_logs(
