@@ -390,11 +390,24 @@ async def voice_incoming_twiml(request: "Request"):
 async def stream_recording(call_sid: str):
     """Serve gravação salva localmente."""
     from fastapi.responses import FileResponse
+    from app.database import async_session
+    from app.models import CallLog
+    from sqlalchemy import select
     import os
 
-    local_path = f"/home/ubuntu/pos-plataform/recordings/{call_sid}.mp3"
+    async with async_session() as db:
+        result = await db.execute(select(CallLog).where(CallLog.call_sid == call_sid))
+        call_log = result.scalar_one_or_none()
 
-    if not os.path.exists(local_path):
+    local_path = call_log.local_recording_path if call_log else None
+
+    # Fallback: tenta pelo nome direto
+    if not local_path:
+        direct_path = f"/home/ubuntu/pos-plataform/recordings/{call_sid}.mp3"
+        if os.path.exists(direct_path):
+            local_path = direct_path
+
+    if not local_path or not os.path.exists(local_path):
         return Response(content="Gravação não encontrada", status_code=404)
 
     return FileResponse(
