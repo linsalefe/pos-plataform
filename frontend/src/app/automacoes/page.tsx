@@ -30,6 +30,13 @@ interface SendResult {
   errors: { name: string; error: string }[];
 }
 
+interface CourseAlias {
+  id: number;
+  alias: string;
+  full_name: string;
+  short_name: string;
+}
+
 const stageColors: Record<string, string> = {
   'Entrada': 'bg-blue-50 text-blue-700',
   'Pré Qualificado': 'bg-purple-50 text-purple-700',
@@ -59,6 +66,7 @@ export default function AutomacoesPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectAll, setSelectAll] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [courseAliases, setCourseAliases] = useState<CourseAlias[]>([]);
 
   // Template
   const [templates, setTemplates] = useState<any[]>([]);
@@ -86,6 +94,7 @@ export default function AutomacoesPage() {
     if (user) {
       loadData();
       loadChannels();
+      loadCourseAliases();
     }
   }, [user]);
 
@@ -112,6 +121,22 @@ export default function AutomacoesPage() {
     } catch (err) {
       console.error('Erro:', err);
     }
+  };
+
+  const loadCourseAliases = async () => {
+    try {
+      const res = await api.get('/course-aliases');
+      setCourseAliases(res.data);
+    } catch (err) {
+      console.error('Erro ao carregar aliases:', err);
+    }
+  };
+
+  // Resolver alias → nome legível
+  const resolveCourse = (alias: string | null): string => {
+    if (!alias) return '-';
+    const found = courseAliases.find(c => c.alias.toLowerCase() === alias.toLowerCase());
+    return found ? found.short_name : alias;
   };
 
   const loadTemplates = async () => {
@@ -393,7 +418,7 @@ export default function AutomacoesPage() {
                   </select>
                   <select value={subSourceFilter} onChange={(e) => setSubSourceFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all cursor-pointer">
                     <option value="">Todos cursos</option>
-                    {subSources.map(s => <option key={s} value={s}>{s} ({stats?.by_sub_source[s]})</option>)}
+                    {subSources.map(s => <option key={s} value={s}>{resolveCourse(s)} ({stats?.by_sub_source[s]})</option>)}
                   </select>
                   <select value={sdrFilter} onChange={(e) => setSdrFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all cursor-pointer">
                     <option value="">Todos SDRs</option>
@@ -446,7 +471,7 @@ export default function AutomacoesPage() {
                           <span className="text-[13px] text-gray-500 tabular-nums">{formatPhone(lead.phone1)}</span>
                         </td>
                         <td className="px-4 py-3">
-                          <span className="text-[13px] text-gray-500">{lead.sub_source || '-'}</span>
+                          <span className="text-[13px] text-gray-500">{resolveCourse(lead.sub_source)}</span>
                         </td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium ${stageColors[lead.stage || ''] || 'bg-gray-100 text-gray-600'}`}>
