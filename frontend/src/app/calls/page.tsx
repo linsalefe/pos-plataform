@@ -188,7 +188,7 @@ export default function CallsPage() {
 
   const tabs = [
     { id: 'recording' as const, label: 'Gravação', icon: <Volume2 className="w-3.5 h-3.5" />, show: true },
-    { id: 'transcription' as const, label: 'Transcrição', icon: <Mic className="w-3.5 h-3.5" />, show: hasTranscription },
+    { id: 'transcription' as const, label: 'Transcrição', icon: <Mic className="w-3.5 h-3.5" />, show: hasTranscription && !!selectedCall?.transcription },
     { id: 'insights' as const, label: 'Insights', icon: <TrendingUp className="w-3.5 h-3.5" />, show: hasTranscription && !!selectedCall?.transcription_insights },
   ].filter(t => t.show);
 
