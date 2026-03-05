@@ -243,12 +243,11 @@ async def list_call_logs(
     from sqlalchemy import select
 
     async with async_session() as db:
-        result = await db.execute(
-            select(CallLog)
-            .order_by(CallLog.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
+        query = select(CallLog).order_by(CallLog.created_at.desc())
+        # SDR só vê suas próprias ligações
+        if current_user.role != "admin":
+            query = query.where(CallLog.user_id == current_user.id)
+        result = await db.execute(query.limit(limit).offset(offset))
         logs = result.scalars().all()
 
         return [

@@ -4,11 +4,12 @@ from sqlalchemy import select, func
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from app.auth import get_current_user
+from app.models import Channel, Contact, Message, Tag, contact_tags, CourseAlias, User
 
 SP_TZ = timezone(timedelta(hours=-3))
 
 from app.database import get_db
-from app.models import Channel, Contact, Message, Tag, contact_tags, CourseAlias
 from app.whatsapp import send_text_message, send_template_message, upload_media, send_media_message
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -301,10 +302,13 @@ async def send_media(
 # === Contatos ===
 
 @router.get("/contacts")
-async def list_contacts(channel_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def list_contacts(channel_id: Optional[int] = None, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     query = select(Contact).order_by(Contact.updated_at.desc())
     if channel_id:
         query = query.where(Contact.channel_id == channel_id)
+    # SDR só vê seus próprios contatos
+    if current_user.role != "admin":
+        query = query.where(Contact.assigned_to == current_user.id)
     result = await db.execute(query)
     contacts = result.scalars().all()
 
