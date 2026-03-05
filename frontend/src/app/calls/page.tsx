@@ -10,6 +10,7 @@ import {
   Clock,
   ExternalLink,
   RefreshCw,
+  Trash2,
 } from 'lucide-react';
 
 interface CallLog {
@@ -45,6 +46,19 @@ export default function CallsPage() {
       console.error('Erro ao buscar ligações:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const deleteRecording = async (callSid: string) => {
+    if (!confirm('Apagar gravação permanentemente?')) return;
+    try {
+      const token = localStorage.getItem('token');
+      await api.delete(`/twilio/recording/${callSid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await fetchCalls();
+    } catch (err) {
+      console.error('Erro ao apagar gravação:', err);
     }
   };
 
@@ -211,12 +225,21 @@ export default function CallsPage() {
                       <td className="px-5 py-3.5 text-sm text-gray-500">{formatDate(call.created_at)}</td>
                       <td className="px-5 py-3.5">
                         {call.local_recording_path || call.recording_url ? (
-                          <audio controls className="h-8 w-36" preload="none">
-                            <source
-                              src={`https://hub.cenatdata.online/api/twilio/recording/${call.call_sid}`}
-                              type="audio/mpeg"
-                            />
-                          </audio>
+                          <div className="flex items-center">
+                            <audio controls className="h-8 w-36" preload="none">
+                              <source
+                                src={`https://hub.cenatdata.online/api/twilio/recording/${call.call_sid}`}
+                                type="audio/mpeg"
+                              />
+                            </audio>
+                            <button
+                              onClick={() => deleteRecording(call.call_sid)}
+                              className="text-red-400 hover:text-red-600 transition-colors ml-2"
+                              title="Apagar gravação"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         ) : (
                           <span className="text-xs text-gray-400">-</span>
                         )}
