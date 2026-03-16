@@ -108,8 +108,14 @@ async def list_users(db: AsyncSession = Depends(get_db), current_user: User = De
     ]
 
 
+class UpdateUserRequest(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 @router.patch("/users/{user_id}")
-async def toggle_user(user_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def update_user(user_id: int, req: UpdateUserRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Apenas administradores")
 
@@ -118,6 +124,30 @@ async def toggle_user(user_id: int, db: AsyncSession = Depends(get_db), current_
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
 
-    user.is_active = not user.is_active
+    if req.name is not None:
+        user.name = req.name
+    if req.role is not None:
+        user.role = req.role
+    if req.is_active is not None:
+        user.is_active = req.is_active
+
     await db.commit()
-    return {"id": user.id, "is_active": user.is_active}
+    return {"id": user.id, "name": user.name, "role": user.role, "is_active": user.is_active}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas administradores")
+
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Você não pode excluir a si mesmo")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    await db.delete(user)
+    await db.commit()
+    return {"status": "deleted"}
