@@ -286,7 +286,7 @@ export default function ConversationsPage() {
 
   const loadUsers = async () => {
     try {
-      const res = await api.get('/users');
+      const res = await api.get('/auth/users');
       setUsers(res.data);
     } catch (err) {
       console.error('Erro:', err);
