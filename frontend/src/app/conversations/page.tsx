@@ -182,12 +182,12 @@ export default function ConversationsPage() {
   useEffect(() => {
     loadChannels();
     loadTags();
-    loadUsers();
   }, []);
 
   useEffect(() => {
     if (activeChannel) {
       loadContacts();
+      loadUsers();
       const interval = setInterval(loadContacts, 5000);
       return () => clearInterval(interval);
     }
