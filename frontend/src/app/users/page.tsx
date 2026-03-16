@@ -30,6 +30,11 @@ export default function UsersPage() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [mounted, setMounted] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserInfo | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editRole, setEditRole] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -79,6 +84,46 @@ export default function UsersPage() {
       await loadUsers();
     } catch (err) {
       console.error('Erro:', err);
+    }
+  };
+
+  const openEdit = (u: UserInfo) => {
+    setEditingUser(u);
+    setEditName(u.name);
+    setEditRole(u.role);
+    setError('');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingUser || !editName.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api.patch(`/auth/users/${editingUser.id}`, {
+        name: editName,
+        role: editRole,
+      });
+      setEditingUser(null);
+      await loadUsers();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Erro ao salvar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!editingUser) return;
+    if (!confirm(`Tem certeza que deseja excluir "${editingUser.name}"? Esta ação não pode ser desfeita.`)) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/auth/users/${editingUser.id}`);
+      setEditingUser(null);
+      await loadUsers();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Erro ao excluir');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -204,18 +249,26 @@ export default function UsersPage() {
                   </div>
 
                   {/* Action */}
-                  <div className="flex justify-end">
+                  <div className="flex justify-end gap-2">
                     {u.id !== user?.id && (
-                      <button
-                        onClick={() => toggleActive(u)}
-                        className={`px-3 py-1.5 text-[11px] font-medium rounded-lg transition-all ${
-                          u.is_active
-                            ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                            : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
-                        }`}
-                      >
-                        {u.is_active ? 'Desativar' : 'Ativar'}
-                      </button>
+                      <>
+                        <button
+                          onClick={() => openEdit(u)}
+                          className="px-3 py-1.5 text-[11px] font-medium rounded-lg bg-gray-50 text-gray-600 hover:bg-gray-100 transition-all"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          onClick={() => toggleActive(u)}
+                          className={`px-3 py-1.5 text-[11px] font-medium rounded-lg transition-all ${
+                            u.is_active
+                              ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                              : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                          }`}
+                        >
+                          {u.is_active ? 'Desativar' : 'Ativar'}
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -319,6 +372,95 @@ export default function UsersPage() {
             </div>
           </div>
         )}
+
+        {/* Modal Editar Usuário */}
+        {editingUser && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setEditingUser(null)}>
+            <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl mx-4 border border-gray-100" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="text-lg font-semibold text-[#27273D]">Editar Usuário</h2>
+                <button onClick={() => setEditingUser(null)} className="p-1.5 hover:bg-gray-100 rounded-xl transition-colors">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+
+              {error && (
+                <div className="mb-5 flex items-center gap-2.5 px-4 py-3 bg-red-50 border border-red-100 rounded-xl">
+                  <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                  <span className="text-sm text-red-600">{error}</span>
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Nome</label>
+                  <div className="relative">
+                    <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={e => setEditName(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 focus:bg-white outline-none transition-all"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Email</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="email"
+                      value={editingUser.email}
+                      disabled
+                      className="w-full pl-10 pr-4 py-2.5 bg-gray-100 border border-gray-200 rounded-xl text-sm text-gray-400 cursor-not-allowed"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Função</label>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setEditRole('atendente')}
+                      className={`flex-1 py-2.5 rounded-xl text-[13px] font-medium border transition-all ${
+                        editRole === 'atendente' ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]' : 'border-gray-200 text-gray-400 hover:bg-gray-50'
+                      }`}
+                    >
+                      Atendente
+                    </button>
+                    <button
+                      onClick={() => setEditRole('admin')}
+                      className={`flex-1 py-2.5 rounded-xl text-[13px] font-medium border transition-all ${
+                        editRole === 'admin' ? 'border-purple-400 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-400 hover:bg-gray-50'
+                      }`}
+                    >
+                      Administrador
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="px-4 py-3 bg-red-50 text-red-600 font-medium rounded-xl hover:bg-red-100 transition-all disabled:opacity-40 flex items-center gap-2 text-sm"
+                >
+                  {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
+                  Excluir
+                </button>
+                <button
+                  onClick={handleSaveEdit}
+                  disabled={saving || !editName.trim()}
+                  className="flex-1 py-3 bg-[#2A658F] text-white font-medium rounded-xl hover:bg-[#1f5375] hover:shadow-lg hover:shadow-[#2A658F]/20 active:scale-[0.98] transition-all disabled:opacity-40 disabled:active:scale-100 flex items-center justify-center gap-2"
+                >
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  {saving ? 'Salvando...' : 'Salvar alterações'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
     </AppLayout>
   );
