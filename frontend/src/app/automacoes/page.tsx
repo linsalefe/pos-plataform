@@ -37,6 +37,19 @@ interface CourseAlias {
   short_name: string;
 }
 
+interface ParamMapping {
+  type: string;
+  value: string;
+}
+
+const MAPPING_OPTIONS = [
+  { value: 'lead_name', label: 'Nome do Lead (1º nome)' },
+  { value: 'lead_full_name', label: 'Nome completo do Lead' },
+  { value: 'lead_course', label: 'Curso (automático)' },
+  { value: 'sdr_name', label: 'Nome do SDR' },
+  { value: 'fixed_text', label: 'Texto fixo' },
+];
+
 const stageColors: Record<string, string> = {
   'Entrada': 'bg-blue-50 text-blue-700',
   'Pré Qualificado': 'bg-purple-50 text-purple-700',
@@ -71,7 +84,7 @@ export default function AutomacoesPage() {
   // Template
   const [templates, setTemplates] = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
-  const [templateParams, setTemplateParams] = useState<string[]>([]);
+  const [paramMappings, setParamMappings] = useState<ParamMapping[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [channels, setChannels] = useState<any[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<number>(1);
@@ -132,7 +145,6 @@ export default function AutomacoesPage() {
     }
   };
 
-  // Resolver alias → nome legível
   const resolveCourse = (alias: string | null): string => {
     if (!alias) return '-';
     const found = courseAliases.find(c => c.alias.toLowerCase() === alias.toLowerCase());
@@ -153,20 +165,40 @@ export default function AutomacoesPage() {
 
   const selectTemplate = (t: any) => {
     setSelectedTemplate(t);
-    setTemplateParams(new Array(t.parameters.length).fill(''));
+    // Inicializar mapeamentos com valores padrão inteligentes
+    const mappings: ParamMapping[] = t.parameters.map((_: string, i: number) => {
+      if (i === 0) return { type: 'lead_name', value: '' };
+      if (i === 1) return { type: 'lead_course', value: '' };
+      if (i === 2) return { type: 'lead_course', value: '' };
+      return { type: 'fixed_text', value: '' };
+    });
+    setParamMappings(mappings);
   };
 
-  const updateParam = (index: number, value: string) => {
-    const p = [...templateParams];
-    p[index] = value;
-    setTemplateParams(p);
+  const updateMapping = (index: number, type: string) => {
+    const newMappings = [...paramMappings];
+    newMappings[index] = { type, value: newMappings[index]?.value || '' };
+    setParamMappings(newMappings);
+  };
+
+  const updateMappingValue = (index: number, value: string) => {
+    const newMappings = [...paramMappings];
+    newMappings[index] = { ...newMappings[index], value };
+    setParamMappings(newMappings);
+  };
+
+  const getMappingLabel = (mapping: ParamMapping): string => {
+    const opt = MAPPING_OPTIONS.find(o => o.value === mapping.type);
+    if (mapping.type === 'fixed_text') return mapping.value || '[Texto fixo]';
+    return opt?.label || mapping.type;
   };
 
   const getPreview = () => {
     if (!selectedTemplate) return '';
     let text = selectedTemplate.body;
-    templateParams.forEach((p, i) => {
-      text = text.replace(`{{${i + 1}}}`, p || `[Variável ${i + 1}]`);
+    paramMappings.forEach((mapping, i) => {
+      const label = getMappingLabel(mapping);
+      text = text.replace(`{{${i + 1}}}`, label);
     });
     return text;
   };
@@ -210,7 +242,7 @@ export default function AutomacoesPage() {
         template_name: selectedTemplate.name,
         language: selectedTemplate.language,
         channel_id: activeChannelId,
-        parameters: templateParams.length > 0 ? templateParams : [],
+        param_mappings: paramMappings.length > 0 ? paramMappings : undefined,
         lead_ids: Array.from(selectedIds),
       });
       setSendResult(res.data);
@@ -230,7 +262,7 @@ export default function AutomacoesPage() {
         template_name: selectedTemplate.name,
         language: selectedTemplate.language,
         channel_id: activeChannelId,
-        parameters: templateParams.length > 0 ? templateParams : [],
+        param_mappings: paramMappings.length > 0 ? paramMappings : undefined,
         lead_ids: [lead.id],
       });
       setSendResult(res.data);
@@ -327,24 +359,37 @@ export default function AutomacoesPage() {
                 </div>
               )}
 
+              {/* Mapeamento de variáveis */}
               {selectedTemplate && selectedTemplate.parameters.length > 0 && (
                 <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
-                  <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Variáveis</p>
-                  {selectedTemplate.parameters.map((p: string, i: number) => (
-                    <div key={i}>
-                      <label className="text-[11px] text-gray-400 mb-1 block">{p} ({'{{'}{i+1}{'}}'})</label>
-                      <input
-                        type="text"
-                        value={templateParams[i] || ''}
-                        onChange={e => updateParam(i, e.target.value)}
-                        placeholder={`Valor para ${p}`}
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-100 rounded-lg text-[13px] text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-[#2A658F] focus:bg-white transition-all"
-                      />
+                  <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Mapeamento de variáveis</p>
+                  {selectedTemplate.parameters.map((_: string, i: number) => (
+                    <div key={i} className="space-y-1.5">
+                      <label className="text-[11px] text-gray-400 block">{`{{${i + 1}}}`} — Variável {i + 1}</label>
+                      <select
+                        value={paramMappings[i]?.type || 'fixed_text'}
+                        onChange={(e) => updateMapping(i, e.target.value)}
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-100 rounded-lg text-[13px] text-gray-800 focus:outline-none focus:border-[#2A658F] focus:bg-white transition-all cursor-pointer"
+                      >
+                        {MAPPING_OPTIONS.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                      {paramMappings[i]?.type === 'fixed_text' && (
+                        <input
+                          type="text"
+                          value={paramMappings[i]?.value || ''}
+                          onChange={(e) => updateMappingValue(i, e.target.value)}
+                          placeholder="Digite o texto fixo..."
+                          className="w-full px-3 py-2 bg-gray-50 border border-gray-100 rounded-lg text-[13px] text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-[#2A658F] focus:bg-white transition-all"
+                        />
+                      )}
                     </div>
                   ))}
                 </div>
               )}
 
+              {/* Prévia */}
               {selectedTemplate && (
                 <div className="mt-4 bg-[#eef0f3] rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] font-semibold text-gray-400 uppercase mb-1.5 tracking-wider">Prévia</p>
@@ -544,6 +589,17 @@ export default function AutomacoesPage() {
                 <span className="text-[12px] text-gray-400">Canal</span>
                 <span className="text-[13px] font-medium text-gray-700">{channels.find(c => c.id === activeChannelId)?.name}</span>
               </div>
+              {paramMappings.length > 0 && (
+                <div className="pt-2 border-t border-gray-200 space-y-1">
+                  <span className="text-[11px] text-gray-400 font-semibold uppercase">Variáveis</span>
+                  {paramMappings.map((m, i) => (
+                    <div key={i} className="flex justify-between">
+                      <span className="text-[12px] text-gray-400">{`{{${i + 1}}}`}</span>
+                      <span className="text-[12px] font-medium text-gray-700">{getMappingLabel(m)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex gap-3">
               <button onClick={() => setShowConfirm(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-[13px] font-medium text-gray-500 hover:bg-gray-50 transition-colors">

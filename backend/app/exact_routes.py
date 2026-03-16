@@ -174,6 +174,32 @@ async def bulk_send_template(
     request: dict,
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Envio em massa com mapeamento dinâmico de variáveis.
+
+    param_mappings: lista de objetos com type e value (opcional).
+    Tipos suportados:
+      - lead_name: primeiro nome do lead
+      - lead_full_name: nome completo do lead
+      - lead_course: nome do curso (resolvido via aliases)
+      - sdr_name: nome do SDR do lead
+      - fixed_text: texto fixo (usa o campo "value")
+
+    Exemplo:
+    {
+      "template_name": "sdr_primeiro_contato",
+      "channel_id": 1,
+      "lead_ids": [1, 2, 3],
+      "param_mappings": [
+        {"type": "lead_name"},
+        {"type": "sdr_name"},
+        {"type": "lead_course"}
+      ]
+    }
+
+    Compatibilidade: se param_mappings não for enviado, usa o campo
+    "parameters" antigo (nome + curso).
+    """
     from app.models import Channel, Contact, Message
     from app.whatsapp import send_template_message
     from datetime import datetime, timedelta, timezone
@@ -184,8 +210,9 @@ async def bulk_send_template(
     template_name = request.get("template_name")
     language = request.get("language", "pt_BR")
     channel_id = request.get("channel_id", 1)
-    parameters = request.get("parameters", [])
     lead_ids = request.get("lead_ids", [])
+    param_mappings = request.get("param_mappings", None)
+    parameters = request.get("parameters", [])
 
     if not template_name or not lead_ids:
         raise HTTPException(status_code=400, detail="template_name e lead_ids são obrigatórios")
@@ -214,17 +241,39 @@ async def bulk_send_template(
 
         phone = phone.replace("+", "").replace(" ", "").replace("-", "")
 
-        # Monta parâmetros por lead conforme quantidade de variáveis do template
-        lead_name = lead.name.split()[0] if lead.name else "Aluno(a)"
-        lead_course = await resolve_course_name(lead.sub_source, db)
-        param_count = len(parameters) if parameters else 0
+        # Resolver valores das variáveis
+        if param_mappings and len(param_mappings) > 0:
+            # Modo novo: mapeamento dinâmico
+            lead_params = []
+            for mapping in param_mappings:
+                m_type = mapping.get("type", "fixed_text")
+                m_value = mapping.get("value", "")
 
-        if param_count == 0:
-            lead_params = None
-        elif param_count == 1:
-            lead_params = [lead_name]
+                if m_type == "lead_name":
+                    lead_params.append(lead.name.split()[0] if lead.name else "Aluno(a)")
+                elif m_type == "lead_full_name":
+                    lead_params.append(lead.name if lead.name else "Aluno(a)")
+                elif m_type == "lead_course":
+                    course = await resolve_course_name(lead.sub_source, db)
+                    lead_params.append(course)
+                elif m_type == "sdr_name":
+                    lead_params.append(lead.sdr_name if lead.sdr_name else "Equipe CENAT")
+                elif m_type == "fixed_text":
+                    lead_params.append(m_value if m_value else "")
+                else:
+                    lead_params.append(m_value if m_value else "")
         else:
-            lead_params = [lead_name, lead_course]
+            # Modo legado: compatibilidade com frontend antigo
+            lead_name = lead.name.split()[0] if lead.name else "Aluno(a)"
+            lead_course = await resolve_course_name(lead.sub_source, db)
+            param_count = len(parameters) if parameters else 0
+
+            if param_count == 0:
+                lead_params = None
+            elif param_count == 1:
+                lead_params = [lead_name]
+            else:
+                lead_params = [lead_name, lead_course]
 
         try:
             result = await send_template_message(
@@ -246,7 +295,7 @@ async def bulk_send_template(
                     await db.flush()
 
                 # Salvar mensagem
-                content_text = f"[Template] {template_name}: {', '.join(lead_params)}" if lead_params else f"[Template] {template_name}"
+                content_text = f"[Template] {', '.join(lead_params)}" if lead_params else f"[Template] {template_name}"
 
                 msg = Message(
                     wa_message_id=result["messages"][0]["id"],
