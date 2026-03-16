@@ -135,6 +135,8 @@ export default function ConversationsPage() {
   const [unreadFilter, setUnreadFilter] = useState(false);
   const [aiFilter, setAiFilter] = useState<'all' | 'on' | 'off'>('all');
   const [showFilters, setShowFilters] = useState(false);
+  const [sdrFilter, setSdrFilter] = useState<number | null>(null);
+  const [users, setUsers] = useState<{id: number; name: string}[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -180,6 +182,7 @@ export default function ConversationsPage() {
   useEffect(() => {
     loadChannels();
     loadTags();
+    loadUsers();
   }, []);
 
   useEffect(() => {
@@ -276,6 +279,15 @@ export default function ConversationsPage() {
     try {
       const res = await api.get('/tags');
       setAllTags(res.data);
+    } catch (err) {
+      console.error('Erro:', err);
+    }
+  };
+
+  const loadUsers = async () => {
+    try {
+      const res = await api.get('/users');
+      setUsers(res.data);
     } catch (err) {
       console.error('Erro:', err);
     }
@@ -634,13 +646,14 @@ export default function ConversationsPage() {
     return ms && mst && mtag && mur && mai;
   });
 
-  const hasActiveFilters = tagFilter.length > 0 || unreadFilter || aiFilter !== 'all';
+  const hasActiveFilters = tagFilter.length > 0 || unreadFilter || aiFilter !== 'all' || sdrFilter !== null;
 
   const clearAllFilters = () => {
     setStatusFilter('todos');
     setTagFilter([]);
     setUnreadFilter(false);
     setAiFilter('all');
+    setSdrFilter(null);
     setShowFilters(false);
   };
 

@@ -302,13 +302,15 @@ async def send_media(
 # === Contatos ===
 
 @router.get("/contacts")
-async def list_contacts(channel_id: Optional[int] = None, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[int] = None, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     query = select(Contact).order_by(Contact.updated_at.desc())
     if channel_id:
         query = query.where(Contact.channel_id == channel_id)
     # SDR só vê seus próprios contatos
     if current_user.role != "admin":
         query = query.where(Contact.assigned_to == current_user.id)
+    elif assigned_to:
+        query = query.where(Contact.assigned_to == assigned_to)
     result = await db.execute(query)
     contacts = result.scalars().all()
 
