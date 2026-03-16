@@ -231,6 +231,13 @@ export default function ConversationsPage() {
       const params = activeChannel ? `?channel_id=${activeChannel.id}` : '';
       const res = await api.get(`/contacts${params}`);
       setContacts(res.data);
+      // Carregar lista de SDRs (apenas uma vez)
+      if (users.length === 0) {
+        try {
+          const usersRes = await api.get('/auth/users');
+          setUsers(usersRes.data);
+        } catch {}
+      }
       if (selectedContact) {
         const updated = res.data.find((c: Contact) => c.wa_id === selectedContact.wa_id);
         if (updated) {
