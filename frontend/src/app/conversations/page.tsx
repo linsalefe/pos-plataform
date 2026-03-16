@@ -65,6 +65,7 @@ interface Contact {
   unread: number;
   created_at: string | null;
   channel_id: number | null;
+  assigned_to: number | null;
 }
 
 interface Message {
@@ -650,7 +651,8 @@ export default function ConversationsPage() {
     const mtag = tagFilter.length === 0 || c.tags.some(t => tagFilter.includes(t.id));
     const mur = !unreadFilter || c.unread > 0;
     const mai = aiFilter === 'all' || (aiFilter === 'on' ? c.ai_active : !c.ai_active);
-    return ms && mst && mtag && mur && mai;
+    const msdr = sdrFilter === null || c.assigned_to === sdrFilter;
+    return ms && mst && mtag && mur && mai && msdr;
   });
 
   const hasActiveFilters = tagFilter.length > 0 || unreadFilter || aiFilter !== 'all' || sdrFilter !== null;
@@ -889,7 +891,27 @@ export default function ConversationsPage() {
                   </button>
                 </div>
 
-                {/* Clear all */}
+                {/* SDR filter */}
+                {users.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">SDR</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {users.map(u => (
+                        <button
+                          key={u.id}
+                          onClick={() => setSdrFilter(sdrFilter === u.id ? null : u.id)}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                            sdrFilter === u.id
+                              ? 'bg-[#2A658F]/10 text-[#2A658F]'
+                              : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                          }`}
+                        >
+                          {u.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {hasActiveFilters && (
                   <button
                     onClick={clearAllFilters}

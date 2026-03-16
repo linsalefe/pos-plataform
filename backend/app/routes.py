@@ -346,6 +346,7 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
             "unread": unread,
             "ai_active": c.ai_active or False,
             "created_at": c.created_at.isoformat() if c.created_at else None,
+            "assigned_to": c.assigned_to,
         })
 
     # Ordenar pela última mensagem (mais recente primeiro)
