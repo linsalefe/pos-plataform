@@ -12,6 +12,7 @@ from app.kanban_routes import router as kanban_router
 from app.calendar_routes import router as calendar_router
 from contextlib import asynccontextmanager
 import os
+import httpx
 import asyncio
 
 SP_TZ = timezone(timedelta(hours=-3))
@@ -95,6 +96,13 @@ async def verify_webhook(
 @app.post("/webhook")
 async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
+
+    # Relay para CS Platform
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post("https://pedagogico.cenatdata.online/api/webhook/whatsapp", json=body)
+    except:
+        pass
 
     if body.get("object") != "whatsapp_business_account":
         return {"status": "ignored"}
