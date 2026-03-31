@@ -303,56 +303,88 @@ async def send_media(
 
 @router.get("/contacts")
 async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[int] = None, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    query = select(Contact).order_by(Contact.updated_at.desc())
+    from sqlalchemy import text
+
+    filters = []
+    params = {}
+
     if channel_id:
-        query = query.where(Contact.channel_id == channel_id)
-    # SDR só vê seus próprios contatos
+        filters.append("c.channel_id = :channel_id")
+        params["channel_id"] = channel_id
+
     if current_user.role != "admin":
-        query = query.where(Contact.assigned_to == current_user.id)
+        filters.append("c.assigned_to = :user_id")
+        params["user_id"] = current_user.id
     elif assigned_to:
-        query = query.where(Contact.assigned_to == assigned_to)
-    result = await db.execute(query)
-    contacts = result.scalars().all()
+        filters.append("c.assigned_to = :assigned_to")
+        params["assigned_to"] = assigned_to
 
-    contacts_list = []
-    for c in contacts:
-        msg_result = await db.execute(
-            select(Message).where(Message.contact_wa_id == c.wa_id).order_by(Message.timestamp.desc()).limit(1)
-        )
-        last_msg = msg_result.scalar_one_or_none()
+    where_clause = ("WHERE " + " AND ".join(filters)) if filters else ""
 
-        tag_result = await db.execute(
-            select(Tag).join(contact_tags).where(contact_tags.c.contact_wa_id == c.wa_id)
-        )
-        tags = tag_result.scalars().all()
+    sql = text(f"""
+        SELECT
+            c.wa_id, c.name, c.lead_status, c.notes, c.channel_id,
+            c.ai_active, c.created_at, c.assigned_to,
+            lm.content AS last_message,
+            lm.timestamp AS last_message_time,
+            lm.direction,
+            COALESCE(ur.unread, 0) AS unread
+        FROM contacts c
+        LEFT JOIN LATERAL (
+            SELECT content, timestamp, direction
+            FROM messages WHERE contact_wa_id = c.wa_id
+            ORDER BY timestamp DESC LIMIT 1
+        ) lm ON true
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS unread
+            FROM messages
+            WHERE contact_wa_id = c.wa_id AND direction = 'inbound' AND status = 'received'
+        ) ur ON true
+        {where_clause}
+        ORDER BY lm.timestamp DESC NULLS LAST
+    """)
 
-        unread_result = await db.execute(
-            select(func.count(Message.id)).where(
-                Message.contact_wa_id == c.wa_id, Message.direction == "inbound", Message.status == "received"
-            )
-        )
-        unread = unread_result.scalar()
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
 
-        contacts_list.append({
-            "wa_id": c.wa_id,
-            "name": c.name or c.wa_id,
-            "lead_status": c.lead_status or "novo",
-            "notes": c.notes,
-            "channel_id": c.channel_id,
-            "last_message": last_msg.content if last_msg else "",
-            "last_message_time": last_msg.timestamp.isoformat() if last_msg else None,
-            "direction": last_msg.direction if last_msg else None,
-            "tags": [{"id": t.id, "name": t.name, "color": t.color} for t in tags],
-            "unread": unread,
-            "ai_active": c.ai_active or False,
-            "created_at": c.created_at.isoformat() if c.created_at else None,
-            "assigned_to": c.assigned_to,
-        })
+    # Buscar tags de todos os contatos de uma vez
+    wa_ids = [r.wa_id for r in rows]
+    if wa_ids:
+        tag_sql = text("""
+            SELECT ct.contact_wa_id, t.id, t.name, t.color
+            FROM contact_tags ct JOIN tags t ON t.id = ct.tag_id
+            WHERE ct.contact_wa_id = ANY(:wa_ids)
+        """)
+        tag_result = await db.execute(tag_sql, {"wa_ids": wa_ids})
+        tag_rows = tag_result.fetchall()
+    else:
+        tag_rows = []
 
-    # Ordenar pela última mensagem (mais recente primeiro)
-    contacts_list.sort(key=lambda x: x["last_message_time"] or "", reverse=True)
+    # Agrupar tags por wa_id
+    tags_map: dict = {}
+    for tr in tag_rows:
+        if tr.contact_wa_id not in tags_map:
+            tags_map[tr.contact_wa_id] = []
+        tags_map[tr.contact_wa_id].append({"id": tr.id, "name": tr.name, "color": tr.color})
 
-    return contacts_list
+    return [
+        {
+            "wa_id": r.wa_id,
+            "name": r.name or r.wa_id,
+            "lead_status": r.lead_status or "novo",
+            "notes": r.notes,
+            "channel_id": r.channel_id,
+            "last_message": r.last_message or "",
+            "last_message_time": r.last_message_time.isoformat() if r.last_message_time else None,
+            "direction": r.direction,
+            "tags": tags_map.get(r.wa_id, []),
+            "unread": r.unread,
+            "ai_active": r.ai_active or False,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "assigned_to": r.assigned_to,
+        }
+        for r in rows
+    ]
 
 
 @router.get("/contacts/{wa_id}")
