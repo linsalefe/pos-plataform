@@ -575,6 +575,7 @@ export default function ConversationsPage() {
         channel_id: activeChannel.id,
         parameters: templateParams.length > 0 ? templateParams : [],
         contact_name: newChatName,
+        rendered_text: getPreview(),
       });
       setShowNewChat(false);
       setNewChatPhone('');

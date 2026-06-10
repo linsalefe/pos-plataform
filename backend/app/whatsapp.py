@@ -92,3 +92,40 @@ async def send_media_message(to: str, media_id: str, media_type: str, phone_numb
             },
         )
         return response.json()
+
+
+async def fetch_template_body(waba_id: str, token: str, template_name: str, language: str = None) -> str:
+    """Busca no Meta o texto do corpo (BODY) de um template aprovado."""
+    if not waba_id or not template_name:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{BASE_URL}/{waba_id}/message_templates",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"name": template_name, "limit": 50},
+            )
+            data = response.json()
+    except Exception:
+        return None
+    candidates = [t for t in data.get("data", []) if t.get("name") == template_name]
+    if language:
+        exact = [t for t in candidates if t.get("language") == language]
+        if exact:
+            candidates = exact
+    for t in candidates:
+        for comp in t.get("components", []):
+            if comp.get("type") == "BODY":
+                return comp.get("text", "") or None
+    return None
+
+
+def render_template_text(body: str, params: list = None) -> str:
+    """Preenche {{1}}, {{2}}... do corpo com os valores de params."""
+    if not body:
+        return None
+    text = body
+    for i, p in enumerate(params or []):
+        placeholder = "{{" + str(i + 1) + "}}"
+        text = text.replace(placeholder, str(p) if p is not None else "")
+    return text

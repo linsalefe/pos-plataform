@@ -201,7 +201,7 @@ async def bulk_send_template(
     "parameters" antigo (nome + curso).
     """
     from app.models import Channel, Contact, Message
-    from app.whatsapp import send_template_message
+    from app.whatsapp import send_template_message, fetch_template_body, render_template_text
     from datetime import datetime, timedelta, timezone
     import asyncio
 
@@ -227,6 +227,9 @@ async def bulk_send_template(
     channel = ch_result.scalar_one_or_none()
     if not channel:
         raise HTTPException(status_code=404, detail="Canal não encontrado")
+
+    # Buscar o corpo do template uma única vez (para gravar o texto completo)
+    template_body = await fetch_template_body(channel.waba_id, channel.whatsapp_token, template_name, language)
 
     sent = 0
     failed = 0
@@ -294,8 +297,14 @@ async def bulk_send_template(
                     db.add(Contact(wa_id=wa_id, name=lead.name, channel_id=channel_id))
                     await db.flush()
 
-                # Salvar mensagem
-                content_text = f"[Template] {', '.join(lead_params)}" if lead_params else f"[Template] {template_name}"
+                # Texto COMPLETO renderizado (fallback ao formato antigo)
+                rendered = render_template_text(template_body, lead_params)
+                if rendered and rendered.strip():
+                    content_text = rendered
+                elif lead_params:
+                    content_text = f"[Template] {', '.join(lead_params)}"
+                else:
+                    content_text = f"[Template] {template_name}"
 
                 msg = Message(
                     wa_message_id=result["messages"][0]["id"],

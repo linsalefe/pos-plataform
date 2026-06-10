@@ -143,7 +143,7 @@ async def get_conversation_history(contact_wa_id: str, db: AsyncSession, limit: 
         # Ignorar mensagens de mídia no contexto
         if content.startswith("media:"):
             content = "[mídia enviada]"
-        if content.startswith("template:") or content.startswith("[Template]"):
+        if msg.message_type == "template" or content.startswith("template:") or content.startswith("[Template]"):
             content = "[mensagem de template enviada]"
 
         history.append({"role": role, "content": content})

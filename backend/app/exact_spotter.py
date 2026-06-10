@@ -125,6 +125,9 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession):
         print("❌ Canal da IA não encontrado")
         return
 
+    from app.whatsapp import fetch_template_body, render_template_text
+    auto_template_body = await fetch_template_body(channel.waba_id, channel.whatsapp_token, AUTO_TEMPLATE_NAME, AUTO_TEMPLATE_LANG)
+
     # Enviar template
     try:
         send_result = await send_template_message(
@@ -168,7 +171,7 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession):
             channel_id=AI_CHANNEL_ID,
             direction="outbound",
             message_type="template",
-            content=f"[Template] {name}, {course}",
+            content=(render_template_text(auto_template_body, [name, course]) or f"[Template] {name}, {course}"),
             timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
         )

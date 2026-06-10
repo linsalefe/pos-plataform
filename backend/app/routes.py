@@ -30,6 +30,7 @@ class SendTemplateRequest(BaseModel):
     channel_id: int = 1
     parameters: list = []
     contact_name: str = ""
+    rendered_text: str = ""
 
 
 class UpdateContactRequest(BaseModel):
@@ -220,10 +221,14 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
         elif req.contact_name and not contact.name:
             contact.name = req.contact_name
 
-        # Montar conteúdo legível
-        content_text = f"template:{req.template_name}"
-        if req.parameters:
-            content_text = f"[Template] " + ", ".join(req.parameters)
+        # Conteúdo legível: usa o texto renderizado (corpo com variáveis preenchidas).
+        # Fallback ao comportamento antigo se rendered_text não vier.
+        if req.rendered_text and req.rendered_text.strip():
+            content_text = req.rendered_text
+        elif req.parameters:
+            content_text = "[Template] " + ", ".join(req.parameters)
+        else:
+            content_text = f"template:{req.template_name}"
 
         message = Message(
             wa_message_id=result["messages"][0]["id"],
