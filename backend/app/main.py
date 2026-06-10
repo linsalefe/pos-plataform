@@ -98,19 +98,64 @@ async def window_alerts_job():
         except Exception as e:
             print(f"❌ Erro no window_alerts_job: {e}")
 
+
+async def scheduled_messages_job():
+    """Dispara agendamentos de template cuja hora chegou (a cada 60s)."""
+    from sqlalchemy import select as sa_select
+    from app.models import ScheduledMessage
+    import json
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with async_session() as db:
+                now = datetime.now(SP_TZ).replace(tzinfo=None)
+                due = (await db.execute(
+                    sa_select(ScheduledMessage).where(
+                        ScheduledMessage.status == "pending",
+                        ScheduledMessage.scheduled_at <= now,
+                    )
+                )).scalars().all()
+                for sm in due:
+                    sm.status = "sending"
+                    await db.commit()
+                    try:
+                        from app.exact_routes import bulk_send_template
+                        payload = {
+                            "template_name": sm.template_name,
+                            "language": sm.language,
+                            "channel_id": sm.channel_id,
+                            "lead_ids": json.loads(sm.lead_ids) if sm.lead_ids else [],
+                            "param_mappings": json.loads(sm.param_mappings) if sm.param_mappings else None,
+                        }
+                        result = await bulk_send_template(payload, db)
+                        sm.status = "sent"
+                        sm.sent_at = datetime.now(SP_TZ).replace(tzinfo=None)
+                        sm.result = json.dumps(result)
+                    except Exception as e:
+                        sm.status = "error"
+                        sm.result = json.dumps({"error": str(e)})
+                    await db.commit()
+                if due:
+                    print(f"📨 Agendamentos processados: {len(due)}")
+        except Exception as e:
+            print(f"❌ Erro no scheduled_messages_job: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: inicia o job de sync
     task = asyncio.create_task(sync_job())
     cleanup_task = asyncio.create_task(cleanup_recordings_job())
     window_task = asyncio.create_task(window_alerts_job())
+    scheduled_task = asyncio.create_task(scheduled_messages_job())
     print("✅ Sync Exact Spotter agendado (a cada 10 min)")
     print("✅ Alertas de janela 24h agendados (a cada 5 min)")
+    print("✅ Agendamento de templates ativo (checa a cada 60s)")
     yield
     # Shutdown: cancela o job
     task.cancel()
     cleanup_task.cancel()
     window_task.cancel()
+    scheduled_task.cancel()
 
 
 app = FastAPI(title="Cenat WhatsApp API", lifespan=lifespan)

@@ -208,3 +208,22 @@ class Notification(Base):
     body = Column(Text, nullable=True)
     is_read = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class ScheduledMessage(Base):
+    __tablename__ = "scheduled_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    template_name = Column(String(255), nullable=False)
+    language = Column(String(20), default="pt_BR")
+    channel_id = Column(Integer, nullable=False)
+    param_mappings = Column(Text, nullable=True)
+    lead_ids = Column(Text, nullable=False)
+    scheduled_at = Column(DateTime, nullable=False, index=True)
+    status = Column(String(20), default="pending", index=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by_name = Column(String(255), nullable=True)
+    lead_count = Column(Integer, default=0)
+    result = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    sent_at = Column(DateTime, nullable=True)

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Zap, Search, Send, Loader2, CheckCircle, XCircle, AlertTriangle, Filter } from 'lucide-react';
+import { Zap, Search, Send, Loader2, CheckCircle, XCircle, AlertTriangle, Filter, Calendar, Clock, X, Trash2 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { useAuth } from '@/contexts/auth-context';
 import api from '@/lib/api';
@@ -93,6 +93,10 @@ export default function AutomacoesPage() {
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<SendResult | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [scheduleAt, setScheduleAt] = useState('');
+  const [scheduling, setScheduling] = useState(false);
+  const [showSchedules, setShowSchedules] = useState(false);
+  const [schedules, setSchedules] = useState<any[]>([]);
 
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -253,6 +257,47 @@ export default function AutomacoesPage() {
     }
   };
 
+  const handleSchedule = async () => {
+    if (!selectedTemplate || selectedIds.size === 0 || !scheduleAt) return;
+    setScheduling(true);
+    try {
+      await api.post('/scheduled-messages', {
+        template_name: selectedTemplate.name,
+        language: selectedTemplate.language,
+        channel_id: activeChannelId,
+        param_mappings: paramMappings.length > 0 ? paramMappings : undefined,
+        lead_ids: Array.from(selectedIds),
+        scheduled_at: scheduleAt,
+      });
+      setShowConfirm(false);
+      setScheduleAt('');
+      setSelectedIds(new Set());
+      setSelectAll(false);
+      await loadSchedules();
+      setShowSchedules(true);
+    } catch (err: any) {
+      alert(err?.response?.data?.detail || 'Erro ao agendar');
+    } finally {
+      setScheduling(false);
+    }
+  };
+
+  const loadSchedules = async () => {
+    try {
+      const res = await api.get('/scheduled-messages');
+      setSchedules(res.data);
+    } catch (err) { console.error('Erro:', err); }
+  };
+
+  const cancelSchedule = async (id: number) => {
+    try {
+      await api.post(`/scheduled-messages/${id}/cancel`);
+      await loadSchedules();
+    } catch (err: any) {
+      alert(err?.response?.data?.detail || 'Erro ao cancelar');
+    }
+  };
+
   const handleSingleSend = async (lead: ExactLead) => {
     if (!selectedTemplate || !lead.phone1) return;
     setSending(true);
@@ -305,9 +350,18 @@ export default function AutomacoesPage() {
       <div className="space-y-6 max-w-7xl mx-auto overflow-y-auto h-full pb-6">
 
         {/* Header */}
-        <div className={`transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
-          <p className="text-sm text-gray-400 mb-0.5">Envio em massa</p>
-          <h1 className="text-2xl font-semibold text-[#27273D] tracking-tight">Automações</h1>
+        <div className={`flex items-start justify-between gap-4 transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
+          <div>
+            <p className="text-sm text-gray-400 mb-0.5">Envio em massa</p>
+            <h1 className="text-2xl font-semibold text-[#27273D] tracking-tight">Automações</h1>
+          </div>
+          <button
+            onClick={() => { loadSchedules(); setShowSchedules(true); }}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 bg-white text-[13px] font-medium text-gray-600 hover:bg-gray-50 transition-colors flex-shrink-0"
+          >
+            <Calendar className="w-4 h-4 text-[#2A658F]" />
+            Agendamentos
+          </button>
         </div>
 
         <div className={`grid grid-cols-1 lg:grid-cols-3 gap-6 transition-all duration-700 ease-out delay-100 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
@@ -601,13 +655,76 @@ export default function AutomacoesPage() {
                 </div>
               )}
             </div>
+            <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <label className="flex items-center gap-1.5 text-[12px] font-medium text-gray-500 mb-1.5">
+                <Clock className="w-3.5 h-3.5 text-[#2A658F]" />
+                Agendar para (opcional)
+              </label>
+              <input
+                type="datetime-local"
+                value={scheduleAt}
+                onChange={e => setScheduleAt(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-200 bg-white text-[13px] text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F]"
+              />
+              <p className="text-[11px] text-gray-400 mt-1">Deixe em branco para enviar agora.</p>
+            </div>
             <div className="flex gap-3">
-              <button onClick={() => setShowConfirm(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-[13px] font-medium text-gray-500 hover:bg-gray-50 transition-colors">
+              <button onClick={() => { setShowConfirm(false); setScheduleAt(''); }} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-[13px] font-medium text-gray-500 hover:bg-gray-50 transition-colors">
                 Cancelar
               </button>
-              <button onClick={handleBulkSend} className="flex-1 py-2.5 bg-[#2A658F] text-white rounded-xl text-[13px] font-medium hover:bg-[#1f5375] active:scale-[0.98] transition-all">
-                Confirmar envio
+              {scheduleAt ? (
+                <button onClick={handleSchedule} disabled={scheduling} className="flex-1 py-2.5 bg-[#2A658F] text-white rounded-xl text-[13px] font-medium hover:bg-[#1f5375] active:scale-[0.98] transition-all disabled:opacity-60">
+                  {scheduling ? 'Agendando...' : 'Agendar'}
+                </button>
+              ) : (
+                <button onClick={handleBulkSend} className="flex-1 py-2.5 bg-[#2A658F] text-white rounded-xl text-[13px] font-medium hover:bg-[#1f5375] active:scale-[0.98] transition-all">
+                  Enviar agora
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {showSchedules && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowSchedules(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl mx-4 border border-gray-100 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <Calendar className="w-5 h-5 text-[#2A658F]" />
+                <h2 className="text-[15px] font-semibold text-[#27273D]">Agendamentos</h2>
+              </div>
+              <button onClick={() => setShowSchedules(false)} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+                <X className="w-4 h-4 text-gray-400" />
               </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {schedules.length === 0 ? (
+                <p className="text-[13px] text-gray-400 text-center py-10">Nenhum agendamento</p>
+              ) : (
+                schedules.map(s => {
+                  const stCfg: Record<string, string> = { pending: 'bg-amber-50 text-amber-700', sending: 'bg-blue-50 text-blue-700', sent: 'bg-emerald-50 text-emerald-700', cancelled: 'bg-gray-100 text-gray-500', error: 'bg-red-50 text-red-700' };
+                  const stLabel: Record<string, string> = { pending: 'Pendente', sending: 'Enviando', sent: 'Enviado', cancelled: 'Cancelado', error: 'Erro' };
+                  return (
+                    <div key={s.id} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-gray-100 bg-gray-50/50">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-[13px] font-medium text-[#27273D] truncate">{(s.template_name || '').replace(/_/g, ' ')}</span>
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold ${stCfg[s.status] || 'bg-gray-100 text-gray-500'}`}>{stLabel[s.status] || s.status}</span>
+                        </div>
+                        <p className="text-[11.5px] text-gray-400">
+                          {s.lead_count} leads • {s.scheduled_at ? new Date(s.scheduled_at).toLocaleString('pt-BR') : ''}{s.created_by_name ? ` • por ${s.created_by_name}` : ''}
+                        </p>
+                      </div>
+                      {s.status === 'pending' && (
+                        <button onClick={() => cancelSchedule(s.id)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium text-red-600 hover:bg-red-50 transition-colors flex-shrink-0">
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Cancelar
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>

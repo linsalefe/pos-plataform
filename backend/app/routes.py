@@ -705,3 +705,81 @@ async def read_all_notifications(db: AsyncSession = Depends(get_db), current_use
     )
     await db.commit()
     return {"status": "ok"}
+
+
+class ScheduleMessageRequest(BaseModel):
+    template_name: str
+    language: str = "pt_BR"
+    channel_id: int = 1
+    param_mappings: Optional[list] = None
+    lead_ids: list = []
+    scheduled_at: str
+
+
+@router.post("/scheduled-messages")
+async def create_scheduled_message(req: ScheduleMessageRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    import json
+    from app.models import ScheduledMessage
+    if not req.template_name or not req.lead_ids:
+        raise HTTPException(status_code=400, detail="template_name e lead_ids são obrigatórios")
+    try:
+        dt = datetime.fromisoformat(req.scheduled_at)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(SP_TZ).replace(tzinfo=None)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Data/hora inválida")
+    now = datetime.now(SP_TZ).replace(tzinfo=None)
+    if dt <= now:
+        raise HTTPException(status_code=400, detail="O horário precisa ser no futuro")
+    sm = ScheduledMessage(
+        template_name=req.template_name,
+        language=req.language,
+        channel_id=req.channel_id,
+        param_mappings=json.dumps(req.param_mappings) if req.param_mappings else None,
+        lead_ids=json.dumps(req.lead_ids),
+        scheduled_at=dt,
+        status="pending",
+        created_by=current_user.id,
+        created_by_name=current_user.name,
+        lead_count=len(req.lead_ids),
+    )
+    db.add(sm)
+    await db.commit()
+    await db.refresh(sm)
+    return {"id": sm.id, "scheduled_at": sm.scheduled_at.isoformat(), "status": sm.status}
+
+
+@router.get("/scheduled-messages")
+async def list_scheduled_messages(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from app.models import ScheduledMessage
+    result = await db.execute(
+        select(ScheduledMessage).order_by(ScheduledMessage.scheduled_at.desc()).limit(100)
+    )
+    items = result.scalars().all()
+    return [
+        {
+            "id": s.id,
+            "template_name": s.template_name,
+            "channel_id": s.channel_id,
+            "scheduled_at": s.scheduled_at.isoformat() if s.scheduled_at else None,
+            "status": s.status,
+            "created_by_name": s.created_by_name,
+            "lead_count": s.lead_count,
+            "sent_at": s.sent_at.isoformat() if s.sent_at else None,
+        }
+        for s in items
+    ]
+
+
+@router.post("/scheduled-messages/{sched_id}/cancel")
+async def cancel_scheduled_message(sched_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from app.models import ScheduledMessage
+    result = await db.execute(select(ScheduledMessage).where(ScheduledMessage.id == sched_id))
+    sm = result.scalar_one_or_none()
+    if not sm:
+        raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    if sm.status != "pending":
+        raise HTTPException(status_code=400, detail="Só dá pra cancelar agendamentos pendentes")
+    sm.status = "cancelled"
+    await db.commit()
+    return {"status": "cancelled"}
