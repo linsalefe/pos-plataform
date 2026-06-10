@@ -158,6 +158,7 @@ export default function ConversationsPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const deepLinkDoneRef = useRef(false);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -194,6 +195,14 @@ export default function ConversationsPage() {
       return () => clearInterval(interval);
     }
   }, [activeChannel]);
+
+  useEffect(() => {
+    if (deepLinkDoneRef.current || contacts.length === 0) return;
+    const wa = new URLSearchParams(window.location.search).get('wa');
+    if (!wa) { deepLinkDoneRef.current = true; return; }
+    const target = contacts.find(c => c.wa_id === wa);
+    if (target) { setSelectedContact(target); deepLinkDoneRef.current = true; }
+  }, [contacts]);
 
   const selectedWaId = selectedContact?.wa_id || null;
 

@@ -5,6 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
+import NotificationBell from './NotificationBell';
 import {
   LayoutDashboard,
   MessageCircle,
@@ -144,6 +145,7 @@ export default function Sidebar() {
 
       {/* ── Rodapé: Usuário + Ações ── */}
       <div className="px-3 pb-4 space-y-2 border-t border-white/[0.06] pt-4">
+        <NotificationBell collapsed={collapsed} />
         {user && !collapsed && (
           <div className="flex items-center gap-3 px-2 py-2 rounded-xl bg-white/[0.03]">
             <div className="w-9 h-9 rounded-lg bg-[#2A658F]/30 flex items-center justify-center text-[#4d9fd4] text-xs font-bold flex-shrink-0">
