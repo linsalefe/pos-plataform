@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Bell, X } from 'lucide-react';
 import api from '@/lib/api';
@@ -24,17 +24,79 @@ function timeAgo(iso: string | null): string {
   return `${Math.floor(diff / 86400)}d`;
 }
 
+function playSound() {
+  try {
+    const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    if (ctx.state === 'suspended' && ctx.resume) ctx.resume();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g);
+    g.connect(ctx.destination);
+    o.type = 'sine';
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+    o.start();
+    o.stop(ctx.currentTime + 0.27);
+    o.onended = () => { try { ctx.close(); } catch {} };
+  } catch {}
+}
+
 export default function NotificationBell({ collapsed = false }: { collapsed?: boolean }) {
   const router = useRouter();
   const [items, setItems] = useState<Notif[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
+  const [perm, setPerm] = useState<string>('default');
+
+  const lastIdRef = useRef(0);
+  const initRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      setPerm(Notification.permission);
+    }
+  }, []);
+
+  const showPopup = (title: string, body: string | null, wa: string | null) => {
+    try {
+      if (typeof window === 'undefined' || !('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+      if (document.hasFocus()) return;
+      const n = new Notification(title, { body: body || '', icon: '/logo-icon-white.png' });
+      n.onclick = () => {
+        window.focus();
+        router.push(wa ? `/conversations?wa=${wa}` : '/conversations');
+        n.close();
+      };
+    } catch {}
+  };
 
   const load = async () => {
     try {
       const res = await api.get('/notifications');
-      setItems(res.data.items || []);
-      setUnread(res.data.unread_count || 0);
+      const list: Notif[] = res.data.items || [];
+      const cnt: number = res.data.unread_count || 0;
+      const maxId = list.reduce((m, n) => Math.max(m, n.id), 0);
+
+      if (!initRef.current) {
+        initRef.current = true;
+        lastIdRef.current = maxId;
+      } else if (maxId > lastIdRef.current) {
+        const fresh = list.filter(n => n.id > lastIdRef.current && !n.is_read);
+        if (fresh.length > 0 && !document.hasFocus()) {
+          playSound();
+          if (fresh.length === 1) showPopup(fresh[0].title, fresh[0].body, fresh[0].contact_wa_id);
+          else showPopup(`${fresh.length} novas notificações`, 'Você tem novas notificações no Hub.', null);
+        }
+        lastIdRef.current = maxId;
+      }
+
+      setItems(list);
+      setUnread(cnt);
     } catch {}
   };
 
@@ -44,6 +106,15 @@ export default function NotificationBell({ collapsed = false }: { collapsed?: bo
     const interval = setInterval(load, 15000);
     return () => clearInterval(interval);
   }, []);
+
+  const askPermission = () => {
+    try {
+      playSound();
+      if ('Notification' in window) {
+        Notification.requestPermission().then(p => setPerm(p));
+      }
+    } catch {}
+  };
 
   const openNotif = async (n: Notif) => {
     try { await api.post(`/notifications/${n.id}/read`); } catch {}
@@ -89,6 +160,17 @@ export default function NotificationBell({ collapsed = false }: { collapsed?: bo
                 </button>
               </div>
             </div>
+
+            {perm === 'default' && (
+              <button
+                onClick={askPermission}
+                className="flex items-center gap-2 px-4 py-2.5 bg-[#2A658F]/[0.06] text-[#2A658F] text-[12px] font-medium hover:bg-[#2A658F]/[0.1] transition-colors border-b border-gray-100"
+              >
+                <Bell className="w-3.5 h-3.5" />
+                Ativar notificações no navegador
+              </button>
+            )}
+
             <div className="flex-1 overflow-y-auto">
               {items.length === 0 ? (
                 <p className="text-[12px] text-gray-400 text-center py-8">Nenhuma notificação</p>
