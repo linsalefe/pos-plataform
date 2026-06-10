@@ -201,6 +201,7 @@ async def bulk_send_template(
     "parameters" antigo (nome + curso).
     """
     from app.models import Channel, Contact, Message
+    from app.sdr_mapping import resolve_sdr_user_id
     from app.whatsapp import send_template_message, fetch_template_body, render_template_text
     from datetime import datetime, timedelta, timezone
     import asyncio
@@ -288,14 +289,17 @@ async def bulk_send_template(
             if "messages" in result:
                 wa_id = result.get("contacts", [{}])[0].get("wa_id", phone)
 
-                # Criar contato se não existir
+                # Criar contato se não existir + vincular SDR do Exact
+                sdr_user_id = resolve_sdr_user_id(lead.sdr_name)
                 contact_result = await db.execute(
                     select(Contact).where(Contact.wa_id == wa_id)
                 )
                 contact = contact_result.scalar_one_or_none()
                 if not contact:
-                    db.add(Contact(wa_id=wa_id, name=lead.name, channel_id=channel_id))
+                    db.add(Contact(wa_id=wa_id, name=lead.name, channel_id=channel_id, assigned_to=sdr_user_id))
                     await db.flush()
+                elif contact.assigned_to is None and sdr_user_id is not None:
+                    contact.assigned_to = sdr_user_id
 
                 # Texto COMPLETO renderizado (fallback ao formato antigo)
                 rendered = render_template_text(template_body, lead_params)

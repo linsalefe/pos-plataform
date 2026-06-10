@@ -143,7 +143,12 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession):
             print(f"❌ Falha ao enviar para {name} ({phone}): {send_result}")
             return
 
-        # Criar ou atualizar contato
+        # Criar ou atualizar contato + vincular SDR do Exact
+        from app.sdr_mapping import resolve_sdr_user_id
+        _sdr = lead_data.get("sdr_name") or lead_data.get("sdr")
+        if isinstance(_sdr, dict):
+            _sdr = _sdr.get("name")
+        sdr_user_id = resolve_sdr_user_id(_sdr)
         contact_result = await db.execute(select(Contact).where(Contact.wa_id == phone))
         contact = contact_result.scalar_one_or_none()
         if not contact:
@@ -153,6 +158,7 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession):
                 channel_id=AI_CHANNEL_ID,
                 ai_active=True,
                 lead_status="novo",
+                assigned_to=sdr_user_id,
             )
             db.add(contact)
             await db.flush()
@@ -160,6 +166,8 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession):
             contact.ai_active = True
             if not contact.name:
                 contact.name = name
+            if contact.assigned_to is None and sdr_user_id is not None:
+                contact.assigned_to = sdr_user_id
 
         # Salvar mensagem do template
         from datetime import timezone, timedelta

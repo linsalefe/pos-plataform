@@ -112,6 +112,7 @@ export default function ConversationsPage() {
   const [sending, setSending] = useState(false);
   const [showCRM, setShowCRM] = useState(true);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [showSdrMenu, setShowSdrMenu] = useState(false);
   const [showTagMenu, setShowTagMenu] = useState(false);
   const [allTags, setAllTags] = useState<ContactTag[]>([]);
   const [newTagName, setNewTagName] = useState('');
@@ -248,6 +249,7 @@ export default function ConversationsPage() {
             || updated.notes !== selectedContact.notes
             || updated.ai_active !== selectedContact.ai_active
             || updated.unread !== selectedContact.unread
+            || updated.assigned_to !== selectedContact.assigned_to
             || JSON.stringify(updated.tags) !== JSON.stringify(selectedContact.tags);
           if (changed) setSelectedContact(updated);
         }
@@ -498,6 +500,16 @@ export default function ConversationsPage() {
     } catch (err) { console.error('Erro:', err); }
   };
 
+  const updateAssignedTo = async (userId: number | null) => {
+    if (!selectedContact) return;
+    try {
+      await api.patch(`/contacts/${selectedContact.wa_id}/assign`, { assigned_to: userId });
+      setSelectedContact({ ...selectedContact, assigned_to: userId });
+      setShowSdrMenu(false);
+      await loadContacts();
+    } catch (err) { console.error('Erro:', err); }
+  };
+
   const saveNotes = async () => {
     if (!selectedContact) return;
     try {
@@ -652,7 +664,7 @@ export default function ConversationsPage() {
     const mtag = tagFilter.length === 0 || c.tags.some(t => tagFilter.includes(t.id));
     const mur = !unreadFilter || c.unread > 0;
     const mai = aiFilter === 'all' || (aiFilter === 'on' ? c.ai_active : !c.ai_active);
-    const msdr = sdrFilter === null || c.assigned_to === sdrFilter;
+    const msdr = sdrFilter === null || (sdrFilter === 0 ? c.assigned_to === null : c.assigned_to === sdrFilter);
     return ms && mst && mtag && mur && mai && msdr;
   });
 
@@ -897,6 +909,16 @@ export default function ConversationsPage() {
                   <div>
                     <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">SDR</p>
                     <div className="flex flex-wrap gap-1.5">
+                      <button
+                        onClick={() => setSdrFilter(sdrFilter === 0 ? null : 0)}
+                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                          sdrFilter === 0
+                            ? 'bg-[#2A658F]/10 text-[#2A658F]'
+                            : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                        }`}
+                      >
+                        Sem SDR
+                      </button>
                       {users.map(u => (
                         <button
                           key={u.id}
@@ -1377,6 +1399,46 @@ export default function ConversationsPage() {
                                 >
                                   <div className={`w-2.5 h-2.5 rounded-full ${s.color}`} />
                                   <span className="text-[13px] text-gray-700">{s.label}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* SDR responsável */}
+                      <div>
+                        <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">SDR responsável</p>
+                        <div className="relative">
+                          <button
+                            onClick={() => setShowSdrMenu(!showSdrMenu)}
+                            className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50 transition-all hover:shadow-sm"
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className={`w-2.5 h-2.5 rounded-full ${selectedContact.assigned_to ? 'bg-[#2A658F]' : 'bg-gray-300'}`} />
+                              <span className={`text-[13px] font-medium ${selectedContact.assigned_to ? 'text-[#27273D]' : 'text-gray-400'}`}>
+                                {users.find(u => u.id === selectedContact.assigned_to)?.name || 'Sem SDR'}
+                              </span>
+                            </div>
+                            <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${showSdrMenu ? 'rotate-180' : ''}`} />
+                          </button>
+                          {showSdrMenu && (
+                            <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-gray-200 shadow-lg z-10 overflow-hidden max-h-[260px] overflow-y-auto">
+                              <button
+                                onClick={() => updateAssignedTo(null)}
+                                className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                              >
+                                <div className="w-2.5 h-2.5 rounded-full bg-gray-300" />
+                                <span className="text-[13px] text-gray-700">Sem SDR</span>
+                              </button>
+                              {users.map(u => (
+                                <button
+                                  key={u.id}
+                                  onClick={() => updateAssignedTo(u.id)}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                                >
+                                  <div className="w-2.5 h-2.5 rounded-full bg-[#2A658F]" />
+                                  <span className="text-[13px] text-gray-700">{u.name}</span>
                                 </button>
                               ))}
                             </div>

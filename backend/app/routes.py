@@ -437,6 +437,25 @@ async def update_contact(wa_id: str, req: UpdateContactRequest, db: AsyncSession
     return {"status": "updated"}
 
 
+class AssignContactRequest(BaseModel):
+    assigned_to: Optional[int] = None
+
+
+@router.patch("/contacts/{wa_id}/assign")
+async def assign_contact(wa_id: str, req: AssignContactRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contato não encontrado")
+    if req.assigned_to is not None:
+        user_result = await db.execute(select(User).where(User.id == req.assigned_to, User.is_active == True))
+        if not user_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Usuário (SDR) não encontrado")
+    contact.assigned_to = req.assigned_to
+    await db.commit()
+    return {"status": "assigned", "assigned_to": req.assigned_to}
+
+
 @router.post("/contacts/{wa_id}/tags/{tag_id}")
 async def add_tag_to_contact(wa_id: str, tag_id: int, db: AsyncSession = Depends(get_db)):
     await db.execute(contact_tags.insert().values(contact_wa_id=wa_id, tag_id=tag_id))
