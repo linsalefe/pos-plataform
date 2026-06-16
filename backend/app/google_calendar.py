@@ -150,7 +150,7 @@ ou
             description = f"Lead: {lead_name}\nTelefone: {lead_phone}\nCurso: {lead_course}\nAgendado pela IA Nat"
             
             event = await create_event(cal_id, summary, description, start_dt, end_dt)
-            print(f"�� Evento criado automaticamente: {result['data']} {result['hora']}")
+            print(f"Evento criado automaticamente: {result['data']} {result['hora']}")
             return event
     except Exception as e:
         print(f"⚠️ Erro ao detectar/criar evento: {e}")

@@ -39,18 +39,6 @@ async def get_ai_config(channel_id: int, db: AsyncSession = Depends(get_db)):
     config = result.scalar_one_or_none()
 
     if not config:
-        # Detectar agendamento e criar evento no Google Calendar
-        try:
-            from app.google_calendar import detect_and_create_event
-            await detect_and_create_event(
-                ai_response,
-                req.conversation_history,
-                req.lead_name or "Lead",
-                "teste",
-                req.lead_course or "Não informado",
-            )
-        except Exception as e:
-            print(f"⚠️ Erro ao criar evento: {e}")
         return {
             "channel_id": channel_id,
             "is_enabled": False,
@@ -284,7 +272,7 @@ async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
             calendar_info += "\nIMPORTANTE: Só ofereça horários que estão nesta lista. Se o lead pedir um horário que não está disponível, informe que não há vaga e sugira os horários livres.\n"
     except Exception as e:
         print(f"⚠️ Erro ao buscar calendário: {e}")
-    print(f"📅 CALENDAR_INFO: {calendar_info[:200] if calendar_info else VAZIO}")
+    print(f"📅 CALENDAR_INFO: {calendar_info[:200] if calendar_info else 'VAZIO'}")
     messages = [{"role": "system", "content": system_prompt + lead_info + calendar_info + context}]
     messages.extend(req.conversation_history)
     messages.append({"role": "user", "content": req.message})

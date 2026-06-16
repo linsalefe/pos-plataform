@@ -304,12 +304,18 @@ async def generate_conversation_summary(contact_wa_id: str, db: AsyncSession) ->
         )
         ai_response = response.choices[0].message.content
         if not ai_response:
-            messages.append({"role": "assistant", "content": ""})
-            messages.append({"role": "user", "content": "Por favor, continue o atendimento."})
             retry = await client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=messages,
-                max_completion_tokens=max_tokens,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Resuma esta conversa de atendimento em 2-3 frases objetivas. "
+                                   "Inclua: interesse do lead, dúvidas principais, e status final."
+                    },
+                    {"role": "user", "content": conversation_text},
+                ],
+                temperature=0.3,
+                max_tokens=200,
             )
             ai_response = retry.choices[0].message.content or "Desculpe, não consegui processar. Um momento que vou transferir para nossa consultora."
         return ai_response
