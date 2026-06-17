@@ -295,22 +295,26 @@ async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
                 max_completion_tokens=max_tokens,
             )
             ai_response = retry.choices[0].message.content or "Perfeito! Sua reunião está agendada. Lembrando que ao atender no horário agendado você estará elegível para isenção da taxa da matrícula. Abraço! 🌻"
-        # Detectar agendamento e criar evento no Google Calendar
+        # Detectar agendamento em modo SIMULAÇÃO (dry_run): detecta, NÃO cria evento
+        agendamento_detectado = False
         try:
             from app.google_calendar import detect_and_create_event
-            await detect_and_create_event(
+            deteccao = await detect_and_create_event(
                 ai_response,
                 req.conversation_history,
                 req.lead_name or "Lead",
                 "teste",
                 req.lead_course or "Não informado",
+                dry_run=True,
             )
+            agendamento_detectado = bool(deteccao and deteccao.get("agendamento_detectado"))
         except Exception as e:
-            print(f"⚠️ Erro ao criar evento: {e}")
+            print(f"⚠️ Erro ao detectar evento (dry_run): {e}")
         return {
             "response": ai_response,
             "model": model,
             "rag_docs": len(relevant_docs),
+            "agendamento_detectado": agendamento_detectado,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

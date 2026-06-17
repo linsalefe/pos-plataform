@@ -13,6 +13,7 @@ interface ChatMessage {
   timestamp: string;
   model?: string;
   rag_docs?: number;
+  agendamento_detectado?: boolean;
 }
 
 interface ChannelInfo {
@@ -81,6 +82,7 @@ export default function AITestPage() {
         timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         model: res.data.model,
         rag_docs: res.data.rag_docs,
+        agendamento_detectado: res.data.agendamento_detectado,
       };
 
       setMessages(prev => [...prev, aiMsg]);
@@ -239,6 +241,11 @@ export default function AITestPage() {
                     {msg.role === 'assistant' && msg.rag_docs !== undefined && msg.rag_docs > 0 && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">
                         📚 {msg.rag_docs} docs RAG
+                      </span>
+                    )}
+                    {msg.role === 'assistant' && msg.agendamento_detectado && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-200">
+                        📅 agendamento detectado (simulação — nenhum evento criado)
                       </span>
                     )}
                   </div>

@@ -113,7 +113,7 @@ async def get_available_dates(calendar_id: str, days_ahead: int = 5):
     return available
 
 
-async def detect_and_create_event(ai_response: str, conversation_history: list, lead_name: str, lead_phone: str, lead_course: str):
+async def detect_and_create_event(ai_response: str, conversation_history: list, lead_name: str, lead_phone: str, lead_course: str, dry_run: bool = False):
     """Detecta se houve agendamento na resposta e cria evento no Google Calendar."""
     from openai import AsyncOpenAI
     import json
@@ -140,6 +140,9 @@ ou
         result = json.loads(result_text)
         
         if result.get("agendado") and result.get("data") and result.get("hora"):
+            if dry_run:
+                print(f"🧪 [dry_run] Agendamento detectado, evento NÃO criado: {result['data']} {result['hora']}")
+                return {"agendamento_detectado": True, "data": result["data"], "hora": result["hora"]}
             from datetime import datetime, timedelta
             
             cal_id = CALENDARS["victoria"]["calendar_id"]
@@ -154,5 +157,7 @@ ou
             return event
     except Exception as e:
         print(f"⚠️ Erro ao detectar/criar evento: {e}")
-    
+
+    if dry_run:
+        return {"agendamento_detectado": False}
     return None
