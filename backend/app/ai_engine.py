@@ -14,6 +14,7 @@ from app.models import KnowledgeDocument, AIConfig, Message, AIConversationSumma
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+DEFAULT_MODEL = "gpt-5-mini"
 EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_SYSTEM_PROMPT = """Você é um atendente virtual do CENAT (Centro Educacional Novas Abordagens em Saúde Mental).
 Seu papel é atender leads interessados em cursos de pós-graduação.
@@ -172,7 +173,7 @@ async def generate_ai_response(
         return None
 
     system_prompt = ai_config.system_prompt or DEFAULT_SYSTEM_PROMPT
-    model = ai_config.model or "gpt-4o"
+    model = ai_config.model or DEFAULT_MODEL
     temperature = float(ai_config.temperature or "0.7")
     max_tokens = ai_config.max_tokens or 500
 
@@ -252,7 +253,7 @@ async def generate_ai_response(
             messages.append({"role": "assistant", "content": ""})
             messages.append({"role": "user", "content": "Por favor, continue o atendimento."})
             retry = await client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=DEFAULT_MODEL,
                 messages=messages,
                 max_completion_tokens=max_tokens,
             )

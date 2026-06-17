@@ -10,7 +10,7 @@ from typing import Optional
 
 from app.database import get_db
 from app.models import AIConfig, KnowledgeDocument, Contact, AIConversationSummary
-from app.ai_engine import generate_embedding, split_into_chunks, count_tokens
+from app.ai_engine import generate_embedding, split_into_chunks, count_tokens, DEFAULT_MODEL
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -43,7 +43,7 @@ async def get_ai_config(channel_id: int, db: AsyncSession = Depends(get_db)):
             "channel_id": channel_id,
             "is_enabled": False,
             "system_prompt": "",
-            "model": "gpt-5",
+            "model": DEFAULT_MODEL,
             "temperature": "0.7",
             "max_tokens": 500,
         }
@@ -236,7 +236,7 @@ async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
     ai_config = result.scalar_one_or_none()
 
     system_prompt = ai_config.system_prompt if ai_config and ai_config.system_prompt else DEFAULT_SYSTEM_PROMPT
-    model = ai_config.model if ai_config else "gpt-5"
+    model = ai_config.model if ai_config else DEFAULT_MODEL
     temperature = float(ai_config.temperature) if ai_config else 0.7
     max_tokens = ai_config.max_tokens if ai_config else 1000
 
@@ -290,7 +290,7 @@ async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
             messages.append({"role": "assistant", "content": ""})
             messages.append({"role": "user", "content": "Por favor, confirme o agendamento com a data e horário que informei."})
             retry = await client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=DEFAULT_MODEL,
                 messages=messages,
                 max_completion_tokens=max_tokens,
             )
