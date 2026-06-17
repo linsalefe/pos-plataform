@@ -4,12 +4,13 @@ Usa OpenAI para embeddings + geração de respostas.
 """
 import os
 import json
+from datetime import datetime
 import numpy as np
 import tiktoken
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.models import KnowledgeDocument, AIConfig, Message, AIConversationSummary
+from app.models import KnowledgeDocument, AIConfig, Message, AIConversationSummary, ExactLead
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -367,8 +368,8 @@ Formato:
 👤 Graduação: [se informou]
 💼 Área de atuação: [se informou]
 📌 Expectativa: [se informou]
-�� Valor aceito: [sim/não/não chegou nessa etapa]
-�� Agendamento: [data/hora se marcou]
+💰 Valor aceito: [sim/não/não chegou nessa etapa]
+🗓️ Agendamento: [data/hora se marcou]
 📊 Status: [Qualificado/Não qualificado/Incompleto/Passou para humano]
 📝 Observações: [algo relevante]
 
@@ -379,7 +380,7 @@ Seja breve e direto."""},
         )
         summary = response.choices[0].message.content
     except Exception as e:
-        summary = f"�� Atendimento realizado pela IA Nat em {datetime.now().strftime('%d/%m/%Y %H:%M')}. Erro ao gerar resumo: {e}"
+        summary = f"⚠️ Atendimento realizado pela IA Nat em {datetime.now().strftime('%d/%m/%Y %H:%M')}. Erro ao gerar resumo: {e}"
     
     # 5. Enviar para timeline da Exact Spotter
     success = await add_timeline_comment(exact_lead.exact_id, summary)
