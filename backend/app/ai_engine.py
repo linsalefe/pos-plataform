@@ -292,7 +292,7 @@ async def generate_conversation_summary(contact_wa_id: str, db: AsyncSession) ->
 
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=DEFAULT_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -301,13 +301,12 @@ async def generate_conversation_summary(contact_wa_id: str, db: AsyncSession) ->
                 },
                 {"role": "user", "content": conversation_text},
             ],
-            temperature=0.3,
-            max_tokens=200,
+            max_completion_tokens=200,
         )
         ai_response = response.choices[0].message.content
         if not ai_response:
             retry = await client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=DEFAULT_MODEL,
                 messages=[
                     {
                         "role": "system",
@@ -316,8 +315,7 @@ async def generate_conversation_summary(contact_wa_id: str, db: AsyncSession) ->
                     },
                     {"role": "user", "content": conversation_text},
                 ],
-                temperature=0.3,
-                max_tokens=200,
+                max_completion_tokens=200,
             )
             ai_response = retry.choices[0].message.content or "Desculpe, não consegui processar. Um momento que vou transferir para nossa consultora."
         return ai_response
@@ -359,7 +357,7 @@ async def save_annotation_to_exact(contact_wa_id: str, channel_id: int, db: Asyn
     
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=DEFAULT_MODEL,
             messages=[
                 {"role": "system", "content": """Gere um resumo objetivo do atendimento via WhatsApp feito pela IA Nat.
 Formato:
