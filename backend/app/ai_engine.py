@@ -29,7 +29,7 @@ Responda de forma natural, como uma conversa no WhatsApp (mensagens curtas, use 
 def count_tokens(text: str, model: str = "gpt-5") -> int:
     """Conta tokens de um texto."""
     try:
-        enc = tiktoken.encoding_for_model(model)
+        enc = tiktoken.get_encoding("o200k_base")
         return len(enc.encode(text))
     except Exception:
         return len(text) // 4
@@ -37,7 +37,7 @@ def count_tokens(text: str, model: str = "gpt-5") -> int:
 
 def split_into_chunks(text: str, title: str, max_tokens: int = 400) -> list[dict]:
     """Divide texto em chunks menores para embedding."""
-    enc = tiktoken.encoding_for_model("gpt-4o")
+    enc = tiktoken.get_encoding("o200k_base")
     paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
 
     chunks = []
