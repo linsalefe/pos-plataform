@@ -125,11 +125,16 @@ async def detect_and_create_event(ai_response: str, conversation_history: list, 
         extraction = await client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": """Analise a resposta do assistente. Se ela confirma um agendamento de reunião/ligação, extraia a data e hora.
-O ano atual é 2026. Responda APENAS com JSON, sem markdown:
-{"agendado": true, "data": "YYYY-MM-DD", "hora": "HH:MM"} 
-ou
-{"agendado": false}"""},
+                {"role": "system", "content": """Você analisa a ÚLTIMA resposta do assistente para detectar se foi CONFIRMADO um agendamento de uma REUNIÃO/LIGAÇÃO/ATENDIMENTO INDIVIDUAL específico COM ESTE LEAD (ex.: "sua reunião está confirmada para...", "agendei nosso contato para...", "vou te ligar dia X às Y").
+
+NÃO é agendamento (responda {"agendado": false}) quando a resposta apenas:
+- informa datas, horários ou calendário de AULAS/INÍCIO/ENCONTROS de um CURSO (ex.: "início em maio/2026", "encontros às quartas 19h-22h", "aulas aos sábados");
+- descreve a grade, carga horária ou estrutura do curso;
+- pergunta dados ao lead sem confirmar um horário específico;
+- fala de prazos genéricos.
+
+SÓ responda {"agendado": true, "data": "YYYY-MM-DD", "hora": "HH:MM"} quando houver uma reunião/ligação individual CONFIRMADA com data E hora específicas marcadas COM O LEAD.
+O ano atual é 2026. Responda APENAS com JSON, sem markdown."""},
                 {"role": "user", "content": f"Resposta do assistente: {ai_response}"}
             ],
             max_completion_tokens=100,
