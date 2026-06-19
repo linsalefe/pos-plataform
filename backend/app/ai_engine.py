@@ -124,6 +124,28 @@ async def search_knowledge(query: str, channel_id: int, db: AsyncSession, top_k:
     return scored[:top_k]
 
 
+async def get_course_catalog(channel_id: int, db: AsyncSession) -> list[str]:
+    """Retorna a lista completa de cursos (titulos distintos) da base do canal."""
+    result = await db.execute(
+        select(KnowledgeDocument.title)
+        .where(KnowledgeDocument.channel_id == channel_id)
+        .distinct()
+        .order_by(KnowledgeDocument.title)
+    )
+    return [row[0] for row in result.all()]
+
+
+def build_catalog_info(catalog: list[str]) -> str:
+    """Monta o bloco de catalogo completo para injetar no system prompt (Solucao A)."""
+    if not catalog:
+        return ""
+    info = "\n\n---\nCATALOGO COMPLETO DE CURSOS (lista oficial e completa — use-a quando o lead perguntar quais/quantos cursos existem):\n"
+    for t in catalog:
+        info += f"- {t}\n"
+    info += "---\n"
+    return info
+
+
 # === Histórico de Conversa ===
 
 async def get_conversation_history(contact_wa_id: str, db: AsyncSession, limit: int = 10) -> list[dict]:
@@ -228,12 +250,15 @@ async def generate_ai_response(
             context += f"\n[{doc['title']}] (relevância: {doc['score']:.2f})\n{doc['content']}\n"
         context += "---\n"
 
+    # 2.5 Catálogo completo de cursos (Solução A: sempre injetado)
+    catalog_info = build_catalog_info(await get_course_catalog(channel_id, db))
+
     # 3. Buscar histórico da conversa
     history = await get_conversation_history(contact_wa_id, db, limit=10)
 
     # 4. Montar mensagens para o GPT
     messages = [
-        {"role": "system", "content": system_prompt + lead_info + calendar_info + context},
+        {"role": "system", "content": system_prompt + lead_info + calendar_info + catalog_info + context},
     ]
     messages.extend(history)
 

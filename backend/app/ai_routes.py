@@ -223,7 +223,7 @@ class TestChatRequest(BaseModel):
 @router.post("/test-chat")
 async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
     """Endpoint de teste: simula conversa com a IA sem enviar WhatsApp."""
-    from app.ai_engine import search_knowledge, DEFAULT_SYSTEM_PROMPT
+    from app.ai_engine import search_knowledge, get_course_catalog, build_catalog_info, DEFAULT_SYSTEM_PROMPT
     from openai import AsyncOpenAI
     import os
 
@@ -248,6 +248,9 @@ async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
         for doc in relevant_docs:
             context += f"\n[{doc['title']}] (relevância: {doc['score']:.2f})\n{doc['content']}\n"
         context += "---\n"
+
+    # Catálogo completo de cursos (Solução A: sempre injetado)
+    catalog_info = build_catalog_info(await get_course_catalog(req.channel_id, db))
 
     # Montar mensagens
     lead_info = ""
@@ -274,7 +277,7 @@ async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
     # except Exception as e:
     #     print(f"⚠️ Erro ao buscar calendário: {e}")
     # print(f"📅 CALENDAR_INFO: {calendar_info[:200] if calendar_info else 'VAZIO'}")
-    messages = [{"role": "system", "content": system_prompt + lead_info + calendar_info + context}]
+    messages = [{"role": "system", "content": system_prompt + lead_info + calendar_info + catalog_info + context}]
     messages.extend(req.conversation_history)
     messages.append({"role": "user", "content": req.message})
 
