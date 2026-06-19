@@ -337,6 +337,17 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             #         db=db,
             #     )
             #
+            #     # === MULTI-BALÃO (PREPARADO, FUTURO go-live) — manter comentado ===
+            #     # from app.message_split import split_message
+            #     # for parte in split_message(ai_response):
+            #     #     send_result = await send_text_message(
+            #     #         to=sender_wa_id, text=parte,
+            #     #         phone_number_id=ai_channel.phone_number_id,
+            #     #         token=ai_channel.whatsapp_token,
+            #     #     )
+            #     #     await asyncio.sleep(0.6)
+            #     #     # ... salvar uma Message por parte ...
+            #     # --- versão single-balão original abaixo ---
             #     if ai_response:
             #         # Enviar via WhatsApp
             #         send_result = await send_text_message(

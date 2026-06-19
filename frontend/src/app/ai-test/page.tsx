@@ -79,16 +79,22 @@ export default function AITestPage() {
         lead_course: leadCourse,
       });
 
-      const aiMsg: ChatMessage = {
-        role: 'assistant',
-        content: res.data.response,
-        timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-        model: res.data.model,
-        rag_docs: res.data.rag_docs,
-        agendamento_detectado: res.data.agendamento_detectado,
-      };
+      const partes = (res.data.partes && res.data.partes.length > 0)
+        ? res.data.partes
+        : [res.data.response];
 
-      setMessages(prev => [...prev, aiMsg]);
+      for (let i = 0; i < partes.length; i++) {
+        const isLast = i === partes.length - 1;
+        const aiMsg: ChatMessage = {
+          role: 'assistant',
+          content: partes[i],
+          timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+          model: isLast ? res.data.model : undefined,
+          rag_docs: isLast ? res.data.rag_docs : undefined,
+        };
+        setMessages(prev => [...prev, aiMsg]);
+        if (!isLast) await new Promise(r => setTimeout(r, 600));
+      }
     } catch (err: any) {
       const errorMsg: ChatMessage = {
         role: 'assistant',
