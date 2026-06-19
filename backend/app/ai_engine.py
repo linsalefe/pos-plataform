@@ -205,19 +205,20 @@ async def generate_ai_response(
             lead_info += f"- Curso de interesse: {lead_course}\n"
     # 1.7 Buscar disponibilidade do calendário
     calendar_info = ""
-    try:
-        from app.google_calendar import get_available_dates, get_available_slots, CALENDARS
-        cal_id = CALENDARS["victoria"]["calendar_id"]
-        dates = await get_available_dates(cal_id, days_ahead=3)
-        if dates:
-            calendar_info = "\n\nAGENDA DISPONÍVEL PARA LIGAÇÃO:\n"
-            for d in dates:
-                slots = await get_available_slots(cal_id, d["date"])
-                horarios = ", ".join([s["start"] for s in slots[:6]])
-                calendar_info += f"- {d['weekday']} {d['date']}: {horarios}\n"
-            calendar_info += "\nIMPORTANTE: Só ofereça horários que estão nesta lista. Se o lead pedir um horário que não está disponível, informe que não há vaga e sugira os horários livres.\n"
-    except Exception as e:
-        print(f"⚠️ Erro ao buscar calendário: {e}")
+    # === AGENDA/CALENDAR: DESATIVADO TEMPORARIAMENTE (Nat faz só pré-atendimento) ===
+    # try:
+    #     from app.google_calendar import get_available_dates, get_available_slots, CALENDARS
+    #     cal_id = CALENDARS["victoria"]["calendar_id"]
+    #     dates = await get_available_dates(cal_id, days_ahead=3)
+    #     if dates:
+    #         calendar_info = "\n\nAGENDA DISPONÍVEL PARA LIGAÇÃO:\n"
+    #         for d in dates:
+    #             slots = await get_available_slots(cal_id, d["date"])
+    #             horarios = ", ".join([s["start"] for s in slots[:6]])
+    #             calendar_info += f"- {d['weekday']} {d['date']}: {horarios}\n"
+    #         calendar_info += "\nIMPORTANTE: Só ofereça horários que estão nesta lista. Se o lead pedir um horário que não está disponível, informe que não há vaga e sugira os horários livres.\n"
+    # except Exception as e:
+    #     print(f"⚠️ Erro ao buscar calendário: {e}")
     # 2. Buscar contexto do RAG
     relevant_docs = await search_knowledge(user_message, channel_id, db)
     context = ""
@@ -242,34 +243,38 @@ async def generate_ai_response(
 
     # 5. Chamar OpenAI
     try:
+        extra = {"reasoning_effort": "minimal"} if str(model).startswith("gpt-5") else {}
         response = await client.chat.completions.create(
             model=model,
             messages=messages,
-
             max_completion_tokens=max_tokens,
+            **extra,
         )
+        print(f"🤖 finish_reason={response.choices[0].finish_reason} model={model}")
         ai_response = response.choices[0].message.content
         if not ai_response:
             messages.append({"role": "assistant", "content": ""})
-            messages.append({"role": "user", "content": "Por favor, continue o atendimento."})
+            messages.append({"role": "user", "content": "Por favor, continue o atendimento de forma cordial."})
+            retry_extra = {"reasoning_effort": "minimal"} if str(DEFAULT_MODEL).startswith("gpt-5") else {}
             retry = await client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=messages,
                 max_completion_tokens=max_tokens,
+                **retry_extra,
             )
-            ai_response = retry.choices[0].message.content or "Desculpe, não consegui processar. Um momento que vou transferir para nossa consultora."
-        # Detectar agendamento e criar evento no Google Calendar
-        try:
-            from app.google_calendar import detect_and_create_event
-            await detect_and_create_event(
-                ai_response,
-                [],
-                lead_name or "Lead",
-                contact_wa_id,
-                lead_course or "Não informado",
-            )
-        except Exception as e:
-            print(f"⚠️ Erro ao criar evento: {e}")
+            ai_response = retry.choices[0].message.content or "Desculpe, tive um probleminha agora. Pode repetir, por favor? 🙂"
+        # === DETECTOR DE AGENDAMENTO: DESATIVADO TEMPORARIAMENTE ===
+        # try:
+        #     from app.google_calendar import detect_and_create_event
+        #     await detect_and_create_event(
+        #         ai_response,
+        #         [],
+        #         lead_name or "Lead",
+        #         contact_wa_id,
+        #         lead_course or "Não informado",
+        #     )
+        # except Exception as e:
+        #     print(f"⚠️ Erro ao criar evento: {e}")
         return ai_response
     except Exception as e:
         print(f"❌ Erro ao gerar resposta IA: {e}")

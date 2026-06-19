@@ -259,59 +259,66 @@ async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
             lead_info += f"- Curso de interesse: {req.lead_course}\n"
     # Buscar disponibilidade do calendário
     calendar_info = ""
-    try:
-        from app.google_calendar import get_available_dates, get_available_slots, CALENDARS
-        cal_id = CALENDARS["victoria"]["calendar_id"]
-        dates = await get_available_dates(cal_id, days_ahead=3)
-        if dates:
-            calendar_info = "\n\nAGENDA DISPONÍVEL PARA LIGAÇÃO:\n"
-            for d in dates:
-                slots = await get_available_slots(cal_id, d["date"])
-                horarios = ", ".join([s["start"] for s in slots[:6]])
-                calendar_info += f"- {d['weekday']} {d['date']}: {horarios}\n"
-            calendar_info += "\nIMPORTANTE: Só ofereça horários que estão nesta lista. Se o lead pedir um horário que não está disponível, informe que não há vaga e sugira os horários livres.\n"
-    except Exception as e:
-        print(f"⚠️ Erro ao buscar calendário: {e}")
-    print(f"📅 CALENDAR_INFO: {calendar_info[:200] if calendar_info else 'VAZIO'}")
+    # === AGENDA/CALENDAR: DESATIVADO TEMPORARIAMENTE (Nat faz só pré-atendimento) ===
+    # try:
+    #     from app.google_calendar import get_available_dates, get_available_slots, CALENDARS
+    #     cal_id = CALENDARS["victoria"]["calendar_id"]
+    #     dates = await get_available_dates(cal_id, days_ahead=3)
+    #     if dates:
+    #         calendar_info = "\n\nAGENDA DISPONÍVEL PARA LIGAÇÃO:\n"
+    #         for d in dates:
+    #             slots = await get_available_slots(cal_id, d["date"])
+    #             horarios = ", ".join([s["start"] for s in slots[:6]])
+    #             calendar_info += f"- {d['weekday']} {d['date']}: {horarios}\n"
+    #         calendar_info += "\nIMPORTANTE: Só ofereça horários que estão nesta lista. Se o lead pedir um horário que não está disponível, informe que não há vaga e sugira os horários livres.\n"
+    # except Exception as e:
+    #     print(f"⚠️ Erro ao buscar calendário: {e}")
+    # print(f"📅 CALENDAR_INFO: {calendar_info[:200] if calendar_info else 'VAZIO'}")
     messages = [{"role": "system", "content": system_prompt + lead_info + calendar_info + context}]
     messages.extend(req.conversation_history)
     messages.append({"role": "user", "content": req.message})
 
     try:
+        extra = {"reasoning_effort": "minimal"} if str(model).startswith("gpt-5") else {}
         response = await client.chat.completions.create(
             model=model,
             messages=messages,
-
             max_completion_tokens=max_tokens,
+            **extra,
         )
-        
+        print(f"🤖 finish_reason={response.choices[0].finish_reason} model={model}")
         ai_response = response.choices[0].message.content
         if not ai_response:
             messages.append({"role": "assistant", "content": ""})
-            messages.append({"role": "user", "content": "Por favor, confirme o agendamento com a data e horário que informei."})
+            messages.append({"role": "user", "content": "Por favor, continue o atendimento de forma cordial."})
+            retry_extra = {"reasoning_effort": "minimal"} if str(DEFAULT_MODEL).startswith("gpt-5") else {}
             retry = await client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=messages,
                 max_completion_tokens=max_tokens,
+                **retry_extra,
             )
-            ai_response = retry.choices[0].message.content or "Perfeito! Sua reunião está agendada. Lembrando que ao atender no horário agendado você estará elegível para isenção da taxa da matrícula. Abraço! 🌻"
-        # Detectar agendamento em modo SIMULAÇÃO (dry_run): detecta, NÃO cria evento
+            ai_response = retry.choices[0].message.content or "Desculpe, tive um probleminha agora. Pode repetir, por favor? 🙂"
+        # === DETECTOR DE AGENDAMENTO (dry_run): DESATIVADO TEMPORARIAMENTE ===
         agendamento_detectado = False
-        try:
-            from app.google_calendar import detect_and_create_event
-            deteccao = await detect_and_create_event(
-                ai_response,
-                req.conversation_history,
-                req.lead_name or "Lead",
-                "teste",
-                req.lead_course or "Não informado",
-                dry_run=True,
-            )
-            agendamento_detectado = bool(deteccao and deteccao.get("agendamento_detectado"))
-        except Exception as e:
-            print(f"⚠️ Erro ao detectar evento (dry_run): {e}")
+        # try:
+        #     from app.google_calendar import detect_and_create_event
+        #     deteccao = await detect_and_create_event(
+        #         ai_response,
+        #         req.conversation_history,
+        #         req.lead_name or "Lead",
+        #         "teste",
+        #         req.lead_course or "Não informado",
+        #         dry_run=True,
+        #     )
+        #     agendamento_detectado = bool(deteccao and deteccao.get("agendamento_detectado"))
+        # except Exception as e:
+        #     print(f"⚠️ Erro ao detectar evento (dry_run): {e}")
+        from app.message_split import split_message
+        partes = split_message(ai_response)
         return {
             "response": ai_response,
+            "partes": partes,
             "model": model,
             "rag_docs": len(relevant_docs),
             "agendamento_detectado": agendamento_detectado,
