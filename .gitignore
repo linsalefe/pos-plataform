@@ -22,3 +22,7 @@ frontend/node_modules/
 Thumbs.db
 
 google-credentials.json
+
+# Backups automaticos e gravacoes
+*.bak_*
+recordings/
