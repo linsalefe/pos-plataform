@@ -44,6 +44,9 @@ export default function AITestPage() {
     try {
       const res = await api.get('/channels');
       setChannels(res.data);
+      if (res.data && res.data.length > 0) {
+        setActiveChannel(res.data[0].id);
+      }
     } catch (err) {
       console.error('Erro ao carregar canais:', err);
     }
