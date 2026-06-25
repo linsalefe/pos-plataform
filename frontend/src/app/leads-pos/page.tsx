@@ -27,6 +27,12 @@ interface Stats {
   total: number;
   by_stage: Record<string, number>;
   by_sub_source: Record<string, number>;
+  by_funnel: Record<string, number>;
+}
+
+interface Funnel {
+  id: number;
+  name: string;
 }
 
 interface LeadDetails {
@@ -77,6 +83,8 @@ export default function LeadsPosPage() {
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState('');
   const [subSourceFilter, setSubSourceFilter] = useState('');
+  const [funnelFilter, setFunnelFilter] = useState('');
+  const [funnels, setFunnels] = useState<Funnel[]>([]);
   const [selectedLead, setSelectedLead] = useState<ExactLead | null>(null);
   const [leadDetails, setLeadDetails] = useState<LeadDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
@@ -95,8 +103,24 @@ export default function LeadsPosPage() {
     if (user) {
       loadData();
       loadCourseAliases();
+      loadFunnels();
     }
   }, [user]);
+
+  const loadFunnels = async () => {
+    try {
+      const res = await api.get('/exact-leads/funnels');
+      setFunnels(res.data);
+    } catch (err) {
+      console.error('Erro ao carregar funis:', err);
+    }
+  };
+
+  const resolveFunnel = (id: number | null): string => {
+    if (id == null) return '—';
+    const found = funnels.find((f) => f.id === id);
+    return found ? found.name : `Funil ${id}`;
+  };
 
   const loadData = async () => {
     try {
@@ -193,7 +217,8 @@ export default function LeadsPosPage() {
       (lead.phone1 && lead.phone1.includes(search));
     const matchStage = !stageFilter || lead.stage === stageFilter;
     const matchSubSource = !subSourceFilter || lead.sub_source === subSourceFilter;
-    return matchSearch && matchStage && matchSubSource;
+    const matchFunnel = !funnelFilter || String(lead.funnel_id) === funnelFilter;
+    return matchSearch && matchStage && matchSubSource && matchFunnel;
   });
 
   if (authLoading) {
@@ -228,7 +253,8 @@ export default function LeadsPosPage() {
 
   const stages = stats ? Object.keys(stats.by_stage).sort() : [];
   const subSources = stats ? Object.keys(stats.by_sub_source).sort() : [];
-  const hasActiveFilters = search || stageFilter || subSourceFilter;
+  const funnelIds = stats?.by_funnel ? Object.keys(stats.by_funnel).filter((k) => k !== 'N/A') : [];
+  const hasActiveFilters = search || stageFilter || subSourceFilter || funnelFilter;
 
   return (
     <AppLayout>
@@ -238,7 +264,7 @@ export default function LeadsPosPage() {
         <div className={`flex items-center justify-between transition-all duration-700 ease-out ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
           <div>
             <p className="text-sm text-gray-400 mb-0.5">Exact Spotter</p>
-            <h1 className="text-2xl font-semibold text-[#27273D] tracking-tight">Leads Pós-Graduação</h1>
+            <h1 className="text-2xl font-semibold text-[#27273D] tracking-tight">Leads</h1>
           </div>
           <button
             onClick={handleSync}
@@ -318,6 +344,16 @@ export default function LeadsPosPage() {
                 ))}
               </select>
               <select
+                value={funnelFilter}
+                onChange={(e) => setFunnelFilter(e.target.value)}
+                className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all appearance-none cursor-pointer"
+              >
+                <option value="">Todos os funis</option>
+                {funnelIds.map((id) => (
+                  <option key={id} value={id}>{resolveFunnel(Number(id))} ({stats?.by_funnel[id]})</option>
+                ))}
+              </select>
+              <select
                 value={subSourceFilter}
                 onChange={(e) => setSubSourceFilter(e.target.value)}
                 className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all appearance-none cursor-pointer"
@@ -329,7 +365,7 @@ export default function LeadsPosPage() {
               </select>
               {hasActiveFilters && (
                 <button
-                  onClick={() => { setSearch(''); setStageFilter(''); setSubSourceFilter(''); }}
+                  onClick={() => { setSearch(''); setStageFilter(''); setSubSourceFilter(''); setFunnelFilter(''); }}
                   className="px-3 py-2.5 text-[12px] font-medium text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
                 >
                   Limpar filtros
@@ -347,6 +383,7 @@ export default function LeadsPosPage() {
                 <tr className="border-b border-gray-100 bg-gray-50/50">
                   <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">Nome</th>
                   <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">Telefone</th>
+                  <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">Funil</th>
                   <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">Curso</th>
                   <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">Estágio</th>
                   <th className="text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">SDR</th>
@@ -381,6 +418,9 @@ export default function LeadsPosPage() {
                           </button>
                         )}
                       </div>
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <span className="inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium bg-[#2A658F]/10 text-[#2A658F]">{resolveFunnel(lead.funnel_id)}</span>
                     </td>
                     <td className="px-5 py-3.5">
                       <span className="text-[13px] text-gray-500">{resolveCourse(lead.sub_source)}</span>

@@ -33,6 +33,7 @@ async def resolve_course_name(sub_source: str, db: AsyncSession) -> str:
 async def list_exact_leads(
     stage: str = None,
     sub_source: str = None,
+    funnel_id: int = None,
     search: str = None,
     limit: int = None,
     db: AsyncSession = Depends(get_db)
@@ -43,6 +44,8 @@ async def list_exact_leads(
         query = query.where(ExactLead.stage == stage)
     if sub_source:
         query = query.where(ExactLead.sub_source == sub_source)
+    if funnel_id:
+        query = query.where(ExactLead.funnel_id == funnel_id)
     if search:
         query = query.where(
             ExactLead.name.ilike(f"%{search}%") | ExactLead.phone1.ilike(f"%{search}%")
@@ -94,11 +97,37 @@ async def exact_leads_stats(db: AsyncSession = Depends(get_db)):
     )
     sub_sources = {row[0] or "N/A": row[1] for row in sub_source_result.all()}
 
+    funnel_result = await db.execute(
+        select(ExactLead.funnel_id, func.count(ExactLead.id)).group_by(ExactLead.funnel_id)
+    )
+    by_funnel = {str(row[0]) if row[0] is not None else "N/A": row[1] for row in funnel_result.all()}
+
     return {
         "total": total,
         "by_stage": stages,
         "by_sub_source": sub_sources,
+        "by_funnel": by_funnel,
     }
+
+
+@router.get("/funnels")
+async def list_funnels():
+    """Proxy read-only do Exact /Funnels. Retorna [{id, name}] pro front montar o filtro."""
+    import httpx
+    import os
+
+    headers = {
+        "Content-Type": "application/json",
+        "token_exact": os.getenv("EXACT_SPOTTER_TOKEN"),
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        res = await client.get("https://api.exactspotter.com/v3/Funnels", headers=headers)
+        data = res.json()
+
+    return [
+        {"id": f.get("id"), "name": f.get("value")}
+        for f in data.get("value", [])
+    ]
 
 
 @router.get("/{exact_id}/details")
@@ -221,6 +250,12 @@ async def bulk_send_template(
     # Buscar leads
     result = await db.execute(select(ExactLead).where(ExactLead.id.in_(lead_ids)))
     leads = result.scalars().all()
+
+    # GUARDRAIL: não cruzar funil — todos os leads selecionados devem ser do mesmo funnel_id.
+    funnels = {l.funnel_id for l in leads}
+    if len(funnels) > 1:
+        raise HTTPException(status_code=400,
+            detail="Os leads selecionados são de funis diferentes. Filtre por um único funil antes de enviar.")
 
     # Buscar channel
     from sqlalchemy import select as sa_select

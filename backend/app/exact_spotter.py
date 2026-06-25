@@ -14,6 +14,16 @@ AUTO_TEMPLATE_LANG = "pt_BR"
 # ID do canal da IA (segundo número)
 AI_CHANNEL_ID = 2
 
+
+def _parse_ids(env_value: str) -> set:
+    return {int(x) for x in (env_value or "").split(",") if x.strip().isdigit()}
+
+
+# Funis que RECEBEM welcome + IA + card (tratados como pós). Funil-Isa (25588) conta como pós.
+POS_FUNNEL_IDS = _parse_ids(os.getenv("POS_FUNNEL_IDS", "18535,18537,25588"))
+# Funis que entram no banco (ingestão). Intercambio (18285) entra só como dado, sem welcome.
+INGEST_FUNNEL_IDS = _parse_ids(os.getenv("INGEST_FUNNEL_IDS", "18535,18537,25588,18285"))
+
 # ID do usuário para comentários na timeline (Victória Amorim)
 EXACT_BOT_USER_ID = 415875
 
@@ -110,6 +120,10 @@ def extract_course_name(sub_source: str) -> str:
 
 async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession):
     """Envia template de boas-vindas e ativa a IA para um lead novo."""
+    # GUARDRAIL: boas-vindas/IA/card só para funis de pós. Não-pós entra só como dado.
+    if lead_data.get("funnel_id") not in POS_FUNNEL_IDS:
+        return
+
     phone = format_phone(lead_data.get("phone1", ""))
     if not phone or len(phone) < 12:
         print(f"⚠️ Lead {lead_data.get('name')} sem telefone válido")
@@ -219,7 +233,7 @@ async def sync_exact_leads(db: AsyncSession):
             break
 
         for lead in leads:
-            if not is_pos_lead(lead):
+            if lead.get("funnelId") not in INGEST_FUNNEL_IDS:
                 continue
 
             exact_id = lead["id"]
@@ -250,8 +264,9 @@ async def sync_exact_leads(db: AsyncSession):
                 new_lead = ExactLead(exact_id=exact_id, **lead_data)
                 db.add(new_lead)
                 total_new += 1
-                # Marcar para envio de boas-vindas
-                new_leads_to_contact.append(lead_data)
+                # Marcar para envio de boas-vindas — só funis de pós (blindagem em profundidade).
+                if lead_data.get("funnel_id") in POS_FUNNEL_IDS:
+                    new_leads_to_contact.append(lead_data)
 
             total_synced += 1
 
