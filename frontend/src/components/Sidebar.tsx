@@ -26,7 +26,7 @@ const menuItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/conversations', label: 'Conversas', icon: MessageCircle },
   { href: '/users', label: 'Usuários', icon: Users },
-  { href: '/leads-pos', label: 'Leads Pós', icon: GraduationCap },
+  { href: '/leads-pos', label: 'Leads', icon: GraduationCap },
   { href: '/automacoes', label: 'Automações', icon: Zap },
   { href: '/ai-config', label: 'Config IA', icon: Bot },
   { href: '/kanban', label: 'Kanban IA', icon: Columns3 },
