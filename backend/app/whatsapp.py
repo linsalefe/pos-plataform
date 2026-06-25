@@ -1,6 +1,7 @@
 import httpx
 
-BASE_URL = "https://graph.facebook.com/v22.0"
+GRAPH_VERSION = "v22.0"
+BASE_URL = f"https://graph.facebook.com/{GRAPH_VERSION}"
 
 
 async def send_text_message(to: str, text: str, phone_number_id: str, token: str) -> dict:
@@ -129,3 +130,19 @@ def render_template_text(body: str, params: list = None) -> str:
         placeholder = "{{" + str(i + 1) + "}}"
         text = text.replace(placeholder, str(p) if p is not None else "")
     return text
+
+
+async def create_template(waba_id: str, token: str, name: str, language: str,
+                          category: str, components: list) -> dict:
+    """Cria (submete pra aprovação) um template no WABA. Retorna o JSON do Meta.
+
+    Não levanta exceção: quem chama decide o que fazer com o corpo de erro do Meta
+    (precisamos repassar o erro verbatim pra tela).
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/{waba_id}/message_templates",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"name": name, "language": language, "category": category, "components": components},
+        )
+        return response.json()

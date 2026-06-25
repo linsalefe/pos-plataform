@@ -227,3 +227,21 @@ class ScheduledMessage(Base):
     result = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     sent_at = Column(DateTime, nullable=True)
+
+
+class WhatsappTemplate(Base):
+    __tablename__ = "whatsapp_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    name = Column(String(512), nullable=False)
+    language = Column(String(20), nullable=False, default="pt_BR")
+    category = Column(String(30), nullable=False)
+    components = Column(Text, nullable=True)        # JSON dos components submetidos
+    meta_template_id = Column(String(64), nullable=True)
+    status = Column(String(30), default="PENDING")  # último status conhecido
+    rejected_reason = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

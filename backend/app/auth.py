@@ -58,3 +58,10 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Usuário não encontrado ou inativo")
 
     return user
+
+
+def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Gate de admin: 403 para quem não tem role='admin'."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas administradores podem gerenciar templates.")
+    return current_user

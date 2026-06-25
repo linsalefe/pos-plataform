@@ -4,13 +4,15 @@ from sqlalchemy import select, func
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from app.auth import get_current_user
-from app.models import Channel, Contact, Message, Tag, contact_tags, CourseAlias, User
+import json
+import re
+from app.auth import get_current_user, get_current_admin
+from app.models import Channel, Contact, Message, Tag, contact_tags, CourseAlias, User, WhatsappTemplate
 
 SP_TZ = timezone(timedelta(hours=-3))
 
 from app.database import get_db
-from app.whatsapp import send_text_message, send_template_message, upload_media, send_media_message
+from app.whatsapp import send_text_message, send_template_message, upload_media, send_media_message, create_template, GRAPH_VERSION
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -50,6 +52,24 @@ class ChannelRequest(BaseModel):
     phone_number_id: str
     whatsapp_token: str
     waba_id: Optional[str] = None
+
+
+class TemplateButton(BaseModel):
+    type: str                            # "QUICK_REPLY" | "URL" | "PHONE_NUMBER"
+    text: str
+    url: Optional[str] = None            # type URL
+    phone_number: Optional[str] = None   # type PHONE_NUMBER
+
+
+class CreateTemplateRequest(BaseModel):
+    name: str
+    category: str                        # MARKETING | UTILITY
+    language: str = "pt_BR"
+    header_text: Optional[str] = None
+    body_text: str
+    body_examples: list[str] = []        # 1 valor por variável {{n}}
+    footer_text: Optional[str] = None
+    buttons: list[TemplateButton] = []
 
 
 # === Channels ===
@@ -542,38 +562,144 @@ async def delete_tag(tag_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/channels/{channel_id}/templates")
-async def list_templates(channel_id: int, db: AsyncSession = Depends(get_db)):
+async def list_templates(channel_id: int, status: Optional[str] = "APPROVED", db: AsyncSession = Depends(get_db)):
+    """Lista templates do WABA (status ao vivo do Meta).
+
+    Default status=APPROVED (não quebra conversas/automações, que enviam só aprovados).
+    Passar status=all (ou vazio) lista todos os status e inclui category/rejected_reason.
+    """
     import httpx
     channel = await get_channel(channel_id, db)
+    params = {
+        "limit": 50,
+        "fields": "name,language,status,category,components,rejected_reason",
+    }
+    # Filtra por status só quando não for "all"/vazio.
+    if status and status.lower() != "all":
+        params["status"] = status
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"https://graph.facebook.com/v22.0/{channel.waba_id}/message_templates",
+            f"https://graph.facebook.com/{GRAPH_VERSION}/{channel.waba_id}/message_templates",
             headers={"Authorization": f"Bearer {channel.whatsapp_token}"},
-            params={"status": "APPROVED", "limit": 50},
+            params=params,
         )
         data = response.json()
 
     templates = []
     for t in data.get("data", []):
-        params = []
+        body = ""
+        parameters = []
         for comp in t.get("components", []):
-            if comp["type"] == "BODY":
-                text = comp.get("text", "")
-                import re
-                matches = re.findall(r'\{\{(\d+)\}\}', text)
-                params = [f"Variável {m}" for m in matches]
-                body_text = text
+            if comp.get("type") == "BODY":
+                body = comp.get("text", "")
+                matches = re.findall(r'\{\{(\d+)\}\}', body)
+                parameters = [f"Variável {m}" for m in matches]
         templates.append({
-            "name": t["name"],
-            "language": t["language"],
-            "status": t["status"],
-            "body": body_text if 'body_text' in dir() else "",
-            "parameters": params,
+            "name": t.get("name"),
+            "language": t.get("language"),
+            "status": t.get("status"),
+            "category": t.get("category"),
+            "rejected_reason": t.get("rejected_reason"),
+            "body": body,
+            "parameters": parameters,
         })
-        if 'body_text' in dir():
-            del body_text
 
     return templates
+
+
+@router.post("/channels/{channel_id}/templates")
+async def create_channel_template(
+    channel_id: int,
+    req: CreateTemplateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    """Cria (submete pra aprovação) um template no WABA do canal. Somente admin.
+
+    Pré-valida só o barato (campos obrigatórios/formato); a combinação de botões fica
+    a cargo do Meta, cujo erro é repassado verbatim pra tela.
+    """
+    # --- Validação barata (back) ---
+    if not re.fullmatch(r'[a-z0-9_]+', req.name or ""):
+        raise HTTPException(status_code=422, detail="Nome inválido: use apenas minúsculas, números e _ (snake_case), sem espaços.")
+    if req.category not in {"MARKETING", "UTILITY"}:
+        raise HTTPException(status_code=422, detail="Categoria inválida: use MARKETING ou UTILITY.")
+    if req.language != "pt_BR":
+        raise HTTPException(status_code=422, detail="Idioma inválido: somente pt_BR no v1.")
+    if not req.body_text or not req.body_text.strip():
+        raise HTTPException(status_code=422, detail="O corpo (body) é obrigatório.")
+
+    # Variáveis {{n}} devem ser sequenciais (1..n) sem buraco.
+    var_nums = [int(m) for m in re.findall(r'\{\{(\d+)\}\}', req.body_text)]
+    unique_sorted = sorted(set(var_nums))
+    expected = list(range(1, len(unique_sorted) + 1))
+    if unique_sorted != expected:
+        raise HTTPException(status_code=422, detail="Variáveis do corpo devem ser sequenciais começando em {{1}} sem pular números.")
+    n_vars = len(unique_sorted)
+    examples = [e for e in (req.body_examples or []) if e is not None and str(e).strip() != ""]
+    if len(examples) != n_vars:
+        raise HTTPException(status_code=422, detail=f"Forneça exatamente 1 valor de exemplo para cada variável ({n_vars} esperado(s), {len(examples)} recebido(s)).")
+
+    # --- Monta components pro Meta ---
+    components = []
+    if req.header_text and req.header_text.strip():
+        components.append({"type": "HEADER", "format": "TEXT", "text": req.header_text})
+
+    body_component = {"type": "BODY", "text": req.body_text}
+    if n_vars > 0:
+        body_component["example"] = {"body_text": [examples]}
+    components.append(body_component)
+
+    if req.footer_text and req.footer_text.strip():
+        components.append({"type": "FOOTER", "text": req.footer_text})
+
+    if req.buttons:
+        mapped_buttons = []
+        for b in req.buttons:
+            if b.type == "QUICK_REPLY":
+                mapped_buttons.append({"type": "QUICK_REPLY", "text": b.text})
+            elif b.type == "URL":
+                mapped_buttons.append({"type": "URL", "text": b.text, "url": b.url})
+            elif b.type == "PHONE_NUMBER":
+                mapped_buttons.append({"type": "PHONE_NUMBER", "text": b.text, "phone_number": b.phone_number})
+            else:
+                raise HTTPException(status_code=422, detail=f"Tipo de botão inválido: {b.type}.")
+        components.append({"type": "BUTTONS", "buttons": mapped_buttons})
+
+    # --- Chama o Meta ---
+    channel = await get_channel(channel_id, db)
+    result = await create_template(
+        channel.waba_id, channel.whatsapp_token,
+        req.name, req.language, req.category, components,
+    )
+
+    # Erro do Meta: não grava nada, repassa a mensagem verbatim.
+    if not result.get("id") or result.get("error"):
+        err = result.get("error") or {}
+        detail = err.get("error_user_msg") or err.get("message") or json.dumps(result, ensure_ascii=False)
+        raise HTTPException(status_code=400, detail=detail)
+
+    # Sucesso: registra auditoria local.
+    tpl = WhatsappTemplate(
+        channel_id=channel_id,
+        name=req.name,
+        language=req.language,
+        category=req.category,
+        components=json.dumps(components, ensure_ascii=False),
+        meta_template_id=str(result["id"]),
+        status=result.get("status", "PENDING"),
+        created_by=current_admin.id,
+        created_by_name=current_admin.name,
+    )
+    db.add(tpl)
+    await db.commit()
+
+    return {
+        "id": result["id"],
+        "name": req.name,
+        "status": result.get("status", "PENDING"),
+        "category": req.category,
+    }
 
 
 @router.get("/media/{media_id}")

@@ -20,6 +20,7 @@ import {
   FlaskConical,
   Calendar as CalendarIcon,
   Phone,
+  LayoutTemplate,
 } from 'lucide-react';
 
 const menuItems = [
@@ -28,6 +29,7 @@ const menuItems = [
   { href: '/users', label: 'Usuários', icon: Users },
   { href: '/leads-pos', label: 'Leads Pós', icon: GraduationCap },
   { href: '/automacoes', label: 'Automações', icon: Zap },
+  { href: '/templates', label: 'Templates', icon: LayoutTemplate, adminOnly: true },
   { href: '/ai-config', label: 'Config IA', icon: Bot },
   { href: '/kanban', label: 'Kanban IA', icon: Columns3 },
   { href: '/ai-test', label: 'Teste IA', icon: FlaskConical },
@@ -100,7 +102,9 @@ export default function Sidebar() {
           </p>
         )}
 
-        {menuItems.map((item) => {
+        {menuItems
+          .filter((item) => !item.adminOnly || user?.role === 'admin')
+          .map((item) => {
           const isActive =
             pathname === item.href || pathname.startsWith(item.href + '/');
           const Icon = item.icon;
