@@ -15,6 +15,7 @@ interface ExactLead {
   sub_source: string | null;
   stage: string | null;
   sdr_name: string | null;
+  funnel_id: number | null;
   register_date: string | null;
 }
 
@@ -22,6 +23,7 @@ interface Stats {
   total: number;
   by_stage: Record<string, number>;
   by_sub_source: Record<string, number>;
+  by_funnel?: Record<string, number>;
 }
 
 interface SendResult {
@@ -75,6 +77,8 @@ export default function AutomacoesPage() {
   const [stageFilter, setStageFilter] = useState('');
   const [subSourceFilter, setSubSourceFilter] = useState('');
   const [sdrFilter, setSdrFilter] = useState('');
+  const [funnelFilter, setFunnelFilter] = useState('');           // '' = todos
+  const [funnels, setFunnels] = useState<{ id: number; name: string }[]>([]);
   const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectAll, setSelectAll] = useState(false);
@@ -112,8 +116,21 @@ export default function AutomacoesPage() {
       loadData();
       loadChannels();
       loadCourseAliases();
+      loadFunnels();
     }
   }, [user]);
+
+  const loadFunnels = async () => {
+    try {
+      const res = await api.get('/exact-leads/funnels');
+      setFunnels(res.data);
+    } catch (err) {
+      console.error('Erro ao carregar funis:', err);
+    }
+  };
+
+  const funnelName = (id: number | null) =>
+    funnels.find(f => f.id === id)?.name || (id != null ? `Funil ${id}` : '-');
 
   const loadData = async () => {
     try {
@@ -210,13 +227,15 @@ export default function AutomacoesPage() {
   const sdrs = [...new Set(leads.map(l => l.sdr_name).filter(Boolean))].sort() as string[];
   const stages = stats ? Object.keys(stats.by_stage).sort() : [];
   const subSources = stats ? Object.keys(stats.by_sub_source).sort() : [];
+  const funnelIds = stats?.by_funnel ? Object.keys(stats.by_funnel) : [];
 
   const filteredLeads = leads.filter((lead) => {
     const matchSearch = !search || lead.name.toLowerCase().includes(search.toLowerCase()) || (lead.phone1 && lead.phone1.includes(search));
     const matchStage = !stageFilter || lead.stage === stageFilter;
     const matchSubSource = !subSourceFilter || lead.sub_source === subSourceFilter;
     const matchSdr = !sdrFilter || lead.sdr_name === sdrFilter;
-    return matchSearch && matchStage && matchSubSource && matchSdr;
+    const matchFunnel = !funnelFilter || String(lead.funnel_id) === funnelFilter;
+    return matchSearch && matchStage && matchSubSource && matchSdr && matchFunnel;
   });
 
   const toggleSelect = (id: number) => {
@@ -236,8 +255,15 @@ export default function AutomacoesPage() {
     setSelectAll(!selectAll);
   };
 
+  const selectedFunnelCount = () =>
+    new Set(leads.filter(l => selectedIds.has(l.id)).map(l => l.funnel_id)).size;
+
   const handleBulkSend = async () => {
     if (!selectedTemplate || selectedIds.size === 0) return;
+    if (selectedFunnelCount() > 1) {
+      alert('O envio em massa não cruza funis. Filtre por um único funil (ou selecione leads do mesmo funil) antes de enviar.');
+      return;
+    }
     setSending(true);
     setSendResult(null);
     setShowConfirm(false);
@@ -259,6 +285,10 @@ export default function AutomacoesPage() {
 
   const handleSchedule = async () => {
     if (!selectedTemplate || selectedIds.size === 0 || !scheduleAt) return;
+    if (selectedFunnelCount() > 1) {
+      alert('O agendamento em massa não cruza funis. Filtre por um único funil (ou selecione leads do mesmo funil) antes de agendar.');
+      return;
+    }
     setScheduling(true);
     try {
       await api.post('/scheduled-messages', {
@@ -323,7 +353,7 @@ export default function AutomacoesPage() {
     return phone.replace(/^55/, '').replace(/(\d{2})(\d{5})(\d{4})/, '($1) $2-$3');
   };
 
-  const hasActiveFilters = search || stageFilter || subSourceFilter || sdrFilter;
+  const hasActiveFilters = search || stageFilter || subSourceFilter || sdrFilter || funnelFilter;
 
   if (authLoading) return <div className="min-h-screen flex items-center justify-center bg-[#f8f9fb]"><Loader2 className="w-8 h-8 text-[#2A658F] animate-spin" /></div>;
   if (!user) return null;
@@ -511,6 +541,10 @@ export default function AutomacoesPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Filter className="w-4 h-4 text-gray-400" />
+                  <select value={funnelFilter} onChange={(e) => setFunnelFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all cursor-pointer">
+                    <option value="">Todos os funis</option>
+                    {funnelIds.map(id => <option key={id} value={id}>{funnelName(Number(id))} ({stats?.by_funnel?.[id]})</option>)}
+                  </select>
                   <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] transition-all cursor-pointer">
                     <option value="">Todos estágios</option>
                     {stages.map(s => <option key={s} value={s}>{s} ({stats?.by_stage[s]})</option>)}
@@ -526,7 +560,7 @@ export default function AutomacoesPage() {
                 </div>
                 {hasActiveFilters && (
                   <button
-                    onClick={() => { setSearch(''); setStageFilter(''); setSubSourceFilter(''); setSdrFilter(''); }}
+                    onClick={() => { setSearch(''); setStageFilter(''); setSubSourceFilter(''); setSdrFilter(''); setFunnelFilter(''); }}
                     className="px-3 py-2.5 text-[12px] font-medium text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
                   >
                     Limpar
@@ -570,7 +604,11 @@ export default function AutomacoesPage() {
                           <span className="text-[13px] text-gray-500 tabular-nums">{formatPhone(lead.phone1)}</span>
                         </td>
                         <td className="px-4 py-3">
-                          <span className="text-[13px] text-gray-500">{resolveCourse(lead.sub_source)}</span>
+                          <span className="text-[13px] text-gray-500">
+                            {resolveCourse(lead.sub_source) !== (lead.sub_source ?? '-')
+                              ? resolveCourse(lead.sub_source)
+                              : funnelName(lead.funnel_id)}
+                          </span>
                         </td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium ${stageColors[lead.stage || ''] || 'bg-gray-100 text-gray-600'}`}>
