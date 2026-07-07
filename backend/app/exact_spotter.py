@@ -21,8 +21,9 @@ def _parse_ids(env_value: str) -> set:
 
 # Funis que RECEBEM welcome + IA + card (tratados como pós). Funil-Isa (25588) conta como pós.
 POS_FUNNEL_IDS = _parse_ids(os.getenv("POS_FUNNEL_IDS", "18535,18537,25588"))
-# Funis que entram no banco (ingestão). Intercambio (18285) entra só como dado, sem welcome.
-INGEST_FUNNEL_IDS = _parse_ids(os.getenv("INGEST_FUNNEL_IDS", "18535,18537,25588,18285"))
+# Funis que entram no banco (ingestão). Vazio = puxa TODOS os funis da Exact.
+# Pode-se restringir definindo INGEST_FUNNEL_IDS no ambiente (lista separada por vírgula).
+INGEST_FUNNEL_IDS = _parse_ids(os.getenv("INGEST_FUNNEL_IDS", ""))
 
 # ID do usuário para comentários na timeline (Victória Amorim)
 EXACT_BOT_USER_ID = 415875
@@ -233,7 +234,9 @@ async def sync_exact_leads(db: AsyncSession):
             break
 
         for lead in leads:
-            if lead.get("funnelId") not in INGEST_FUNNEL_IDS:
+            # Ingestão de TODOS os funis da Exact. Se INGEST_FUNNEL_IDS estiver
+            # configurado (não-vazio), restringe; vazio = puxa todos os funis.
+            if INGEST_FUNNEL_IDS and lead.get("funnelId") not in INGEST_FUNNEL_IDS:
                 continue
 
             exact_id = lead["id"]
