@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models import ExactLead, Contact, Channel, Message, AIConversationSummary
 from app.whatsapp import send_template_message
+from app.course_names import resolve_course_name
 
 BASE_URL = "https://api.exactspotter.com/v3"
 

@@ -4,29 +4,11 @@ from sqlalchemy import select, func
 from app.database import get_db
 from app.models import ExactLead, CourseAlias
 from app.exact_spotter import sync_exact_leads
+# Movida para modulo neutro (quebra o import circular com exact_spotter).
+# Re-export: quem ja importava daqui continua funcionando, comportamento identico.
+from app.course_names import resolve_course_name
 
 router = APIRouter(prefix="/api/exact-leads", tags=["exact-leads"])
-
-
-async def resolve_course_name(sub_source: str, db: AsyncSession) -> str:
-    """Resolve alias do curso para nome legivel via tabela course_aliases."""
-    if not sub_source:
-        return "Pós-Graduação"
-    result = await db.execute(
-        select(CourseAlias).where(
-            func.lower(CourseAlias.alias) == func.lower(sub_source),
-            CourseAlias.is_active == True,
-        )
-    )
-    course = result.scalar_one_or_none()
-    if course:
-        return course.short_name
-    # Fallback: remove prefixo pos e formata
-    name = sub_source
-    if name.lower().startswith("pos"):
-        name = name[3:]
-    name = name.replace("_", " ").replace("-", " ").strip()
-    return name if name else "Pós-Graduação"
 
 
 @router.get("")
