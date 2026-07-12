@@ -22,6 +22,7 @@ from app.models import Channel, Contact, Message
 from app.routes import router
 from app.auth_routes import router as auth_router
 from app.exact_routes import router as exact_router
+from app.auto_welcome_routes import router as auto_welcome_router
 from app.exact_spotter import sync_exact_leads
 
 load_dotenv()
@@ -178,6 +179,7 @@ app.add_middleware(
 app.include_router(router)
 app.include_router(auth_router)
 app.include_router(exact_router)
+app.include_router(auto_welcome_router)
 app.include_router(ai_router)
 app.include_router(kanban_router)
 app.include_router(calendar_router)

@@ -180,6 +180,34 @@ async def get_lead_details(exact_id: int):
     }
 
 
+@router.post("/{exact_id}/resend-welcome")
+async def resend_welcome(exact_id: int, db: AsyncSession = Depends(get_db)):
+    """Reenvia boas-vindas para UM lead específico. force=True ignora enabled/funil/idempotência.
+
+    É a ÚNICA porta que fura o carimbo — e exige ação humana explícita, um lead por vez.
+    NUNCA aceitar lista: o exact_id vem na URL, um por chamada.
+    """
+    from app.exact_spotter import send_welcome_to_new_lead
+
+    lr = await db.execute(select(ExactLead).where(ExactLead.exact_id == exact_id))
+    lead = lr.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(404, "Lead não encontrado")
+
+    cfg = await get_auto_welcome_config(db)
+    lead_data = {
+        "exact_id": lead.exact_id,
+        "name": lead.name,
+        "phone1": lead.phone1,
+        "sub_source": lead.sub_source,
+        "funnel_id": lead.funnel_id,
+        "sdr_name": lead.sdr_name,
+    }
+    r = await send_welcome_to_new_lead(lead_data, db, cfg, force=True)
+    await db.commit()
+    return r
+
+
 @router.post("/bulk-send-template")
 async def bulk_send_template(
     request: dict,
