@@ -105,6 +105,36 @@ class ExactLead(Base):
     update_date = Column(DateTime, nullable=True)
     synced_at = Column(DateTime, server_default=func.now())
 
+    # Boas-vindas automática.
+    # welcome_sent_at: SÓ preenchido em envio REAL.
+    # welcome_status: decisão registrada (sent | skipped | failed). É a trava de idempotência —
+    #   não usar welcome_sent_at pra isso, senão lead pulado (antigo, ou ingerido com a automação
+    #   desligada) voltaria a ser candidato depois.
+    welcome_sent_at = Column(DateTime, nullable=True)
+    welcome_status = Column(String(30), nullable=True)
+    welcome_error = Column(Text, nullable=True)
+
+
+class AutoWelcomeConfig(Base):
+    """Singleton (id=1) com a configuração da mensagem automática de boas-vindas.
+
+    Nasce DESLIGADA. Canal e template vêm daqui, não de constante no código.
+    """
+    __tablename__ = "auto_welcome_config"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=True)
+    template_name = Column(String(255), nullable=True)
+    template_language = Column(String(20), default="pt_BR")
+    funnel_ids = Column(String(255), nullable=True)  # CSV: "18535,18537,25588"
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_by_name = Column(String(255), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, server_default=func.now())
+
+    channel = relationship("Channel", backref="auto_welcome_configs")
+
 
 class AIConfig(Base):
     __tablename__ = "ai_configs"

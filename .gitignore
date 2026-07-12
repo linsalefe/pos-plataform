@@ -26,3 +26,11 @@ google-credentials.json
 # Backups automaticos e gravacoes
 *.bak_*
 recordings/
+
+# Dumps de banco — NUNCA versionar (dado sensivel)
+*.sql
+*.sql.gz
+*.dump
+*.bak
+backups/
+backup_*
