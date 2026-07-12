@@ -7,6 +7,8 @@ from app.exact_spotter import sync_exact_leads, get_auto_welcome_config
 # Movida para modulo neutro (quebra o import circular com exact_spotter).
 # Re-export: quem ja importava daqui continua funcionando, comportamento identico.
 from app.course_names import resolve_course_name
+# Trava unica do template de boas-vindas — a MESMA usada em /send/template e /scheduled-messages.
+from app.welcome_guard import bloquear_se_boas_vindas
 
 router = APIRouter(prefix="/api/exact-leads", tags=["exact-leads"])
 
@@ -257,21 +259,9 @@ async def bulk_send_template(
     if not template_name or not lead_ids:
         raise HTTPException(status_code=400, detail="template_name e lead_ids são obrigatórios")
 
-    # ⛔ TRAVA: o template de boas-vindas NUNCA sai por envio em massa nem por agendamento.
-    # Só pelo fluxo automático (que respeita enabled + carimbo de idempotência) ou pelo
-    # reenvio manual individual (POST /api/exact-leads/{exact_id}/resend-welcome).
-    # Sem isto, alguém poderia filtrar o funil 18535, selecionar milhares de leads antigos
-    # e disparar o nat_boasvindas para todos — inclusive de forma agendada.
-    cfg = await get_auto_welcome_config(db)
-    bloqueados = {"nat_boasvindas"}  # trava fixa, vale mesmo se a config mudar
-    if cfg and cfg.template_name:
-        bloqueados.add(cfg.template_name.strip().lower())
-    if (template_name or "").strip().lower() in bloqueados:
-        raise HTTPException(
-            status_code=400,
-            detail=("Este template é o de boas-vindas automáticas e não pode ser enviado em "
-                    "massa nem agendado. Use o reenvio individual do lead, se necessário."),
-        )
+    # ⛔ TRAVA ÚNICA (app/welcome_guard.py). Sem isto, alguém poderia filtrar o funil 18535,
+    # selecionar milhares de leads antigos e disparar o nat_boasvindas para todos.
+    await bloquear_se_boas_vindas(template_name, db)
 
     # Buscar leads
     result = await db.execute(select(ExactLead).where(ExactLead.id.in_(lead_ids)))

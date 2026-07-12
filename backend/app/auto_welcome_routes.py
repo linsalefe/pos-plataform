@@ -35,6 +35,17 @@ async def get_config(db: AsyncSession = Depends(get_db)):
     return _serialize(cfg)
 
 
+@router.get("/blocked-templates")
+async def blocked_templates(db: AsyncSession = Depends(get_db)):
+    """Templates que não podem ser enviados fora da automação.
+
+    Fonte única: o frontend consome isto para pôr o cadeado nos seletores, e os endpoints de
+    envio usam a MESMA função para recusar (app/welcome_guard.py).
+    """
+    from app.welcome_guard import templates_bloqueados
+    return {"blocked": sorted(await templates_bloqueados(db))}
+
+
 @router.get("/preview")
 async def preview(db: AsyncSession = Depends(get_db)):
     """Dry-run: quantos leads nos funis-alvo ainda NÃO tiveram decisão registrada.

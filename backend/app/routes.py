@@ -13,6 +13,8 @@ SP_TZ = timezone(timedelta(hours=-3))
 
 from app.database import get_db
 from app.whatsapp import send_text_message, send_template_message, upload_media, send_media_message, create_template, GRAPH_VERSION
+# Trava unica do template de boas-vindas (a MESMA usada em bulk-send-template).
+from app.welcome_guard import bloquear_se_boas_vindas
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -227,6 +229,10 @@ async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db)):
 
 @router.post("/send/template")
 async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get_db)):
+    # ⛔ TRAVA ÚNICA: o template de boas-vindas não sai por envio manual. Sem isto, um SDR
+    # poderia abrir "Nova conversa", colar o telefone de um lead antigo e mandar a boas-vindas.
+    await bloquear_se_boas_vindas(req.template_name, db)
+
     channel = await get_channel(req.channel_id, db)
     result = await send_template_message(req.to, req.template_name, req.language, channel.phone_number_id, channel.whatsapp_token, req.parameters if req.parameters else None)
 
@@ -848,6 +854,10 @@ async def create_scheduled_message(req: ScheduleMessageRequest, db: AsyncSession
     from app.models import ScheduledMessage
     if not req.template_name or not req.lead_ids:
         raise HTTPException(status_code=400, detail="template_name e lead_ids são obrigatórios")
+
+    # ⛔ TRAVA ÚNICA: recusa na CRIAÇÃO do agendamento, não 60s depois na execução.
+    await bloquear_se_boas_vindas(req.template_name, db)
+
     try:
         dt = datetime.fromisoformat(req.scheduled_at)
         if dt.tzinfo is not None:

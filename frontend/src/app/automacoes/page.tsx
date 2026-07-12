@@ -134,6 +134,7 @@ export default function AutomacoesPage() {
   const [awPreview, setAwPreview] = useState<AutoWelcomePreview | null>(null);
   const [awConfirm, setAwConfirm] = useState(false);
   const [awMsg, setAwMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [blockedTemplates, setBlockedTemplates] = useState<string[]>([]);
 
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -151,8 +152,18 @@ export default function AutomacoesPage() {
       loadCourseAliases();
       loadFunnels();
       loadAwConfig();
+      loadBlockedTemplates();
     }
   }, [user]);
+
+  const loadBlockedTemplates = async () => {
+    try {
+      const res = await api.get('/auto-welcome/blocked-templates');
+      setBlockedTemplates((res.data?.blocked || []).map((n: string) => n.toLowerCase()));
+    } catch (err) {
+      console.error('Erro ao carregar templates bloqueados:', err);
+    }
+  };
 
   // ─── Boas-vindas automática ───────────────────────────────────────────────
   const loadAwConfig = async () => {
@@ -262,10 +273,13 @@ export default function AutomacoesPage() {
     }
   };
 
-  /** Templates que o backend recusa no envio em massa/agendamento. */
+  /** Templates que o backend recusa fora da automação.
+   *  Fonte única: GET /auto-welcome/blocked-templates (a MESMA lista que o backend usa para
+   *  recusar). Mantém WELCOME_TEMPLATE como piso, caso a chamada falhe. */
   const isBlockedTemplate = (name: string) => {
     const n = (name || '').trim().toLowerCase();
-    return n === WELCOME_TEMPLATE || n === (awCfg?.template_name || '').trim().toLowerCase();
+    if (n === WELCOME_TEMPLATE) return true;
+    return blockedTemplates.includes(n);
   };
 
   const loadFunnels = async () => {

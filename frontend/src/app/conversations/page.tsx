@@ -26,7 +26,8 @@ import {
   Image as ImageIcon,
   FileText,
   Square,
-  Trash2
+  Trash2,
+  Lock
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
@@ -123,6 +124,8 @@ export default function ConversationsPage() {
   const [newChatName, setNewChatName] = useState('');
   const [sendingTemplate, setSendingTemplate] = useState(false);
   const [templates, setTemplates] = useState<any[]>([]);
+  const [blockedTemplates, setBlockedTemplates] = useState<string[]>([]);
+  const [newChatError, setNewChatError] = useState<string | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [templateParams, setTemplateParams] = useState<string[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -558,11 +561,19 @@ export default function ConversationsPage() {
     if (!activeChannel) return;
     setLoadingTemplates(true);
     try {
-      const res = await api.get(`/channels/${activeChannel.id}/templates`);
-      setTemplates(res.data);
+      const [tplRes, blockedRes] = await Promise.all([
+        api.get(`/channels/${activeChannel.id}/templates`),
+        api.get('/auto-welcome/blocked-templates'),
+      ]);
+      setTemplates(tplRes.data);
+      setBlockedTemplates((blockedRes.data?.blocked || []).map((n: string) => n.toLowerCase()));
     } catch (err) { console.error('Erro:', err); }
     finally { setLoadingTemplates(false); }
   };
+
+  /** Templates que o backend recusa fora da automação (fonte única: /auto-welcome/blocked-templates). */
+  const isBlockedTemplate = (name: string) =>
+    blockedTemplates.includes((name || '').trim().toLowerCase());
 
   const selectTemplate = (t: any) => {
     setSelectedTemplate(t);
@@ -585,6 +596,7 @@ export default function ConversationsPage() {
   };
 
   const handleNewChat = async () => {
+    setNewChatError(null);
     if (!newChatPhone.trim() || !newChatName.trim() || !activeChannel || !selectedTemplate) return;
     setSendingTemplate(true);
     try {
@@ -604,8 +616,10 @@ export default function ConversationsPage() {
       setSelectedTemplate(null);
       setTemplateParams([]);
       await loadContacts();
-    } catch (err) {
-      console.error('Erro:', err);
+    } catch (err: any) {
+      // Não engolir o erro: o backend recusa o template de boas-vindas com 400 e uma
+      // mensagem legível. O usuário precisa vê-la.
+      setNewChatError(err?.response?.data?.detail || 'Erro ao enviar o template.');
     } finally {
       setSendingTemplate(false);
     }
@@ -1623,20 +1637,34 @@ export default function ConversationsPage() {
                     </button>
                   ) : (
                     <div className="space-y-2">
-                      {templates.map((t: any) => (
-                        <button
-                          key={t.name}
-                          onClick={() => selectTemplate(t)}
-                          className={`w-full text-left px-3.5 py-2.5 rounded-xl border text-sm transition-all ${
-                            selectedTemplate?.name === t.name
-                              ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
-                              : 'border-gray-100 text-gray-700 hover:border-gray-200 hover:bg-gray-50'
-                          }`}
-                        >
-                          <p className="font-medium text-[13px]">{t.name.replace(/_/g, ' ')}</p>
-                          <p className="text-[11px] text-gray-400 mt-0.5">{t.language} • {t.parameters.length} variáveis</p>
-                        </button>
-                      ))}
+                      {templates.map((t: any) => {
+                        const blocked = isBlockedTemplate(t.name);
+                        return (
+                          <button
+                            key={t.name}
+                            onClick={() => selectTemplate(t)}
+                            disabled={blocked}
+                            title={blocked ? 'Bloqueado — é o template das boas-vindas automáticas' : undefined}
+                            className={`w-full text-left px-3.5 py-2.5 rounded-xl border text-sm transition-all ${
+                              blocked
+                                ? 'border-gray-100 bg-gray-50 text-gray-400 cursor-not-allowed'
+                                : selectedTemplate?.name === t.name
+                                  ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
+                                  : 'border-gray-100 text-gray-700 hover:border-gray-200 hover:bg-gray-50'
+                            }`}
+                          >
+                            <p className="font-medium text-[13px] flex items-center gap-1.5">
+                              {blocked && <Lock className="w-3 h-3 flex-shrink-0" />}
+                              {t.name.replace(/_/g, ' ')}
+                            </p>
+                            <p className="text-[11px] text-gray-400 mt-0.5">
+                              {blocked
+                                ? '(bloqueado — boas-vindas automáticas)'
+                                : `${t.language} • ${t.parameters.length} variáveis`}
+                            </p>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1670,6 +1698,13 @@ export default function ConversationsPage() {
                   </div>
                 )}
               </div>
+
+              {newChatError && (
+                <div className="mt-4 bg-red-50 border border-red-100 rounded-xl p-3 flex items-start gap-2.5">
+                  <XCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-[12.5px] text-red-700 leading-relaxed">{newChatError}</p>
+                </div>
+              )}
 
               <button
                 onClick={handleNewChat}

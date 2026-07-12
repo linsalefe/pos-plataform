@@ -12,6 +12,14 @@ mockados, e o banco é falso (nada é gravado). O que estes testes provam:
   4. funil pós, automação LIGADA, lead limpo    -> sent,                    1 envio
   5. canal em branco na config                  -> failed/no_channel,       0 envios
   6. bulk_send_template com nat_boasvindas      -> HTTP 400 (trava do envio em massa)
+
+Trava única (app/welcome_guard.py) — todas as PORTAS de envio:
+  7. POST /api/send/template  com nat_boasvindas  -> HTTP 400
+  8. POST /api/send/template  com outro template  -> NÃO bloqueia
+  9. POST /api/scheduled-messages nat_boasvindas  -> HTTP 400 (recusa na CRIAÇÃO)
+ 10. POST /api/scheduled-messages outro template  -> NÃO bloqueia
+ 11. variação de caixa/espaço em TODAS as portas  -> HTTP 400
+ 12. ⭐ a automação CONTINUA enviando (trava foi na porta, não no corredor)
 """
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -35,6 +43,7 @@ def _fake_db(*returns):
     db.execute = AsyncMock(side_effect=[_res(v) for v in returns])
     db.flush = AsyncMock()
     db.commit = AsyncMock()
+    db.refresh = AsyncMock()
     db.add = MagicMock()
     return db
 
@@ -152,6 +161,90 @@ async def caso_6_trava_do_envio_em_massa():
         print(f"     {e.detail}")
 
 
+async def caso_7_send_template_bloqueado():
+    from app import routes
+    from app.routes import send_template, SendTemplateRequest
+    req = SendTemplateRequest(to="5583999999999", template_name="nat_boasvindas", channel_id=1)
+    db = _fake_db(_cfg(enabled=False))
+    status = None
+    with patch.object(routes, "send_template_message", new=AsyncMock()) as spy:
+        try:
+            await send_template(req, db)
+            raise AssertionError("FALHOU: /send/template NAO bloqueou o nat_boasvindas!")
+        except HTTPException as e:
+            status = e.status_code
+    assert status == 400, status
+    assert spy.call_count == 0, "FALHOU: chegou a chamar a Meta!"
+    print(f"  7. /send/template nat_boasvindas   -> HTTP {status} BLOQUEADO   envios={spy.call_count}")
+
+
+async def caso_8_send_template_outro_passa():
+    from app import routes
+    from app.routes import send_template, SendTemplateRequest
+    req = SendTemplateRequest(to="5583999999999", template_name="sdr_primeiro_contato", channel_id=1)
+    db = _fake_db(_cfg(enabled=False))
+    with patch.object(routes, "send_template_message", new=AsyncMock(return_value={})) as spy, \
+         patch.object(routes, "get_channel", new=AsyncMock(return_value=CHANNEL)):
+        await send_template(req, db)   # nao pode levantar HTTPException
+    assert spy.call_count == 1, "FALHOU: bloqueou um template legitimo!"
+    print(f"  8. /send/template outro template   -> passou (nao bloqueado)  envios={spy.call_count}")
+
+
+async def caso_9_agendamento_bloqueado_na_criacao():
+    from app.routes import create_scheduled_message, ScheduleMessageRequest
+    req = ScheduleMessageRequest(template_name="nat_boasvindas", channel_id=1,
+                                 lead_ids=[1, 2], scheduled_at="2030-01-01T10:00:00")
+    db = _fake_db(_cfg(enabled=False))
+    status = None
+    try:
+        await create_scheduled_message(req, db, MagicMock(id=1, name="Teste"))
+        raise AssertionError("FALHOU: agendou o nat_boasvindas!")
+    except HTTPException as e:
+        status = e.status_code
+    assert status == 400, status
+    assert db.add.call_count == 0, "FALHOU: criou a linha de agendamento!"
+    print(f"  9. /scheduled-messages nat_boas..  -> HTTP {status} BLOQUEADO na CRIACAO")
+
+
+async def caso_10_agendamento_outro_passa():
+    from app.routes import create_scheduled_message, ScheduleMessageRequest
+    req = ScheduleMessageRequest(template_name="sdr_primeiro_contato", channel_id=1,
+                                 lead_ids=[1], scheduled_at="2030-01-01T10:00:00")
+    db = _fake_db(_cfg(enabled=False))
+    await create_scheduled_message(req, db, MagicMock(id=1, name="Teste"))  # nao pode levantar
+    assert db.add.call_count == 1, "FALHOU: bloqueou um agendamento legitimo!"
+    print(f" 10. /scheduled-messages outro tpl   -> passou (agendamento criado)")
+
+
+async def caso_11_variacao_de_caixa():
+    from app.welcome_guard import bloquear_se_boas_vindas
+    for variacao in ["  NAT_BoasVindas  ", "NAT_BOASVINDAS", "nat_BoasVindas"]:
+        db = _fake_db(_cfg(enabled=False))
+        try:
+            await bloquear_se_boas_vindas(variacao, db)
+            raise AssertionError(f"FALHOU: {variacao!r} passou pela trava!")
+        except HTTPException as e:
+            assert e.status_code == 400
+    print(f" 11. variacoes de caixa/espaco       -> HTTP 400 nas 3 (trava normaliza)")
+
+
+async def caso_12_automacao_continua_funcionando():
+    """⭐ Prova de que a trava foi na PORTA e nao no CORREDOR: se estivesse dentro de
+    send_template_message, a propria automacao teria sido bloqueada."""
+    lead = _lead(status=None)
+    db = _fake_db(lead, CHANNEL, None, None, None)
+    with patch.object(exact_spotter, "send_template_message",
+                      new=AsyncMock(return_value=OK_SEND)) as spy, \
+         patch.object(whatsapp, "fetch_template_body",
+                      new=AsyncMock(return_value="Olá, {{1}}! Curso: {{2}}")):
+        r = await exact_spotter.send_welcome_to_new_lead(_lead_data(lead), db, _cfg(enabled=True))
+    assert r["status"] == "sent", f"FALHOU: a trava quebrou a automacao! {r}"
+    assert spy.call_count == 1, "FALHOU: a automacao nao enviou!"
+    assert lead.welcome_status == "sent" and lead.welcome_sent_at is not None
+    print(f" 12. AUTOMACAO (nat_boasvindas)      -> {r['status']}/{r['reason']} envios={spy.call_count}"
+          f"  <-- a trava NAO quebrou o fluxo automatico")
+
+
 async def main():
     print("\nGuardrail da boas-vindas (nenhum envio real — tudo mockado)\n")
     await caso_1_funil_fora_do_escopo()
@@ -160,7 +253,14 @@ async def main():
     await caso_4_envio_normal()
     await caso_5_canal_em_branco()
     await caso_6_trava_do_envio_em_massa()
-    print("\nOK: 6/6 passaram. Lead antigo nao recebe boas-vindas por nenhum caminho automatico.\n")
+    print()
+    await caso_7_send_template_bloqueado()
+    await caso_8_send_template_outro_passa()
+    await caso_9_agendamento_bloqueado_na_criacao()
+    await caso_10_agendamento_outro_passa()
+    await caso_11_variacao_de_caixa()
+    await caso_12_automacao_continua_funcionando()
+    print("\nOK: 12/12 passaram. Todas as PORTAS de envio travadas; a automacao continua funcionando.\n")
 
 
 if __name__ == "__main__":
