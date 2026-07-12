@@ -54,6 +54,21 @@ interface CourseAlias {
   short_name: string;
 }
 
+interface SyncResult {
+  total_synced: number;
+  new: number;
+  updated: number;
+  welcome_sent: number;
+  welcome: {
+    queued: number;
+    sent: number;
+    skipped: number;
+    failed: number;
+    by_reason: Record<string, number>;
+    errors: { name: string; reason: string; detail: string | null }[];
+  };
+}
+
 const stageColors: Record<string, string> = {
   'Entrada': 'bg-blue-50 text-blue-700',
   'Pré Qualificado': 'bg-purple-50 text-purple-700',
@@ -80,6 +95,8 @@ export default function LeadsPosPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState('');
   const [subSourceFilter, setSubSourceFilter] = useState('');
@@ -154,11 +171,14 @@ export default function LeadsPosPage() {
 
   const handleSync = async () => {
     setSyncing(true);
+    setSyncResult(null);
+    setSyncError(null);
     try {
-      await api.post('/exact-leads/sync');
+      const res = await api.post<SyncResult>('/exact-leads/sync');
+      setSyncResult(res.data);
       await loadData();
-    } catch (err) {
-      console.error('Erro ao sincronizar:', err);
+    } catch (err: any) {
+      setSyncError(err?.response?.data?.detail || 'Erro ao sincronizar.');
     } finally {
       setSyncing(false);
     }
@@ -275,6 +295,45 @@ export default function LeadsPosPage() {
             {syncing ? 'Sincronizando...' : 'Sincronizar'}
           </button>
         </div>
+
+        {/* Resultado do sync */}
+        {syncError && (
+          <div className="bg-red-50 rounded-2xl p-4 border border-red-100 flex items-start gap-2.5">
+            <XCircleIcon className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+            <p className="text-[13px] text-red-700">{syncError}</p>
+          </div>
+        )}
+        {syncResult && (
+          <div className="bg-white rounded-2xl p-4 border border-gray-100 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[13px] text-gray-700">
+                Sync ok — <strong>{syncResult.new}</strong> novos. Boas-vindas:{' '}
+                <strong className="text-emerald-700">{syncResult.welcome.sent}</strong> enviadas,{' '}
+                <strong className="text-gray-500">{syncResult.welcome.skipped}</strong> puladas,{' '}
+                <strong className={syncResult.welcome.failed > 0 ? 'text-red-600' : 'text-gray-500'}>
+                  {syncResult.welcome.failed}
+                </strong>{' '}
+                falhas.
+              </p>
+              {syncResult.welcome.errors.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-gray-100 space-y-1">
+                  {syncResult.welcome.errors.map((e, i) => (
+                    <p key={i} className="text-[11.5px] text-red-500">
+                      {e.name}: {e.reason}{e.detail ? ` — ${e.detail}` : ''}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => setSyncResult(null)}
+              className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+              aria-label="Fechar"
+            >
+              <X className="w-4 h-4 text-gray-400" />
+            </button>
+          </div>
+        )}
 
         {/* Stats Cards */}
         {stats && (

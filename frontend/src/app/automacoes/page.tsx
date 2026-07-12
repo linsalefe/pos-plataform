@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Zap, Search, Send, Loader2, CheckCircle, XCircle, AlertTriangle, Filter, Calendar, Clock, X, Trash2 } from 'lucide-react';
+import { Zap, Search, Send, Loader2, CheckCircle, XCircle, AlertTriangle, Filter, Calendar, Clock, X, Trash2, Power, Lock, MessageSquare } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { useAuth } from '@/contexts/auth-context';
 import api from '@/lib/api';
@@ -43,6 +43,26 @@ interface ParamMapping {
   type: string;
   value: string;
 }
+
+interface AutoWelcomeConfig {
+  enabled: boolean;
+  channel_id: number | null;
+  template_name: string | null;
+  template_language: string | null;
+  funnel_ids: number[];
+  updated_by_name: string | null;
+  updated_at: string | null;
+}
+
+interface AutoWelcomePreview {
+  target_funnels: number[];
+  pending_count: number;
+  sample: { exact_id: number; name: string; funnel_id: number }[];
+}
+
+// Template da boas-vindas automática: o backend BLOQUEIA o envio em massa/agendamento dele
+// (HTTP 400). Ele só sai pelo fluxo automático ou pelo reenvio individual do lead.
+const WELCOME_TEMPLATE = 'nat_boasvindas';
 
 const MAPPING_OPTIONS = [
   { value: 'lead_name', label: 'Nome do Lead (1º nome)' },
@@ -96,11 +116,24 @@ export default function AutomacoesPage() {
   // Envio
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<SendResult | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [scheduleAt, setScheduleAt] = useState('');
   const [scheduling, setScheduling] = useState(false);
   const [showSchedules, setShowSchedules] = useState(false);
   const [schedules, setSchedules] = useState<any[]>([]);
+
+  // Boas-vindas automática
+  const [awCfg, setAwCfg] = useState<AutoWelcomeConfig | null>(null);
+  const [awChannelId, setAwChannelId] = useState<number | ''>('');
+  const [awTemplateName, setAwTemplateName] = useState('');
+  const [awLang, setAwLang] = useState('pt_BR');
+  const [awFunnels, setAwFunnels] = useState('');
+  const [awTemplates, setAwTemplates] = useState<any[]>([]);
+  const [awSaving, setAwSaving] = useState(false);
+  const [awPreview, setAwPreview] = useState<AutoWelcomePreview | null>(null);
+  const [awConfirm, setAwConfirm] = useState(false);
+  const [awMsg, setAwMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -117,8 +150,123 @@ export default function AutomacoesPage() {
       loadChannels();
       loadCourseAliases();
       loadFunnels();
+      loadAwConfig();
     }
   }, [user]);
+
+  // ─── Boas-vindas automática ───────────────────────────────────────────────
+  const loadAwConfig = async () => {
+    try {
+      const res = await api.get('/auto-welcome/config');
+      const cfg: AutoWelcomeConfig = res.data;
+      setAwCfg(cfg);
+      setAwChannelId(cfg.channel_id ?? '');
+      setAwTemplateName(cfg.template_name || WELCOME_TEMPLATE);
+      setAwLang(cfg.template_language || 'pt_BR');
+      setAwFunnels((cfg.funnel_ids || []).join(','));
+      if (cfg.channel_id) loadAwTemplates(cfg.channel_id);
+    } catch (err) {
+      console.error('Erro ao carregar config de boas-vindas:', err);
+    }
+  };
+
+  const loadAwTemplates = async (channelId: number) => {
+    try {
+      const res = await api.get(`/channels/${channelId}/templates?status=APPROVED`);
+      setAwTemplates(res.data);
+    } catch (err) {
+      console.error('Erro ao carregar templates do canal:', err);
+    }
+  };
+
+  const awFunnelIds = (): number[] =>
+    awFunnels.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+
+  const awPayload = (enabled: boolean) => ({
+    enabled,
+    channel_id: awChannelId === '' ? null : Number(awChannelId),
+    template_name: awTemplateName || null,
+    template_language: awLang || 'pt_BR',
+    funnel_ids: awFunnelIds(),
+    updated_by_name: user?.name,
+  });
+
+  const awApplyResponse = (data: any) => {
+    setAwCfg(data);
+    setAwChannelId(data.channel_id ?? '');
+    setAwTemplateName(data.template_name || '');
+    setAwLang(data.template_language || 'pt_BR');
+    setAwFunnels((data.funnel_ids || []).join(','));
+  };
+
+  /** Salva canal/template/funis SEM mexer no liga-desliga. */
+  const awSave = async () => {
+    if (!awCfg) return;
+    setAwSaving(true);
+    setAwMsg(null);
+    try {
+      const res = await api.put('/auto-welcome/config', awPayload(awCfg.enabled));
+      awApplyResponse(res.data);
+      setAwMsg({ type: 'ok', text: 'Configuração salva.' });
+    } catch (err: any) {
+      setAwMsg({ type: 'err', text: err?.response?.data?.detail || 'Erro ao salvar configuração.' });
+    } finally {
+      setAwSaving(false);
+    }
+  };
+
+  /** Clique no switch. Ligar exige confirmação; desligar é imediato (botão de pânico). */
+  const awToggle = async () => {
+    if (!awCfg) return;
+    setAwMsg(null);
+    if (awCfg.enabled) {
+      setAwSaving(true);
+      try {
+        const res = await api.put('/auto-welcome/config', awPayload(false));
+        awApplyResponse(res.data);
+        setAwMsg({ type: 'ok', text: 'Automação desligada. Nenhum lead recebe boas-vindas.' });
+      } catch (err: any) {
+        setAwMsg({ type: 'err', text: err?.response?.data?.detail || 'Erro ao desligar.' });
+      } finally {
+        setAwSaving(false);
+      }
+      return;
+    }
+    // Vai LIGAR: buscar o preview e confirmar antes.
+    try {
+      const res = await api.get('/auto-welcome/preview');
+      setAwPreview(res.data);
+      setAwConfirm(true);
+    } catch (err: any) {
+      setAwMsg({ type: 'err', text: err?.response?.data?.detail || 'Erro ao carregar prévia.' });
+    }
+  };
+
+  const awEnable = async () => {
+    setAwSaving(true);
+    setAwMsg(null);
+    try {
+      const res = await api.put('/auto-welcome/config', awPayload(true));
+      awApplyResponse(res.data);
+      setAwConfirm(false);
+      const cortados = res.data.leads_cortados_na_ativacao ?? 0;
+      setAwMsg({
+        type: 'ok',
+        text: `Automação ligada. ${cortados} leads antigos foram marcados como "não recebem".`,
+      });
+    } catch (err: any) {
+      setAwConfirm(false);
+      setAwMsg({ type: 'err', text: err?.response?.data?.detail || 'Erro ao ligar a automação.' });
+    } finally {
+      setAwSaving(false);
+    }
+  };
+
+  /** Templates que o backend recusa no envio em massa/agendamento. */
+  const isBlockedTemplate = (name: string) => {
+    const n = (name || '').trim().toLowerCase();
+    return n === WELCOME_TEMPLATE || n === (awCfg?.template_name || '').trim().toLowerCase();
+  };
 
   const loadFunnels = async () => {
     try {
@@ -266,6 +414,7 @@ export default function AutomacoesPage() {
     }
     setSending(true);
     setSendResult(null);
+    setSendError(null);
     setShowConfirm(false);
     try {
       const res = await api.post('/exact-leads/bulk-send-template', {
@@ -276,8 +425,10 @@ export default function AutomacoesPage() {
         lead_ids: Array.from(selectedIds),
       });
       setSendResult(res.data);
-    } catch (err) {
-      console.error('Erro:', err);
+    } catch (err: any) {
+      // Não engolir o erro: o backend recusa o template de boas-vindas com 400 e uma
+      // mensagem legível. O usuário precisa vê-la.
+      setSendError(err?.response?.data?.detail || 'Erro ao enviar.');
     } finally {
       setSending(false);
     }
@@ -332,6 +483,7 @@ export default function AutomacoesPage() {
     if (!selectedTemplate || !lead.phone1) return;
     setSending(true);
     setSendResult(null);
+    setSendError(null);
     try {
       const res = await api.post('/exact-leads/bulk-send-template', {
         template_name: selectedTemplate.name,
@@ -341,8 +493,8 @@ export default function AutomacoesPage() {
         lead_ids: [lead.id],
       });
       setSendResult(res.data);
-    } catch (err) {
-      console.error('Erro:', err);
+    } catch (err: any) {
+      setSendError(err?.response?.data?.detail || 'Erro ao enviar.');
     } finally {
       setSending(false);
     }
@@ -394,6 +546,134 @@ export default function AutomacoesPage() {
           </button>
         </div>
 
+        {/* ══════════════════════════════════════ */}
+        {/* MENSAGEM AUTOMÁTICA DE BOAS-VINDAS     */}
+        {/* ══════════════════════════════════════ */}
+        {awCfg && (
+          <div className={`bg-white rounded-2xl border border-gray-100 overflow-hidden transition-all duration-700 ease-out delay-75 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+            <div className="flex items-center justify-between gap-4 p-5">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 ${awCfg.enabled ? 'bg-emerald-50' : 'bg-gray-100'}`}>
+                  <MessageSquare className={`w-5 h-5 ${awCfg.enabled ? 'text-emerald-600' : 'text-gray-400'}`} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-[15px] font-semibold text-[#27273D]">Mensagem automática de boas-vindas</h2>
+                  <p className="text-[12.5px] text-gray-400">
+                    Enviada para cada lead novo que entrar nos funis selecionados.
+                    {awCfg.updated_by_name && ` • Alterada por ${awCfg.updated_by_name}`}
+                  </p>
+                </div>
+              </div>
+
+              {/* Switch */}
+              <button
+                onClick={awToggle}
+                disabled={awSaving}
+                aria-pressed={awCfg.enabled}
+                aria-label={awCfg.enabled ? 'Desligar automação' : 'Ligar automação'}
+                className={`relative flex items-center gap-2.5 px-4 py-2.5 rounded-xl font-medium text-[13px] flex-shrink-0 transition-all active:scale-[0.98] disabled:opacity-50 ${
+                  awCfg.enabled
+                    ? 'bg-emerald-500 text-white hover:bg-emerald-600'
+                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                }`}
+              >
+                {awSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Power className="w-4 h-4" />}
+                {awCfg.enabled ? 'Ligada' : 'Desligada'}
+                <span className={`w-9 h-5 rounded-full flex items-center px-0.5 transition-colors ${awCfg.enabled ? 'bg-white/30 justify-end' : 'bg-white justify-start'}`}>
+                  <span className={`w-4 h-4 rounded-full ${awCfg.enabled ? 'bg-white' : 'bg-gray-400'}`} />
+                </span>
+              </button>
+            </div>
+
+            {/* Aviso de estado */}
+            <div className={`px-5 py-3 flex items-start gap-2.5 border-t ${awCfg.enabled ? 'bg-amber-50 border-amber-100' : 'bg-gray-50 border-gray-100'}`}>
+              <AlertTriangle className={`w-4 h-4 flex-shrink-0 mt-0.5 ${awCfg.enabled ? 'text-amber-600' : 'text-gray-400'}`} />
+              <p className={`text-[12.5px] leading-relaxed ${awCfg.enabled ? 'text-amber-800' : 'text-gray-500'}`}>
+                {awCfg.enabled
+                  ? 'Ligada. Leads novos dos funis selecionados recebem a mensagem automaticamente. A mensagem promete um consultor ligando em minutos — confirme que há SDR disponível.'
+                  : 'Desligada. Nenhum lead recebe boas-vindas — nem os que entrarem enquanto estiver desligada. Ao ligar, apenas leads cadastrados a partir daquele momento receberão.'}
+              </p>
+            </div>
+
+            {/* Configuração */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-5 border-t border-gray-100">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block">Canal</label>
+                <select
+                  value={awChannelId}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? '' : Number(e.target.value);
+                    setAwChannelId(v);
+                    if (v !== '') loadAwTemplates(Number(v));
+                  }}
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all cursor-pointer"
+                >
+                  <option value="">Escolha um canal…</option>
+                  {channels.map(ch => (
+                    <option key={ch.id} value={ch.id}>{ch.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block">Template</label>
+                <select
+                  value={awTemplateName}
+                  onChange={(e) => setAwTemplateName(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all cursor-pointer"
+                >
+                  {awTemplates.length === 0 && awTemplateName && (
+                    <option value={awTemplateName}>{awTemplateName}</option>
+                  )}
+                  {awTemplates.map((t: any) => (
+                    <option key={t.name} value={t.name}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block">Funis (IDs)</label>
+                <input
+                  type="text"
+                  value={awFunnels}
+                  onChange={(e) => setAwFunnels(e.target.value)}
+                  placeholder="18535,18537,25588"
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block">Idioma</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={awLang}
+                    onChange={(e) => setAwLang(e.target.value)}
+                    placeholder="pt_BR"
+                    className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all"
+                  />
+                  <button
+                    onClick={awSave}
+                    disabled={awSaving}
+                    className="px-4 py-2.5 rounded-xl bg-[#2A658F] text-white text-[13px] font-medium hover:bg-[#1f5375] active:scale-[0.98] transition-all disabled:opacity-40 flex-shrink-0"
+                  >
+                    Salvar
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {awMsg && (
+              <div className={`px-5 py-3 border-t flex items-start gap-2.5 ${awMsg.type === 'ok' ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
+                {awMsg.type === 'ok'
+                  ? <CheckCircle className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                  : <XCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />}
+                <p className={`text-[12.5px] leading-relaxed ${awMsg.type === 'ok' ? 'text-emerald-800' : 'text-red-700'}`}>{awMsg.text}</p>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className={`grid grid-cols-1 lg:grid-cols-3 gap-6 transition-all duration-700 ease-out delay-100 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
 
           {/* ══════════════════════════════════════ */}
@@ -426,20 +706,32 @@ export default function AutomacoesPage() {
                 </button>
               ) : (
                 <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-                  {templates.map((t: any) => (
-                    <button
-                      key={t.name}
-                      onClick={() => selectTemplate(t)}
-                      className={`w-full text-left px-3 py-2.5 rounded-xl border text-sm transition-all ${
-                        selectedTemplate?.name === t.name
-                          ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
-                          : 'border-gray-50 text-gray-700 hover:bg-gray-50 hover:border-gray-100'
-                      }`}
-                    >
-                      <p className="font-medium text-[12px]">{t.name.replace(/_/g, ' ')}</p>
-                      <p className="text-[10px] text-gray-400 mt-0.5">{t.parameters.length} variáveis</p>
-                    </button>
-                  ))}
+                  {templates.map((t: any) => {
+                    const blocked = isBlockedTemplate(t.name);
+                    return (
+                      <button
+                        key={t.name}
+                        onClick={() => selectTemplate(t)}
+                        disabled={blocked}
+                        title={blocked ? 'Bloqueado — é o template das boas-vindas automáticas' : undefined}
+                        className={`w-full text-left px-3 py-2.5 rounded-xl border text-sm transition-all ${
+                          blocked
+                            ? 'border-gray-50 bg-gray-50 text-gray-400 cursor-not-allowed'
+                            : selectedTemplate?.name === t.name
+                              ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]'
+                              : 'border-gray-50 text-gray-700 hover:bg-gray-50 hover:border-gray-100'
+                        }`}
+                      >
+                        <p className="font-medium text-[12px] flex items-center gap-1.5">
+                          {blocked && <Lock className="w-3 h-3 flex-shrink-0" />}
+                          {t.name.replace(/_/g, ' ')}
+                        </p>
+                        <p className="text-[10px] text-gray-400 mt-0.5">
+                          {blocked ? '(bloqueado — boas-vindas automáticas)' : `${t.parameters.length} variáveis`}
+                        </p>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
@@ -492,6 +784,14 @@ export default function AutomacoesPage() {
                 {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 {sending ? 'Enviando...' : `Enviar para ${selectedIds.size} leads`}
               </button>
+            )}
+
+            {/* Erro do envio (ex.: trava do template de boas-vindas) */}
+            {sendError && (
+              <div className="bg-red-50 rounded-2xl p-4 border border-red-100 flex items-start gap-2.5">
+                <XCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-[12.5px] text-red-700 leading-relaxed">{sendError}</p>
+              </div>
             )}
 
             {/* Resultado */}
@@ -652,6 +952,68 @@ export default function AutomacoesPage() {
           </div>
         </div>
       </div>
+
+      {/* ══════════════════════════════════════ */}
+      {/* MODAL — LIGAR A BOAS-VINDAS            */}
+      {/* ══════════════════════════════════════ */}
+      {awConfirm && awPreview && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setAwConfirm(false)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl mx-4 border border-gray-100" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-5">
+              <div className="w-11 h-11 bg-amber-50 rounded-xl flex items-center justify-center">
+                <Power className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <h2 className="text-[15px] font-semibold text-[#27273D]">Ligar a boas-vindas automática</h2>
+                <p className="text-[13px] text-gray-400">Confirme antes de ativar</p>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-2 border border-gray-100">
+              <div className="flex justify-between">
+                <span className="text-[12px] text-gray-400">Canal</span>
+                <span className="text-[13px] font-medium text-gray-700">
+                  {channels.find(c => c.id === Number(awChannelId))?.name || '— não escolhido —'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[12px] text-gray-400">Template</span>
+                <span className="text-[13px] font-medium text-gray-700">{awTemplateName || '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[12px] text-gray-400">Funis</span>
+                <span className="text-[13px] font-medium text-gray-700">{awFunnelIds().join(', ') || '—'}</span>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 mb-5 flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+              <p className="text-[12.5px] text-amber-800 leading-relaxed">
+                Ao ligar, <strong>{awPreview.pending_count}</strong> leads que já existem serão marcados
+                como &quot;não recebem&quot; e <strong>nunca</strong> receberão a boas-vindas. Só quem for
+                cadastrado <strong>depois</strong> deste momento receberá.
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setAwConfirm(false)}
+                className="flex-1 py-2.5 border border-gray-200 rounded-xl text-[13px] font-medium text-gray-500 hover:bg-gray-50 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={awEnable}
+                disabled={awSaving}
+                className="flex-1 py-2.5 bg-emerald-500 text-white rounded-xl text-[13px] font-medium hover:bg-emerald-600 active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+              >
+                {awSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Power className="w-4 h-4" />}
+                Ligar automação
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ══════════════════════════════════════ */}
       {/* MODAL CONFIRMAÇÃO                      */}
