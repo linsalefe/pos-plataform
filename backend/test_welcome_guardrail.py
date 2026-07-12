@@ -1,26 +1,167 @@
+"""Guardrail da mensagem automática de boas-vindas.
+
+Rodar: cd backend && venv/bin/python test_welcome_guardrail.py
+
+NENHUM envio real acontece: send_template_message e fetch_template_body são sempre
+mockados, e o banco é falso (nada é gravado). O que estes testes provam:
+
+  1. funil fora do escopo, automação LIGADA     -> skipped/not_pos_funnel,  0 envios
+  2. funil pós, automação DESLIGADA             -> skipped/disabled,        0 envios
+                                                   + LEAD CARIMBADO  <-- a regra do Álefe
+  3. lead já processado (force=False)           -> skipped/already_processed, 0 envios
+  4. funil pós, automação LIGADA, lead limpo    -> sent,                    1 envio
+  5. canal em branco na config                  -> failed/no_channel,       0 envios
+  6. bulk_send_template com nat_boasvindas      -> HTTP 400 (trava do envio em massa)
+"""
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from app import exact_spotter
-from app import whatsapp
+
+from fastapi import HTTPException
+
+from app import exact_spotter, whatsapp
+from app.models import ExactLead, AutoWelcomeConfig
+
+
+def _res(value):
+    """Resultado falso de db.execute(): .scalar_one_or_none() -> value."""
+    m = MagicMock()
+    m.scalar_one_or_none.return_value = value
+    return m
+
+
+def _fake_db(*returns):
+    """Banco falso. Cada db.execute() devolve, em ordem, um dos valores passados."""
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[_res(v) for v in returns])
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+    db.add = MagicMock()
+    return db
+
+
+def _lead(exact_id=111, funnel_id=18535, status=None):
+    l = ExactLead(exact_id=exact_id, name="Fulano", phone1="5583999998888",
+                  sub_source="pospsicologia", funnel_id=funnel_id)
+    l.welcome_status = status
+    l.welcome_error = None
+    l.welcome_sent_at = None
+    return l
+
+
+def _cfg(enabled=True, channel_id=1):
+    return AutoWelcomeConfig(id=1, enabled=enabled, channel_id=channel_id,
+                             template_name="nat_boasvindas", template_language="pt_BR",
+                             funnel_ids="18535,18537,25588")
+
+
+def _lead_data(lead):
+    return {"exact_id": lead.exact_id, "name": lead.name, "phone1": lead.phone1,
+            "sub_source": lead.sub_source, "funnel_id": lead.funnel_id}
+
+
+CHANNEL = MagicMock(id=1, waba_id="w", whatsapp_token="t", phone_number_id="p")
+OK_SEND = {"messages": [{"id": "wamid.TESTE"}]}
+
+
+async def caso_1_funil_fora_do_escopo():
+    lead = _lead(funnel_id=18285, status=None)          # Intercambio, fora dos funis-alvo
+    db = _fake_db(lead)
+    with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy:
+        r = await exact_spotter.send_welcome_to_new_lead(_lead_data(lead), db, _cfg(enabled=True))
+    assert r["status"] == "skipped" and r["reason"] == "not_pos_funnel", r
+    assert spy.call_count == 0, "FALHOU: enviou para funil fora do escopo!"
+    assert lead.welcome_status == "skipped"
+    print(f"  1. funil fora do escopo (18285)     -> {r['status']}/{r['reason']:18s} "
+          f"envios={spy.call_count}  carimbo={lead.welcome_status!r}")
+
+
+async def caso_2_automacao_desligada():
+    """O TESTE MAIS IMPORTANTE: lead ingerido com o botão desligado tem que ficar
+    CARIMBADO, senão receberia a boas-vindas retroativamente ao ligar a automação."""
+    lead = _lead(status=None)
+    db = _fake_db(lead)
+    with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy:
+        r = await exact_spotter.send_welcome_to_new_lead(_lead_data(lead), db, _cfg(enabled=False))
+    assert r["status"] == "skipped" and r["reason"] == "disabled", r
+    assert spy.call_count == 0, "FALHOU: enviou com a automacao desligada!"
+    assert lead.welcome_status == "skipped", "FALHOU: NAO CARIMBOU -> receberia retroativamente!"
+    assert lead.welcome_sent_at is None, "FALHOU: marcou envio sem ter enviado!"
+    print(f"  2. automacao DESLIGADA             -> {r['status']}/{r['reason']:18s} "
+          f"envios={spy.call_count}  carimbo={lead.welcome_status!r}")
+    print(f"     motivo gravado: {lead.welcome_error!r}")
+
+
+async def caso_3_lead_ja_processado():
+    lead = _lead(status="skipped")                      # ja tem decisao registrada
+    lead.welcome_error = "motivo original"
+    db = _fake_db(lead)
+    with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy:
+        r = await exact_spotter.send_welcome_to_new_lead(_lead_data(lead), db, _cfg(enabled=True))
+    assert r["status"] == "skipped" and r["reason"] == "already_processed", r
+    assert spy.call_count == 0, "FALHOU: reenviou para lead ja processado!"
+    assert lead.welcome_error == "motivo original", "FALHOU: re-carimbou e perdeu o motivo!"
+    print(f"  3. lead ja processado              -> {r['status']}/{r['reason']:18s} "
+          f"envios={spy.call_count}  motivo preservado={lead.welcome_error!r}")
+
+
+async def caso_4_envio_normal():
+    lead = _lead(status=None)
+    # ordem dos db.execute(): lead -> canal -> curso(alias) -> contato -> card
+    db = _fake_db(lead, CHANNEL, None, None, None)
+    with patch.object(exact_spotter, "send_template_message",
+                      new=AsyncMock(return_value=OK_SEND)) as spy, \
+         patch.object(whatsapp, "fetch_template_body",
+                      new=AsyncMock(return_value="Olá, {{1}}! Curso: {{2}}")):
+        r = await exact_spotter.send_welcome_to_new_lead(_lead_data(lead), db, _cfg(enabled=True))
+    assert r["status"] == "sent", r
+    assert spy.call_count == 1, "FALHOU: nao enviou para lead valido!"
+    assert lead.welcome_status == "sent"
+    assert lead.welcome_sent_at is not None, "FALHOU: enviou mas nao registrou a hora!"
+    enviado = spy.call_args.kwargs
+    print(f"  4. lead novo, automacao LIGADA     -> {r['status']}/{r['reason']:18s} "
+          f"envios={spy.call_count}  carimbo={lead.welcome_status!r}")
+    print(f"     template={enviado['template_name']!r} lang={enviado['language']!r} "
+          f"params={enviado['parameters']}")
+
+
+async def caso_5_canal_em_branco():
+    lead = _lead(status=None)
+    db = _fake_db(lead)
+    with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy:
+        r = await exact_spotter.send_welcome_to_new_lead(
+            _lead_data(lead), db, _cfg(enabled=True, channel_id=None))
+    assert r["status"] == "failed" and r["reason"] == "no_channel", r
+    assert spy.call_count == 0, "FALHOU: tentou enviar sem canal!"
+    assert lead.welcome_status == "failed", "FALHOU: falha silenciosa, nao gravou estado!"
+    print(f"  5. canal em branco na config       -> {r['status']}/{r['reason']:18s} "
+          f"envios={spy.call_count}  carimbo={lead.welcome_status!r}")
+    print(f"     motivo gravado: {lead.welcome_error!r}")
+
+
+async def caso_6_trava_do_envio_em_massa():
+    from app.exact_routes import bulk_send_template
+    db = _fake_db(_cfg(enabled=False))                  # get_auto_welcome_config
+    payload = {"template_name": "nat_boasvindas", "language": "pt_BR",
+               "channel_id": 1, "lead_ids": [1, 2, 3]}
+    try:
+        await bulk_send_template(payload, db)
+        raise AssertionError("FALHOU: o envio em massa do nat_boasvindas NAO foi bloqueado!")
+    except HTTPException as e:
+        assert e.status_code == 400, e
+        print(f"  6. bulk-send nat_boasvindas        -> HTTP {e.status_code} BLOQUEADO")
+        print(f"     {e.detail}")
+
 
 async def main():
-    # NEGATIVO: funil não-pós (Intercambio 18285) -> welcome NÃO pode enviar (guardrail no topo, db nem é tocado)
-    with patch.object(exact_spotter, "send_template_message", new=AsyncMock(return_value={})) as spy:
-        await exact_spotter.send_welcome_to_new_lead(
-            {"name": "X", "phone1": "5583999999999", "funnel_id": 18285, "sub_source": "interuk"}, db=None)
-        assert spy.call_count == 0, "FALHOU: welcome disparou pra funil NÃO-pós!"
+    print("\nGuardrail da boas-vindas (nenhum envio real — tudo mockado)\n")
+    await caso_1_funil_fora_do_escopo()
+    await caso_2_automacao_desligada()
+    await caso_3_lead_ja_processado()
+    await caso_4_envio_normal()
+    await caso_5_canal_em_branco()
+    await caso_6_trava_do_envio_em_massa()
+    print("\nOK: 6/6 passaram. Lead antigo nao recebe boas-vindas por nenhum caminho automatico.\n")
 
-    # POSITIVO: funil pós (18535) -> guardrail passa e TENTA enviar (send mockado retorna {} sem 'messages',
-    # então a função retorna antes de escrever no banco). Prova que pós continua recebendo welcome.
-    fake_channel = MagicMock(waba_id="w", whatsapp_token="t", phone_number_id="p")
-    exec_res = MagicMock(); exec_res.scalar_one_or_none.return_value = fake_channel
-    fake_db = MagicMock(); fake_db.execute = AsyncMock(return_value=exec_res)
-    with patch.object(exact_spotter, "send_template_message", new=AsyncMock(return_value={})) as spy, \
-         patch.object(whatsapp, "fetch_template_body", new=AsyncMock(return_value="Olá {{1}}")):
-        await exact_spotter.send_welcome_to_new_lead(
-            {"name": "Y", "phone1": "5583988888888", "funnel_id": 18535, "sub_source": "pospsi"}, fake_db)
-        assert spy.call_count == 1, "FALHOU: welcome NÃO tentou enviar pra pós"
 
-    print("OK guardrail: não-pós bloqueado (0 envios), pós passou (1 tentativa) — sem envio real, sem escrita.")
-
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
