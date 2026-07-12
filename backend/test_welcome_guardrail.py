@@ -20,11 +20,22 @@ Trava única (app/welcome_guard.py) — todas as PORTAS de envio:
  10. POST /api/scheduled-messages outro template  -> NÃO bloqueia
  11. variação de caixa/espaço em TODAS as portas  -> HTTP 400
  12. ⭐ a automação CONTINUA enviando (trava foi na porta, não no corredor)
+
+Fechaduras de login (FASE 10) — o resend-welcome fura os guardas com force=True, então a
+porta precisa estar trancada por fora; e o botão liga/desliga também, senão um estranho
+liga a automação e a trava do enabled vira uma tranca com a chave na porta:
+ 13. POST /api/exact-leads/{id}/resend-welcome SEM token -> HTTP 401, 0 envios
+ 14. idem, LOGADO mas automação DESLIGADA                -> HTTP 400, 0 envios
+ 15. PUT /api/auto-welcome/config SEM token              -> HTTP 401, config intacta
+
+Os testes 13-15 usam usuário FALSO (dependency_overrides) e banco FALSO: nenhum usuário
+real é tocado, nenhum token real é gerado, nenhuma conexão com o banco é aberta.
 """
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app import exact_spotter, whatsapp
 from app.models import ExactLead, AutoWelcomeConfig
@@ -245,6 +256,71 @@ async def caso_12_automacao_continua_funcionando():
           f"  <-- a trava NAO quebrou o fluxo automatico")
 
 
+def _client(db_falso=None):
+    """App real, mas com o banco trocado por um falso. Sem lifespan: os jobs de
+    background NAO sobem (TestClient fora do `with` nao dispara startup)."""
+    from app.main import app
+    from app.database import get_db
+
+    async def _db_override():
+        yield db_falso if db_falso is not None else _fake_db()
+
+    app.dependency_overrides[get_db] = _db_override
+    return app, TestClient(app)
+
+
+def _logar_usuario_falso(app):
+    """Simula 'SDR logado' SEM usuario real e SEM token real: troca a propria
+    dependencia de login por uma que devolve um usuario de mentira."""
+    from app.auth import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(
+        id=999, name="Usuario Falso do Teste", role="admin", is_active=True)
+
+
+def _limpar(app):
+    app.dependency_overrides.clear()
+
+
+async def caso_13_resend_welcome_sem_token():
+    """A porta lateral (force=True fura TODOS os guardas) tem que exigir login."""
+    app, client = _client()                        # anonimo: nenhum login injetado
+    with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy:
+        r = client.post("/api/exact-leads/999999999/resend-welcome")
+    _limpar(app)
+    assert r.status_code == 401, f"FALHOU: porta lateral ABERTA! HTTP {r.status_code}"
+    assert spy.call_count == 0, "FALHOU: chegou a enviar sem login!"
+    print(f" 13. /resend-welcome SEM token       -> HTTP {r.status_code} BLOQUEADO   envios={spy.call_count}")
+
+
+async def caso_14_resend_welcome_logado_mas_desligado():
+    """Defesa em profundidade: nem quem esta logado reenvia com o botao desligado."""
+    lead = _lead(status="skipped")
+    db = _fake_db(lead, _cfg(enabled=False))       # 1o execute: lead | 2o: a config
+    app, client = _client(db)
+    _logar_usuario_falso(app)
+    with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy:
+        r = client.post(f"/api/exact-leads/{lead.exact_id}/resend-welcome")
+    _limpar(app)
+    assert r.status_code == 400, f"FALHOU: reenviou com a automacao desligada! HTTP {r.status_code}"
+    assert spy.call_count == 0, "FALHOU: chegou a chamar a Meta com o botao desligado!"
+    print(f" 14. /resend-welcome LOGADO+desligado-> HTTP {r.status_code} BLOQUEADO   envios={spy.call_count}")
+    print(f"     {r.json()['detail']}")
+
+
+async def caso_15_botao_sem_token():
+    """Sem esta fechadura, um estranho liga a automacao e a trava do caso 14 nao vale nada."""
+    cfg = _cfg(enabled=False)
+    db = _fake_db(cfg)
+    app, client = _client(db)                      # anonimo: nenhum login injetado
+    r = client.put("/api/auto-welcome/config", json={"enabled": True})
+    _limpar(app)
+    assert r.status_code == 401, f"FALHOU: ESTRANHO PODE LIGAR A AUTOMACAO! HTTP {r.status_code}"
+    assert cfg.enabled is False, "FALHOU: a config foi alterada sem login!"
+    assert db.commit.call_count == 0, "FALHOU: gravou no banco sem login!"
+    print(f" 15. PUT /auto-welcome/config s/token-> HTTP {r.status_code} BLOQUEADO   "
+          f"enabled continua {cfg.enabled}  commits={db.commit.call_count}")
+
+
 async def main():
     print("\nGuardrail da boas-vindas (nenhum envio real — tudo mockado)\n")
     await caso_1_funil_fora_do_escopo()
@@ -260,7 +336,12 @@ async def main():
     await caso_10_agendamento_outro_passa()
     await caso_11_variacao_de_caixa()
     await caso_12_automacao_continua_funcionando()
-    print("\nOK: 12/12 passaram. Todas as PORTAS de envio travadas; a automacao continua funcionando.\n")
+    print()
+    await caso_13_resend_welcome_sem_token()
+    await caso_14_resend_welcome_logado_mas_desligado()
+    await caso_15_botao_sem_token()
+    print("\nOK: 15/15 passaram. Todas as PORTAS de envio travadas; a porta lateral e o botao "
+          "agora exigem login; a automacao continua funcionando.\n")
 
 
 if __name__ == "__main__":

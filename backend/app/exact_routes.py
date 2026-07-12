@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from app.auth import get_current_user
 from app.database import get_db
 from app.models import ExactLead, CourseAlias
 from app.exact_spotter import sync_exact_leads, get_auto_welcome_config
@@ -182,12 +183,16 @@ async def get_lead_details(exact_id: int):
     }
 
 
-@router.post("/{exact_id}/resend-welcome")
+@router.post("/{exact_id}/resend-welcome", dependencies=[Depends(get_current_user)])
 async def resend_welcome(exact_id: int, db: AsyncSession = Depends(get_db)):
     """Reenvia boas-vindas para UM lead específico. force=True ignora enabled/funil/idempotência.
 
     É a ÚNICA porta que fura o carimbo — e exige ação humana explícita, um lead por vez.
     NUNCA aceitar lista: o exact_id vem na URL, um por chamada.
+
+    DUAS fechaduras, porque o force=True fura os guardas de send_welcome_to_new_lead:
+      1. login (no decorator, para nao mexer na assinatura) — 401 antes de o corpo rodar;
+      2. o liga/desliga — com a automacao desligada, nem quem esta logado reenvia.
     """
     from app.exact_spotter import send_welcome_to_new_lead
 
@@ -197,6 +202,12 @@ async def resend_welcome(exact_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Lead não encontrado")
 
     cfg = await get_auto_welcome_config(db)
+    if cfg is None or not cfg.enabled:
+        raise HTTPException(
+            400,
+            "A automação de boas-vindas está desligada. Não é possível reenviar agora."
+        )
+
     lead_data = {
         "exact_id": lead.exact_id,
         "name": lead.name,

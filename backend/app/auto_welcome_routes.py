@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
+from app.auth import get_current_user
 from app.database import get_db
 from app.models import AutoWelcomeConfig, Channel, ExactLead
 from app.exact_spotter import get_auto_welcome_config, _funnels_from_config
@@ -70,8 +71,10 @@ async def preview(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.put("/config")
+@router.put("/config", dependencies=[Depends(get_current_user)])
 async def update_config(req: dict, db: AsyncSession = Depends(get_db)):
+    # Exige login: sem isto, um estranho LIGA a automacao pela internet — e a trava do
+    # liga/desliga no resend-welcome viraria uma tranca com a chave na porta.
     cfg = await get_auto_welcome_config(db)
     if cfg is None:
         raise HTTPException(404, "Config não inicializada.")
