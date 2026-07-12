@@ -131,6 +131,13 @@ async def scheduled_messages_job():
                         sm.status = "sent"
                         sm.sent_at = datetime.now(SP_TZ).replace(tzinfo=None)
                         sm.result = json.dumps(result)
+                    except HTTPException as e:
+                        # Ex.: trava do template de boas-vindas (400). A trava dispara ANTES de
+                        # qualquer escrita, entao a sessao esta limpa. O agendamento morre aqui,
+                        # com o motivo registrado, e o job NAO quebra: segue para o proximo.
+                        sm.status = "error"
+                        sm.result = json.dumps({"error": str(e.detail), "blocked": True})
+                        print(f"⛔ Agendamento bloqueado (boas-vindas nao vai em massa): {e.detail}")
                     except Exception as e:
                         sm.status = "error"
                         sm.result = json.dumps({"error": str(e)})
