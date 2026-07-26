@@ -1,6 +1,7 @@
 # Sprint — Observabilidade de envio e autenticação dos endpoints abertos (2026-07-26)
 
-Branch `feat/observabilidade-envio-20260726`. **Sem merge** — Álefe faz manual.
+Branch `feat/observabilidade-envio-20260726`, **mergeada em `main` em 26/07 por decisão do Álefe**
+(o plano original dizia "não dar merge"; ele sobrepôs, depois do smoke pós-restart fechar 5 de 5).
 
 O buraco que a sprint fecha: o incidente `131042` durou 4 dias porque o sistema **não sabia que
 estava falhando**. `exact_leads.welcome_status` era carimbado `'sent'` quando a Meta *aceitava* o
