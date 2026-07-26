@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, BigInteger, Integer, Boolean, ForeignKey, func, Table
+from sqlalchemy import Column, String, Text, DateTime, BigInteger, Integer, Boolean, ForeignKey, func, Table, CheckConstraint
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -275,3 +275,50 @@ class WhatsappTemplate(Base):
     created_by_name = Column(String(255), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class NatConfig(Base):
+    """Singleton (id=1) com as travas do fluxo NAT.
+
+    Nasce DESLIGADA em dois eixos independentes: nat_enabled=False e nat_start_at=None.
+    Ligar só o nat_enabled não faz a NAT atuar — o corte por data continua bloqueando.
+
+    nat_start_at é comparado com exact_leads.register_date, NÃO com "é novo no banco":
+    assim a trava é imune a backfill e a falha de sync.
+
+    O CHECK (id = 1) faz o singleton valer no banco, não por convenção: duas linhas aqui
+    deixariam o kill switch com comportamento indefinido.
+    """
+    __tablename__ = "nat_config"
+    __table_args__ = (CheckConstraint("id = 1", name="nat_config_singleton"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    nat_enabled = Column(Boolean, nullable=False, default=False)
+    nat_start_at = Column(DateTime, nullable=True)
+    max_envios_hora = Column(Integer, nullable=False, default=20)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class NatButtonEvent(Base):
+    """Captura crua do clique de botão (quick reply de template ou botão interativo).
+
+    Sem FK em contact_wa_id de propósito (ver migrate_nat_config.py): a tabela existe para
+    nunca perder um clique, e uma FK derrubaria a transação inteira do webhook.
+
+    Pela mesma razão, quem escreve aqui (webhook, main.py) tem que fazê-lo dentro de SAVEPOINT
+    com try/except: nem a UNIQUE de wa_message_id nem qualquer outro erro desta tabela podem
+    abortar o recebimento da mensagem. Observabilidade serve ao fluxo, não o contrário.
+
+    context_message_id é o wamid da mensagem que o botão respondeu — é o que distingue
+    "Prefiro outro horário" vindo de nat_boasvindas do mesmo texto vindo de nat_reativacao_09h.
+    """
+    __tablename__ = "nat_button_events"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    contact_wa_id = Column(String(20), nullable=False, index=True)
+    wa_message_id = Column(String(255), unique=True, nullable=False)
+    context_message_id = Column(String(255), nullable=True, index=True)
+    button_payload = Column(Text, nullable=True)
+    button_text = Column(Text, nullable=True)
+    source = Column(String(20), nullable=False)  # "template" | "interactive"
+    created_at = Column(DateTime, server_default=func.now())
