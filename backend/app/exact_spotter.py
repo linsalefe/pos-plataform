@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.models import ExactLead, Contact, Channel, Message, AIConversationSummary, AutoWelcomeConfig
 from app.whatsapp import send_template_message
 from app.course_names import resolve_course_name
+from app.date_parse import parse_datetime
 
 BASE_URL = "https://api.exactspotter.com/v3"
 
@@ -101,14 +102,9 @@ def is_pos_lead(lead: dict) -> bool:
     return False
 
 
-def parse_datetime(value: str):
-    """Converte datetime string da API para objeto datetime."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
-    except (ValueError, TypeError):
-        return None
+# parse_datetime foi movida para app/date_parse.py — módulo neutro, só stdlib. O backfill
+# precisa do MESMO parser sem importar este arquivo, que carrega send_template_message no topo.
+# O nome segue exportado aqui: `from app.exact_spotter import parse_datetime` continua válido.
 
 
 def format_phone(phone: str) -> str:
