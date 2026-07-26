@@ -61,6 +61,13 @@ class Message(Base):
     sent_by_ai = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
 
+    # Motivo da falha, vindo de statuses[].errors[] no webhook (ver migrate_message_error.py).
+    # Só é preenchido quando a Meta reporta erro; NULL é o caso normal.
+    # error_details é onde a Meta explica em linguagem natural — vale mais que o title.
+    error_code = Column(Integer, nullable=True)
+    error_title = Column(Text, nullable=True)
+    error_details = Column(Text, nullable=True)
+
     contact = relationship("Contact", back_populates="messages")
     channel = relationship("Channel", back_populates="messages")
 
@@ -322,3 +329,49 @@ class NatButtonEvent(Base):
     button_text = Column(Text, nullable=True)
     source = Column(String(20), nullable=False)  # "template" | "interactive"
     created_at = Column(DateTime, server_default=func.now())
+
+
+# Etapas da máquina de estados do fluxo NAT. Espelha o CHECK de migrate_nat_flow_state.py —
+# mudar aqui sem mudar lá (ou o contrário) faz o INSERT falhar no banco, que é o
+# comportamento desejado: a divergência aparece na hora, não semanas depois.
+ETAPA_AGUARDANDO_HORARIO = "aguardando_horario"
+ETAPA_AGUARDANDO_RESPOSTA = "aguardando_resposta"
+ETAPA_AGUARDANDO_MOTIVACAO = "aguardando_motivacao"
+ETAPA_AGUARDANDO_LIGACAO = "aguardando_ligacao"
+ETAPA_REAGENDADO = "reagendado"
+ETAPA_SEM_CONTATO = "sem_contato"
+ETAPA_ENCERRADO = "encerrado"
+
+ETAPAS_VALIDAS = frozenset({
+    ETAPA_AGUARDANDO_HORARIO, ETAPA_AGUARDANDO_RESPOSTA, ETAPA_AGUARDANDO_MOTIVACAO,
+    ETAPA_AGUARDANDO_LIGACAO, ETAPA_REAGENDADO, ETAPA_SEM_CONTATO, ETAPA_ENCERRADO,
+})
+
+
+class NatFlowState(Base):
+    """Onde cada lead está no fluxo da NAT. UM estado por contato.
+
+    Sem FK para contacts/exact_leads/users de propósito (ver migrate_nat_flow_state.py): a
+    tabela é escrita de dentro do webhook e não pode ser a causa de um lote de mensagens se
+    perder. Vale a mesma regra de nat_button_events — toda escrita dentro de begin_nested().
+
+    ultimo_wa_message_id é a trava de idempotência: a Meta reentrega webhook, e sem ele o
+    mesmo clique avançaria o estado duas vezes e mandaria a mensagem seguinte em duplicata.
+
+    tentativas_contato e transferido_em ainda não têm consumidor — são do Bloco 5/6 (SLA e
+    recuperação). Estão aqui para não exigir ALTER numa tabela que a essa altura já estará
+    sendo escrita em produção.
+    """
+    __tablename__ = "nat_flow_state"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    contact_wa_id = Column(String(20), unique=True, nullable=False)
+    exact_lead_id = Column(Integer, nullable=True)
+    sdr_user_id = Column(Integer, nullable=True)
+    etapa = Column(String(30), nullable=False, index=True)
+    tentativas_contato = Column(Integer, nullable=False, default=0)
+    horario_preferencial = Column(Text, nullable=True)
+    ultimo_wa_message_id = Column(Text, nullable=True)
+    transferido_em = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

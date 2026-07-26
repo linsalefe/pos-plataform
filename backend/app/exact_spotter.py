@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.models import ExactLead, Contact, Channel, Message, AIConversationSummary, AutoWelcomeConfig
 from app.whatsapp import send_template_message
 from app.course_names import resolve_course_name
+from app.date_parse import parse_datetime
 
 BASE_URL = "https://api.exactspotter.com/v3"
 
@@ -101,14 +102,9 @@ def is_pos_lead(lead: dict) -> bool:
     return False
 
 
-def parse_datetime(value: str):
-    """Converte datetime string da API para objeto datetime."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
-    except (ValueError, TypeError):
-        return None
+# parse_datetime foi movida para app/date_parse.py — módulo neutro, só stdlib. O backfill
+# precisa do MESMO parser sem importar este arquivo, que carrega send_template_message no topo.
+# O nome segue exportado aqui: `from app.exact_spotter import parse_datetime` continua válido.
 
 
 def format_phone(phone: str) -> str:
@@ -295,6 +291,26 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             lead_row.welcome_sent_at = datetime.now(SP_TZ).replace(tzinfo=None)
             lead_row.welcome_status = "sent"
             lead_row.welcome_error = None
+
+        # PONTO DE ENTRADA DO FLUXO NAT.
+        #
+        # Só depois do envio ter dado certo e do contato existir — iniciar_fluxo_nat precisa
+        # do Contact para checar assigned_to.
+        #
+        # Passa lead_row (o ExactLead) e não lead_data: a trava de data lê register_date, que
+        # o dict montado pelo sync não carrega. Com o dict, nat_pode_atuar bloquearia sempre
+        # por "register_date ausente" — falha fechada correta, mas pelo motivo errado, e a NAT
+        # nunca sairia do lugar depois de ligada.
+        #
+        # Guardado por nat_pode_atuar: com a NAT desligada isto é no-op puro. Dentro de
+        # SAVEPOINT porque falha aqui não pode desfazer o carimbo de welcome_status nem o
+        # registro da mensagem que JÁ saiu para o lead.
+        try:
+            async with db.begin_nested():
+                from app.nat_flow import iniciar_fluxo_nat
+                await iniciar_fluxo_nat(lead_row if lead_row is not None else lead_data, db)
+        except Exception as e:
+            print(f"⚠️  NAT: fluxo não iniciado para {phone}: {type(e).__name__}: {e}")
 
         print(f"🤖 Boas-vindas enviada para {name} ({phone}) - Curso: {course}")
         return result("sent", "ok")

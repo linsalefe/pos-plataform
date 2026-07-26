@@ -22,19 +22,82 @@ async def send_text_message(to: str, text: str, phone_number_id: str, token: str
         return response.json()
 
 
-async def send_template_message(to: str, template_name: str, language: str, phone_number_id: str, token: str, parameters: list = None) -> dict:
+async def send_interactive_buttons(to: str, body: str, buttons: list, phone_number_id: str, token: str) -> dict:
+    """Mensagem de texto com botões de resposta rápida (fora de template).
+
+    Só vale dentro da janela de 24h — fora dela a Meta recusa e só template passa.
+
+    `buttons` é [{"payload": "...", "title": "..."}]; o payload vira o `id` da reply e é o
+    que volta em interactive.button_reply.id no webhook. Máximo 3 botões, título de até 20
+    caracteres (quem chama já entrega truncado — ver nat_copy.BOTOES_LIVRES).
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{BASE_URL}/{phone_number_id}/messages",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "messaging_product": "whatsapp",
+                "to": to,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {"text": body},
+                    "action": {
+                        "buttons": [
+                            {"type": "reply",
+                             "reply": {"id": b["payload"], "title": b["titulo"]}}
+                            for b in buttons
+                        ]
+                    },
+                },
+            },
+        )
+        return response.json()
+
+
+async def send_template_message(to: str, template_name: str, language: str, phone_number_id: str, token: str, parameters: list = None, button_payloads: list = None) -> dict:
+    """Envia um template aprovado.
+
+    `button_payloads` fixa o payload de cada quick reply, por índice: o item 0 vai para o
+    botão 0, o 1 para o botão 1. É o único momento em que dá para definir esse valor — a
+    DEFINIÇÃO do template não carrega payload, só o envio. O payload não é visível para o
+    lead e volta em `button.payload` no webhook quando ele clica, que é o que permite rotear
+    sem depender do texto do botão (dois templates têm "Prefiro outro horário" idêntico).
+
+    Use None numa posição para deixar aquele botão com o payload padrão da Meta (o texto).
+
+    NÃO REGRESSÃO: sem `button_payloads`, o corpo enviado é byte a byte o mesmo de antes —
+    a boas-vindas em produção passa por aqui e não pode mudar.
+    """
     template_data = {
         "name": template_name,
         "language": {"code": language},
     }
 
+    components = []
     if parameters:
-        template_data["components"] = [
+        components.append(
             {
                 "type": "body",
                 "parameters": [{"type": "text", "text": p} for p in parameters],
             }
-        ]
+        )
+
+    for indice, payload in enumerate(button_payloads or []):
+        if payload is None:
+            continue
+        components.append({
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": str(indice),
+            "parameters": [{"type": "payload", "payload": payload}],
+        })
+
+    if components:
+        template_data["components"] = components
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
