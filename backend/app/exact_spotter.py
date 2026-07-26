@@ -294,10 +294,16 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             ))
 
         # Carimbo de sucesso — welcome_sent_at SÓ aqui (envio real).
+        #
+        # ATENÇÃO AO QUE 'sent' SIGNIFICA AQUI: a Meta ACEITOU a mensagem, não que o lead a
+        # recebeu. A entrega (ou a recusa) chega depois, assíncrona, pelo webhook de status.
+        # welcome_wamid é o que permite àquele webhook achar este lead e corrigir o carimbo
+        # para 'failed' ou 'delivered' — sem ele o 'sent' era permanente e mentiroso.
         if lead_row is not None:
             lead_row.welcome_sent_at = datetime.now(SP_TZ).replace(tzinfo=None)
             lead_row.welcome_status = "sent"
             lead_row.welcome_error = None
+            lead_row.welcome_wamid = send_result["messages"][0]["id"]
 
         # PONTO DE ENTRADA DO FLUXO NAT.
         #

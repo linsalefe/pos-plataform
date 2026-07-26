@@ -221,7 +221,17 @@ async def resend_welcome(exact_id: int, db: AsyncSession = Depends(get_db)):
     return r
 
 
-@router.post("/bulk-send-template")
+# AUTENTICAÇÃO NO DECORATOR, NÃO NA ASSINATURA — e a diferença aqui é de correção, não de
+# estilo. Esta função é chamada DIRETAMENTE como função Python pelo scheduled_messages_job
+# (main.py:223: `await bulk_send_template(payload, db)`), sem passar por HTTP. Um parâmetro
+# `usuario: User = Depends(get_current_user)` na assinatura receberia, nessa chamada, o
+# próprio objeto `Depends` em vez de um User — silenciosamente, até alguém usar o valor.
+# `dependencies=[...]` só é avaliado pelo pipeline de request do FastAPI, então a porta HTTP
+# fica fechada e a chamada interna segue idêntica.
+#
+# Disparo em massa sem login é risco de suspensão da conta WhatsApp, não de conveniência: um
+# POST anônimo daqui manda template para a lista de leads que quiser.
+@router.post("/bulk-send-template", dependencies=[Depends(get_current_user)])
 async def bulk_send_template(
     request: dict,
     db: AsyncSession = Depends(get_db)

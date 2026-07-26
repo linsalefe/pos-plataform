@@ -129,6 +129,15 @@ class ExactLead(Base):
     welcome_status = Column(String(30), nullable=True)
     welcome_error = Column(Text, nullable=True)
 
+    # wamid da boas-vindas (ver migrate_welcome_tracking.py). É o ÚNICO vínculo entre
+    # `messages` e este lead: o webhook de status recebe o wamid e sem isto não tem como saber
+    # a qual lead a falha pertence — foi por isso que o 131042 durou 4 dias com o painel
+    # mostrando 254 sucessos enquanto 100% falhava.
+    # TEXT porque o formato é opaco e definido pela Meta (58 a 82 chars nesta conta).
+    # NULL para todo lead que nunca teve envio, e para os 254 'sent' anteriores à coluna —
+    # esses só dá para reconciliar por telefone + janela de tempo (fix_welcome_status_falso).
+    welcome_wamid = Column(Text, nullable=True)
+
 
 class AutoWelcomeConfig(Base):
     """Singleton (id=1) com a configuração da mensagem automática de boas-vindas.
