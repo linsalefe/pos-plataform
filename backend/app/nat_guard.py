@@ -63,6 +63,49 @@ def _agora_sp() -> datetime:
     return datetime.now(SP_TZ).replace(tzinfo=None)
 
 
+# ---------------------------------------------------------------------------------------
+# HORÁRIO COMERCIAL
+#
+# Mora aqui, e não em módulo próprio, porque é uma TRAVA: a pergunta que responde é a mesma
+# que nat_pode_atuar responde — "a NAT pode agir agora?". Separar em outro módulo espalharia
+# "quando a NAT pode atuar" por dois arquivos, e quem fosse auditar a segurança do fluxo
+# teria que descobrir que existe um segundo lugar. Um módulo só, uma auditoria só.
+#
+# NÃO é chamada de dentro de nat_pode_atuar de propósito: o horário decide o CAMINHO (envia
+# agora vs. enfileira em aguardando_horario), enquanto nat_pode_atuar decide se pode ou não
+# haver ação. Fundi-las faria "fora do horário" virar bloqueio, e o lead que chega 20h seria
+# descartado em vez de enfileirado para as 09h.
+HORA_ABERTURA = 9    # 09:00 inclusive
+HORA_FECHAMENTO = 19  # 19:00 exclusive — às 19:00 em ponto já está fechado
+
+
+def dentro_horario_comercial(quando: datetime | None = None) -> bool:
+    """09h–19h no fuso de São Paulo, segunda a sexta. Sem `quando`, usa agora.
+
+    `quando` explícito é o que torna a função testável sem mock de relógio.
+
+    Aceita datetime aware ou naive:
+      * aware  -> convertido para SP_TZ. É o que faz 12:00 UTC valer como 09:00 SP.
+      * naive  -> assumido JÁ em SP, que é como messages.timestamp é gravado no banco.
+        Assumir UTC aqui jogaria toda decisão 3h para frente e a janela de fato viraria
+        06h-16h SP, sem nenhum erro visível.
+
+    LIMITAÇÃO CONHECIDA: feriado não é tratado. Em feriado nacional a NAT vai considerar
+    horário comercial normal e disparar. Fora do escopo desta sprint — precisa de calendário
+    de feriados, que não existe no projeto.
+    """
+    momento = quando if quando is not None else datetime.now(SP_TZ)
+
+    if momento.tzinfo is not None:
+        momento = momento.astimezone(SP_TZ)
+
+    # weekday(): 0=segunda ... 5=sábado, 6=domingo. Fim de semana é fora em qualquer hora.
+    if momento.weekday() >= 5:
+        return False
+
+    return HORA_ABERTURA <= momento.hour < HORA_FECHAMENTO
+
+
 async def contar_envios_nat_ultima_hora(db: AsyncSession) -> int:
     """Envios ATRIBUÍVEIS À NAT na última hora.
 

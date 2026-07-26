@@ -319,6 +319,21 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         print(f"⚠️  Falha ao registrar clique em nat_button_events "
                               f"({wa_message_id}): {type(e).__name__}: {e}")
 
+                # Roteamento do fluxo NAT. Vem DEPOIS da persistência do evento (o registro
+                # do clique não pode depender do fluxo dar certo) e, como ela, dentro de
+                # SAVEPOINT: com a NAT desligada nada disto age, mas se um dia agir e falhar,
+                # a mensagem do lead já está salva e o lote segue.
+                try:
+                    async with db.begin_nested():
+                        from app.nat_flow import processar_clique, processar_texto
+                        if evento_botao:
+                            await processar_clique(evento_botao, db)
+                        elif msg_type == "text":
+                            await processar_texto(msg["from"], content, wa_message_id, db)
+                except Exception as e:
+                    print(f"⚠️  Falha no fluxo NAT ({wa_message_id}): "
+                          f"{type(e).__name__}: {e}")
+
                 # Notificação de nova mensagem para o SDR dono (se houver)
                 owner_result = await db.execute(select(Contact.assigned_to, Contact.name).where(Contact.wa_id == msg["from"]))
                 owner_row = owner_result.first()

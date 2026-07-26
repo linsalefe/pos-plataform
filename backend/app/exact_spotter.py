@@ -296,6 +296,26 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             lead_row.welcome_status = "sent"
             lead_row.welcome_error = None
 
+        # PONTO DE ENTRADA DO FLUXO NAT.
+        #
+        # Só depois do envio ter dado certo e do contato existir — iniciar_fluxo_nat precisa
+        # do Contact para checar assigned_to.
+        #
+        # Passa lead_row (o ExactLead) e não lead_data: a trava de data lê register_date, que
+        # o dict montado pelo sync não carrega. Com o dict, nat_pode_atuar bloquearia sempre
+        # por "register_date ausente" — falha fechada correta, mas pelo motivo errado, e a NAT
+        # nunca sairia do lugar depois de ligada.
+        #
+        # Guardado por nat_pode_atuar: com a NAT desligada isto é no-op puro. Dentro de
+        # SAVEPOINT porque falha aqui não pode desfazer o carimbo de welcome_status nem o
+        # registro da mensagem que JÁ saiu para o lead.
+        try:
+            async with db.begin_nested():
+                from app.nat_flow import iniciar_fluxo_nat
+                await iniciar_fluxo_nat(lead_row if lead_row is not None else lead_data, db)
+        except Exception as e:
+            print(f"⚠️  NAT: fluxo não iniciado para {phone}: {type(e).__name__}: {e}")
+
         print(f"🤖 Boas-vindas enviada para {name} ({phone}) - Curso: {course}")
         return result("sent", "ok")
 
