@@ -27,15 +27,36 @@ Duas regras que valem para tudo neste módulo:
     aguardando_ligacao é ruído (lead rolou a conversa e clicou no botão antigo) — reprocessar
     mandaria o fluxo para trás e o lead receberia de novo uma mensagem que já recebeu.
 """
+from datetime import timedelta
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import nat_copy
 from app.models import (ETAPA_AGUARDANDO_HORARIO, ETAPA_AGUARDANDO_LIGACAO,
                         ETAPA_AGUARDANDO_MOTIVACAO, ETAPA_AGUARDANDO_RESPOSTA,
-                        ETAPA_REAGENDADO, Contact, ExactLead, NatFlowState)
-from app.nat_guard import _agora_sp, dentro_horario_comercial, nat_pode_atuar
+                        ETAPA_REAGENDADO, KIND_SLA_CHECK, Contact, ExactLead, Notification,
+                        NatFlowState, User)
+from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
+                           nat_pode_atuar)
 from app.nat_sender import send_nat_message
+
+# ------------------------------------------------------------------------------------------
+# TRANSFERÊNCIA PARA O SDR (Bloco 5)
+# ------------------------------------------------------------------------------------------
+# Quanto tempo o SDR dono tem para clicar em "Assumir ligação" antes de o SLA escalonar.
+# Usado aqui (agendamento) e em nat_sla (reagendamento do nível 1) — uma definição só.
+SLA_LIGACAO_MINUTOS = 2
+
+TIPO_NOTIF_TRANSFERENCIA = "nat_transferencia"
+
+# A Exact roda dentro do processamento do webhook. 5s em vez do default de 15s: com a Exact
+# fora do ar, 15s segurariam o lote de mensagens de TODOS os leads daquele webhook.
+TIMEOUT_TIMELINE_SEGUNDOS = 5
+
+# Teto do trecho da resposta do lead que entra na notificação e na timeline. O corpo do sino
+# já é truncado em ~50 caracteres pelo CSS; o resto é para o popup do navegador e a timeline.
+MAX_CHARS_RESPOSTA = 140
 
 
 async def _estado_do_contato(contact_wa_id: str, db: AsyncSession):
@@ -78,6 +99,197 @@ async def _dados_do_lead(state: NatFlowState, db: AsyncSession) -> dict:
 def _ja_processado(state: NatFlowState, wa_message_id: str) -> bool:
     """Trava de reentrega: mesmo wa_message_id que o último processado."""
     return bool(wa_message_id) and state.ultimo_wa_message_id == wa_message_id
+
+
+def telefone_legivel(wa_id: str) -> str:
+    """5511999998888 -> '+55 11 99999-8888'. Devolve o original se não reconhecer o formato.
+
+    O SDR tem 2 minutos para ligar. Ler o número na notificação e digitar no telefone é parte
+    desses 2 minutos, e '5511999998888' é mais lento de ler e mais fácil de errar.
+    """
+    digitos = "".join(c for c in (wa_id or "") if c.isdigit())
+    if len(digitos) == 13 and digitos.startswith("55"):      # 55 + DDD + 9 dígitos
+        return f"+55 {digitos[2:4]} {digitos[4:9]}-{digitos[9:]}"
+    if len(digitos) == 12 and digitos.startswith("55"):      # 55 + DDD + 8 dígitos
+        return f"+55 {digitos[2:4]} {digitos[4:8]}-{digitos[8:]}"
+    return wa_id or ""
+
+
+def _resumir(texto: str, limite: int = MAX_CHARS_RESPOSTA) -> str:
+    """Uma linha, sem quebras, cortada com reticências. Nunca None."""
+    limpo = " ".join((texto or "").split())
+    return limpo if len(limpo) <= limite else limpo[:limite - 1] + "…"
+
+
+def montar_notificacao_transferencia(nome: str, wa_id: str, curso: str, resposta: str,
+                                     *, sem_sdr: bool = False) -> tuple[str, str]:
+    """(title, body) da notificação de transferência.
+
+    O FORMATO É DITADO PELO FRONTEND, não por gosto. Em NotificationBell.tsx:
+      * o `title` (linha 211) NÃO tem `truncate` — quebra linha e aparece INTEIRO;
+      * o `body` (linha 214) tem `truncate`, que é `white-space: nowrap` + ellipsis: uma
+        única linha, ~45-55 caracteres visíveis num painel de 330px. Quebra de linha no
+        corpo é colapsada e não ajuda.
+
+    Daí as duas decisões:
+      1. TELEFONE NO TÍTULO, junto do nome. É o único lugar garantidamente visível, e é o
+         dado sem o qual o SDR não liga. Sem isto ele abriria a conversa só para copiar o
+         número — e os 2 minutos do SLA já teriam ido.
+      2. TELEFONE TAMBÉM NO COMEÇO DO CORPO, para o que sobra dos ~50 caracteres ser o
+         telefone e não a palavra "Curso". O resto (curso, resposta do lead) fica legível no
+         popup do navegador, que mostra mais, e no banco.
+    """
+    fone = telefone_legivel(wa_id)
+    quem = nome or "Lead sem nome"
+
+    if sem_sdr:
+        title = f"Ligar agora (SEM SDR): {quem} — {fone}"
+    else:
+        title = f"Ligar agora: {quem} — {fone}"
+
+    partes = [fone]
+    if curso:
+        partes.append(curso)
+    if resposta:
+        partes.append(f'disse: "{_resumir(resposta)}"')
+    if sem_sdr:
+        partes.append("lead sem SDR atribuído — avisando a gestão")
+
+    return title[:255], " · ".join(partes)
+
+
+async def usuario_existe(user_id: int | None, db: AsyncSession) -> bool:
+    """O id existe em `users`? None devolve False.
+
+    Conferir antes de criar Notification não é zelo excessivo: notifications.user_id tem FK
+    para users, e apontar para um id inexistente estoura IntegrityError — dentro de um
+    savepoint cuja falha, por decisão do Bloco 5, cancela os passos seguintes. Melhor
+    descobrir com um SELECT do que com um rollback.
+    """
+    if user_id is None:
+        return False
+    res = await db.execute(select(User.id).where(User.id == user_id))
+    return res.first() is not None
+
+
+async def _destinatario_da_transferencia(state: NatFlowState, db: AsyncSession):
+    """(user_id, eh_fallback) de quem recebe a notificação. (None, _) se não há ninguém.
+
+    O guard bloqueia lead sem SDR na ENTRADA do fluxo, mas `assigned_to` pode ser limpo entre
+    a entrada e a transferência (troca de dono, correção manual na tela). Sem fallback, a
+    notificação ficaria sem destinatário e o lead chegaria em aguardando_ligacao MUDO — que é
+    o pior desfecho possível para um lead que acabou de dizer que quer ser ligado.
+
+    A existência do usuário é CONFERIDA, não presumida: notifications.user_id tem FK para
+    users, e apontar para um id que não existe estouraria IntegrityError no passo 1 —
+    justamente o passo que, se falhar, cancela todos os outros.
+    """
+    if await usuario_existe(state.sdr_user_id, db):
+        return state.sdr_user_id, False
+
+    if await usuario_existe(GESTOR_USER_ID, db):
+        print(f"⚠️  NAT: {state.contact_wa_id} chegou na transferência sem SDR válido "
+              f"(sdr_user_id={state.sdr_user_id}) — notificando a gestão "
+              f"(id={GESTOR_USER_ID})")
+        return GESTOR_USER_ID, True
+
+    return None, False
+
+
+async def transferir_para_sdr(state: NatFlowState, resposta_do_lead: str,
+                              wa_message_id: str, db: AsyncSession) -> bool:
+    """Avisa quem tem que ligar, registra e arma o SLA. True se a notificação saiu.
+
+    TRÊS passos, cada um no SEU savepoint (o quarto, estágio no Exact, caiu: a etapa
+    "Aguardando Ligação" não existe em nenhum funil e a API não permite criá-la — ver
+    RECON_NAT_FASE1_EXACT_20260726.md):
+
+      1. NOTIFICAÇÃO ao SDR    — é ela que faz alguém ligar. Falhou, nada mais é tentado.
+      2. transferido_em        — carimbo local, junto do passo 1 no mesmo savepoint por ser
+                                 a mesma escrita lógica ("está transferido") e não custar rede.
+      3. TIMELINE no Exact     — única chamada de rede. Falha é registrada e ignorada.
+      4. sla_check em +2min    — o MAIS DESCARTÁVEL. Vai por último, sozinho no savepoint.
+
+    A ordem é a ordem da importância, e os savepoints são separados justamente para que a
+    falha de um passo não desfaça os anteriores — comprovado contra o Postgres no smoke da
+    Fase 3, onde um IntegrityError no agendamento deixou o passo anterior intacto e commitado.
+
+    NÃO altera `etapa`: quem avança a máquina de estados é processar_texto, e só depois de o
+    envio ao lead ter dado certo. Esta função é o efeito colateral da transição, não a
+    transição.
+    """
+    wa_id = state.contact_wa_id
+    dados = await _dados_do_lead(state, db)
+
+    # ---- PASSO 1: notificação (+ carimbo) — se falhar, aborta o resto ----
+    destinatario, eh_fallback = await _destinatario_da_transferencia(state, db)
+    if destinatario is None:
+        print(f"❌ NAT: transferência de {wa_id} sem destinatário possível "
+              f"(sdr_user_id={state.sdr_user_id}, gestor id={GESTOR_USER_ID} não existe) — "
+              "nada notificado, timeline e SLA não tentados")
+        return False
+
+    title, body = montar_notificacao_transferencia(
+        dados["nome"], wa_id, dados["curso"], resposta_do_lead, sem_sdr=eh_fallback)
+
+    try:
+        async with db.begin_nested():
+            db.add(Notification(
+                user_id=destinatario,
+                contact_wa_id=wa_id,
+                type=TIPO_NOTIF_TRANSFERENCIA,
+                # ref = a mensagem do lead que disparou a transferência. Dá idempotência se
+                # este caminho for reexecutado, no mesmo espírito do ref de window_alerts_job.
+                ref=wa_message_id,
+                title=title,
+                body=body,
+            ))
+            state.transferido_em = _agora_sp()
+        print(f"🔔 NAT: transferência de {wa_id} notificada para user {destinatario}"
+              f"{' (FALLBACK gestão)' if eh_fallback else ''}: {title}")
+    except Exception as e:
+        print(f"❌ NAT: notificação de transferência FALHOU para {wa_id} "
+              f"({type(e).__name__}: {e}) — timeline e SLA não serão tentados")
+        return False
+
+    # ---- PASSO 2: anotação na timeline do Exact ----
+    if state.exact_lead_id is None:
+        print(f"↩️  NAT: {wa_id} sem exact_lead_id — timeline não anotada")
+    else:
+        try:
+            async with db.begin_nested():
+                from app.exact_spotter import add_timeline_comment
+                quando = state.transferido_em
+                texto = (
+                    f"NAT transferiu o lead para ligação do SDR em "
+                    f"{quando:%d/%m/%Y às %H:%M} (horário de Brasília). "
+                    f"Lead confirmou interesse e disse: \"{_resumir(resposta_do_lead)}\". "
+                    f"SLA de {SLA_LIGACAO_MINUTOS} minutos para o primeiro contato."
+                )
+                await add_timeline_comment(state.exact_lead_id, texto,
+                                           timeout=TIMEOUT_TIMELINE_SEGUNDOS)
+        except Exception as e:
+            # add_timeline_comment já engole a própria exceção e devolve False; isto aqui é a
+            # rede para o que ela não prevê. Falha na Exact não pode custar a transferência,
+            # que já está notificada e carimbada.
+            print(f"⚠️  NAT: timeline do Exact não anotada para {wa_id} "
+                  f"({type(e).__name__}: {e}) — transferência segue válida")
+
+    # ---- PASSO 3: SLA. O mais descartável, sozinho no savepoint. ----
+    try:
+        async with db.begin_nested():
+            from app.nat_scheduler import agendar
+            await agendar(
+                KIND_SLA_CHECK, wa_id,
+                _agora_sp() + timedelta(minutes=SLA_LIGACAO_MINUTOS),
+                {"notificado": destinatario, "fallback_gestao": eh_fallback},
+                db,
+            )
+    except Exception as e:
+        print(f"⚠️  NAT: sla_check NÃO agendado para {wa_id} ({type(e).__name__}: {e}) — "
+              "a notificação ao SDR permanece, mas NÃO haverá escalonamento automático")
+
+    return True
 
 
 async def iniciar_fluxo_nat(lead, db: AsyncSession) -> str | None:
@@ -270,11 +482,19 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
             print(f"🔒 NAT: confirmação não saiu — {contact_wa_id} segue em {state.etapa}")
             return None
 
+        # A máquina de estados avança AQUI, e sempre: a mensagem já saiu para o lead, e não
+        # avançar deixaria a reentrega do webhook mandá-la de novo. O que pode falhar é o
+        # efeito colateral (avisar, registrar, armar o SLA), nunca a transição.
         state.etapa = ETAPA_AGUARDANDO_LIGACAO
         state.ultimo_wa_message_id = wa_message_id
-        state.transferido_em = _agora_sp()
         print(f"➡️  NAT: {contact_wa_id} {ETAPA_AGUARDANDO_MOTIVACAO} → "
               f"{ETAPA_AGUARDANDO_LIGACAO}")
+
+        # transferido_em é carimbado lá dentro, junto da notificação (ver transferir_para_sdr).
+        if not await transferir_para_sdr(state, texto, wa_message_id, db):
+            print(f"🚨 NAT: {contact_wa_id} está em {ETAPA_AGUARDANDO_LIGACAO} e NINGUÉM foi "
+                  "avisado. O lead pediu para ser ligado e não há notificação nem SLA.")
+
         return ETAPA_AGUARDANDO_LIGACAO
 
     except Exception as e:

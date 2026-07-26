@@ -141,6 +141,12 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, **v
             return recusa(f"Meta recusou: {resultado}")
 
         # Registra o outbound para a conversa não ficar com buraco na tela do SDR.
+        #
+        # nat_etapa é o MARCADOR DE ENVIO DA NAT, e é gravado aqui porque este é o único
+        # ponto do código por onde envio da NAT passa. Guarda a etapa (nat_boasvindas,
+        # nat_sim, ...) e não um booleano: "quantos a NAT mandou na última hora" e "de qual
+        # passo do fluxo" ficam sendo a mesma pergunta com granularidades diferentes.
+        # É o que o teto por hora de nat_pode_atuar conta — ver contar_envios_nat_ultima_hora.
         db.add(Message(
             wa_message_id=resultado["messages"][0]["id"],
             contact_wa_id=contact_wa_id,
@@ -150,6 +156,7 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, **v
             content=corpo,
             timestamp=_agora_sp(),
             status="sent",
+            nat_etapa=etapa,
         ))
         print(f"📤 NAT enviou '{etapa}' para {contact_wa_id} "
               f"({'texto livre' if aberta else 'template'}, janela "

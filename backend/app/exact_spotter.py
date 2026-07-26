@@ -47,10 +47,17 @@ async def get_auto_welcome_config(db: AsyncSession):
         return None  # sem config = DESLIGADO (na dúvida, não envia)
 
 
-async def add_timeline_comment(lead_id: int, text: str):
-    """Insere comentário na timeline do lead na Exact Spotter."""
+async def add_timeline_comment(lead_id: int, text: str, *, timeout: float = 15):
+    """Insere comentário na timeline do lead na Exact Spotter.
+
+    `timeout` é parâmetro para o chamador poder ser mais impaciente que o default. O default
+    segue 15s para não mudar o comportamento de quem já chamava (ai_engine, no resumo do
+    atendimento, que roda fora de qualquer caminho crítico). O fluxo NAT passa 5s: ele roda
+    DENTRO do processamento do webhook da Meta, e a Exact fora do ar não pode segurar o lote
+    de mensagens de todos os leads por 15s.
+    """
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{BASE_URL}/timelineAdd",
                 headers=get_headers(),

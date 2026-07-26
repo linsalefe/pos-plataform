@@ -61,6 +61,14 @@ class Message(Base):
     sent_by_ai = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
 
+    # Marcador de envio da NAT (ver migrate_nat_sprint3.py). Guarda a ETAPA que originou o
+    # envio — nat_boasvindas, nat_sim, nat_confirma_transferencia, nat_outro_horario — e não
+    # um booleano: é o que permite ao teto por hora contar SÓ o que a NAT mandou, e ainda
+    # dizer de qual passo do fluxo veio. NULL para todo o resto (boas-vindas, resposta manual
+    # de SDR, disparo em massa), que é a resposta certa e não uma lacuna.
+    # É a coluna que substitui o COLUNA_MARCADOR_ENVIO_NAT = None de nat_guard.
+    nat_etapa = Column(Text, nullable=True)
+
     # Motivo da falha, vindo de statuses[].errors[] no webhook (ver migrate_message_error.py).
     # Só é preenchido quando a Meta reporta erro; NULL é o caso normal.
     # error_details é onde a Meta explica em linguagem natural — vale mais que o title.
@@ -358,9 +366,8 @@ class NatFlowState(Base):
     ultimo_wa_message_id é a trava de idempotência: a Meta reentrega webhook, e sem ele o
     mesmo clique avançaria o estado duas vezes e mandaria a mensagem seguinte em duplicata.
 
-    tentativas_contato e transferido_em ainda não têm consumidor — são do Bloco 5/6 (SLA e
-    recuperação). Estão aqui para não exigir ALTER numa tabela que a essa altura já estará
-    sendo escrita em produção.
+    tentativas_contato ainda não tem consumidor — é do Bloco 6 (recuperação). Está aqui para
+    não exigir ALTER numa tabela que a essa altura já estará sendo escrita em produção.
     """
     __tablename__ = "nat_flow_state"
 
@@ -375,3 +382,61 @@ class NatFlowState(Base):
     transferido_em = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # --- Bloco 5: quem assumiu a ligação, e até onde o escalonamento chegou ---
+    #
+    # assumido_por é o que PARA O RELÓGIO do SLA. É int (quem assumiu) e não booleano de
+    # propósito: a tela precisa mostrar o nome, e a notificação de escalonamento precisa
+    # dizer quem já estava com o lead. Sem FK para users, como o resto da tabela.
+    #
+    # escalonamento_nivel: 0 = só o SDR dono foi avisado; 1 = o outro SDR também;
+    # 2 = a gestora também, e o ciclo acabou (nível 2 não agenda mais nada).
+    assumido_por = Column(Integer, nullable=True)
+    assumido_em = Column(DateTime, nullable=True)
+    escalonamento_nivel = Column(Integer, nullable=False, default=0)
+
+
+# Status de uma ação agendada. Espelha o CHECK de migrate_nat_sprint3.py — mesma regra do
+# ETAPAS_VALIDAS acima: divergir daqui faz o INSERT falhar na hora, que é o desejado.
+ACAO_PENDENTE = "pendente"
+ACAO_EXECUTADO = "executado"
+ACAO_CANCELADO = "cancelado"
+ACAO_FALHOU = "falhou"
+
+STATUS_ACAO_VALIDOS = frozenset({ACAO_PENDENTE, ACAO_EXECUTADO, ACAO_CANCELADO, ACAO_FALHOU})
+
+# Tipos de ação agendada. Nesta sprint só existe o sla_check. NÃO há CHECK no banco para
+# `kind` (ver migrate_nat_sprint3.py): é ponto de extensão, não máquina de estados fechada.
+KIND_SLA_CHECK = "sla_check"
+
+# Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
+MAX_TENTATIVAS_ACAO = 3
+
+
+class NatScheduledAction(Base):
+    """Agendador genérico da NAT: "rode isto para este contato a esta hora".
+
+    O SLA de 2 minutos do Bloco 5 é o primeiro consumidor, mas a tabela não sabe disso —
+    ela guarda (kind, contato, hora) e o job despacha por `kind`.
+
+    run_at é NAIVE EM HORÁRIO DE SÃO PAULO, igual a messages.timestamp e a
+    nat_guard._agora_sp(). O banco está em Etc/UTC: comparar contra now() do Postgres
+    dispararia tudo 3h adiantado, silenciosamente. O job sempre manda o corte de Python.
+
+    Sem FK em contact_wa_id — mesma razão de NatFlowState e NatButtonEvent: escrita de dentro
+    do webhook, e uma FK só acrescentaria um jeito de derrubar o lote de mensagens.
+
+    Execução única é garantida pelo job, não por esta classe: SELECT ... FOR UPDATE SKIP
+    LOCKED + marcação de `executado` na MESMA transação que executa a ação.
+    """
+    __tablename__ = "nat_scheduled_actions"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    kind = Column(String(40), nullable=False)
+    contact_wa_id = Column(String(20), nullable=False)
+    run_at = Column(DateTime, nullable=False)
+    payload = Column(Text, nullable=True)  # JSON serializado; ver migrate_nat_sprint3.py
+    status = Column(String(20), nullable=False, default=ACAO_PENDENTE)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, server_default=func.now())
+    processed_at = Column(DateTime, nullable=True)

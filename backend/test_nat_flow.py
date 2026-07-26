@@ -209,19 +209,34 @@ async def caso_7_clique_fora_da_etapa():
 
 
 async def caso_8_texto_transfere():
+    """A TRANSIÇÃO. Os efeitos da transferência (notificar, timeline, SLA) são do Bloco 5 e
+    têm testes próprios em test_nat_sprint3.py — aqui transferir_para_sdr é dublada, para
+    este caso continuar respondendo só "texto em aguardando_motivacao avança a etapa?".
+    """
     state = _state(ETAPA_AGUARDANDO_MOTIVACAO)
     db = MagicMock()
+
+    async def _transferencia_falsa(st, resposta, wa_message_id, _db):
+        st.transferido_em = datetime.now(SP_TZ).replace(tzinfo=None)
+        return True
+
     with patch.object(nat_flow, "_estado_do_contato", new=AsyncMock(return_value=state)), \
          patch.object(nat_flow, "_dados_do_lead", new=AsyncMock(return_value={
              "nome": "Fulano", "curso": "Psicologia", "formacao": ""})), \
+         patch.object(nat_flow, "transferir_para_sdr",
+                      new=AsyncMock(side_effect=_transferencia_falsa)) as transfer, \
          patch.object(nat_flow, "send_nat_message", new=AsyncMock(return_value=True)) as spy:
         destino = await nat_flow.processar_texto(
             "5583999998888", "quero mudar de área", "wamid.TXT", db)
     assert destino == ETAPA_AGUARDANDO_LIGACAO, destino
     assert spy.call_args[0][1] == nat_copy.NAT_CONFIRMA_TRANSFERENCIA, spy.call_args
     assert state.transferido_em is not None, "FALHOU: nao marcou transferido_em!"
+    assert transfer.await_count == 1, "FALHOU: nao acionou a transferencia!"
+    # A resposta do lead tem que CHEGAR na transferência — é ela que vai na notificação.
+    assert transfer.await_args[0][1] == "quero mudar de área", transfer.await_args
+    assert transfer.await_args[0][2] == "wamid.TXT", transfer.await_args
     print(f"  8. texto em aguardando_motivacao -> {destino}  "
-          f"(enviou {spy.call_args[0][1]}, transferido_em marcado)")
+          f"(enviou {spy.call_args[0][1]}, transferencia acionada com a resposta do lead)")
 
 
 async def caso_9_texto_fora_da_etapa():
