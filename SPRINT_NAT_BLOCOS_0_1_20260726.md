@@ -240,15 +240,26 @@ Rodar: `cd backend && venv/bin/python test_nat_guard.py`
 | item | estado |
 |---|---|
 | Mensagem enviada a lead real | **nenhuma** |
-| Serviço reiniciado | **não** — `cenat-backend.service` segue no processo antigo |
+| Serviço | **reiniciado em 26/07 01:14 UTC**, autorizado pelo Álefe — subiu limpo |
 | Sync do Exact rodado manualmente | não |
 | NAT | **desligada** (`nat_enabled=False`, `nat_start_at=None`) |
 | `auto_welcome_config` | **não alterada** (`enabled=true`, `18535,18537,25588`, `nat_boasvindas`) |
-| Merge | **não feito** — decisão do Álefe |
+| Merge | **feito** — `2e77222` em `main`, com push |
 
-**O código do webhook ainda não está no ar.** O processo em produção é mais velho que o `main`;
-um restart traria commits não revisados junto. Enquanto não houver restart, **cliques de botão
-continuam sendo descartados** — a captura só passa a valer quando o serviço subir.
+**A captura de clique está no ar desde 26/07 01:14 UTC.** O processo anterior tinha subido em
+12/07 14:09 e estava atrás do `main`; o restart trouxe junto **um único commit de código**,
+`9692952` (exige login no `/resend-welcome` e faz o resend respeitar o `enabled`) — endurecimento
+de segurança, não mudança de comportamento de envio — mais dois commits de documentação.
+
+Startup completo sem erro, `/docs` responde 200, nenhum envio disparado no restart, 0 mensagens
+outbound na hora seguinte. `test_nat_guard.py` 9/9 e `test_welcome_guardrail.py` 15/15 passando
+contra o código que está rodando.
+
+O que **não** muda com o restart: a NAT continua desligada e `nat_pode_atuar` continua não
+plugada em nada. O que passa a valer é só a captura — cliques de botão deixam de ser descartados
+e a notificação ao SDR deixa de sair vazia. Como nada está sendo entregue desde 23/07
+(incidente aberto, fora deste escopo), `nat_button_events` deve seguir em 0 até a entrega voltar;
+zero ali **não** é sinal de que o parser falhou.
 
 ---
 
