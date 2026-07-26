@@ -185,6 +185,18 @@ novo: barulho a mais, nunca silêncio. É o mesmo padrão que o `window_alerts_j
 histerese de propósito, senão uma taxa oscilando em volta de um limiar único geraria
 alerta/normalização/alerta a cada 15 minutos.
 
+**Batimento por ciclo.** O resumo sai no log SEMPRE, inclusive na janela vazia:
+
+```
+⏱️  Saúde de entrega: 0 template(s) na janela, 0 falha(s), taxa 0%, estado=normal
+```
+
+É a tese da sprint aplicada ao próprio vigia. Na primeira versão o job só logava em transição, e
+isso o tornava **indistinguível de um job morto**: "nada no log" significaria tanto "rodou e está
+tudo bem" quanto "o loop caiu há três dias". Um alerta que pode morrer em silêncio é exatamente a
+falha invisível que o 131042 expôs — não faria sentido corrigi-la no envio e reproduzi-la aqui.
+Mesmo padrão do resumo do `nat_scheduler`.
+
 #### O desvio do enunciado: recuperação exige zero falhas
 
 O enunciado pedia `voltou = taxa < 10%`. Rodando essa regra hora a hora sobre o incidente real:

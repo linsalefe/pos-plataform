@@ -285,6 +285,13 @@ async def delivery_health_job():
 
     O try/except abraça o ciclo inteiro porque este loop não pode morrer: se morrer, o sistema
     volta a não saber que está falhando — que é o estado de onde esta sprint veio.
+
+    BATIMENTO POR CICLO. O `print` de resumo sai SEMPRE, inclusive na janela vazia — e isso é
+    a tese desta sprint aplicada ao próprio vigia. Um job que só loga em transição é
+    indistinguível de um job morto: "nada no log" significaria tanto "rodou e está tudo bem"
+    quanto "o loop caiu há três dias". Um alerta que pode morrer em silêncio é exatamente o
+    tipo de falha invisível que o incidente 131042 expôs, e não faria sentido corrigir isso no
+    envio e reproduzi-lo aqui. Mesmo padrão do resumo do nat_scheduler.
     """
     while True:
         await asyncio.sleep(INTERVALO_SEGUNDOS)
@@ -292,6 +299,8 @@ async def delivery_health_job():
             async with async_session() as db:
                 r = await avaliar(db)
                 await db.commit()
+            print(f"⏱️  Saúde de entrega: {r['total']} template(s) na janela, "
+                  f"{r['falhas']} falha(s), taxa {r['taxa'] * 100:.0f}%, estado={r['estado']}")
             if r["transicao"]:
                 print(f"🔔 Saúde de entrega: notificação {r['transicao']} enviada para a "
                       f"gestão (id={GESTOR_USER_ID})")
