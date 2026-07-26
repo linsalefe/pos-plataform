@@ -31,7 +31,15 @@ FUNIL_NAT = 18535
 
 # SDRs elegíveis, por id literal. NÃO usar `role`: Valéria(4), Thobias(5) e Isa(2) estão
 # todos como 'admin' no banco, então role não distingue SDR de gestor.
+#
+# Auditado de novo em 2026-07-26: `users` não tem CHECK em role, e os 7 gates do código são
+# todos o literal `role != "admin"`. Não existe valor 'gestor' a que recorrer — por isso a
+# gestora também entra por id, e o item "role gestor" saiu da migração desta sprint.
 SDR_IDS_PERMITIDOS = frozenset({4, 5})
+
+# Gestora (Isa). Último degrau do escalonamento do SLA, e destinatário de fallback quando um
+# lead chega na transferência sem SDR atribuído. Mesma escolha por id literal, mesma razão.
+GESTOR_USER_ID = 2
 
 # ---------------------------------------------------------------------------------------
 # MARCADOR DE ENVIO DA NAT — verificação 5
@@ -42,15 +50,19 @@ SDR_IDS_PERMITIDOS = frozenset({4, 5})
 # Uma campanha de 500 templates estouraria o teto da NAT sem a NAT ter mandado nada — e a
 # reação natural seria subir o teto, evaporando a proteção.
 #
-# Hoje NÃO EXISTE marcador confiável. Auditado em 2026-07-25:
-#   - `messages.sent_by_ai` é coluna MORTA: nenhum código a escreve (só é lida em
-#     routes.py:534 para saída de API). 0 de 26.766 linhas com true, 0 nulas.
-#   - Nenhum dos 5 pontos que criam Message outbound a preenche.
+# O marcador é `messages.nat_etapa` (TEXT nullable, criada em migrate_nat_sprint3.py), escrita
+# num único ponto: nat_sender.send_nat_message, que é por onde TODO envio da NAT passa.
 #
-# Conforme decidido: não se chuta um proxy. Enquanto a NAT não tem caminho de envio, nenhuma
-# mensagem lhe é atribuível e 0 é a resposta CERTA — não um fallback. Quando o envio existir
-# (Bloco 2+), define-se a coluna própria aqui e a contagem passa a valer sem tocar no resto.
-COLUNA_MARCADOR_ENVIO_NAT = None  # ← definir junto com o primeiro envio real da NAT
+# `nat_etapa IS NOT NULL` é o predicado, e não `= True`, porque a coluna guarda a ETAPA que
+# originou o envio (nat_boasvindas, nat_sim, ...). NULL é a resposta certa para todo o resto:
+# boas-vindas (exact_spotter.py), resposta manual de SDR (routes.py), disparo em massa
+# (exact_routes.py). Uma campanha de 500 templates não move este contador — que era o problema
+# de contar `direction='outbound'`: estouraria o teto da NAT sem a NAT ter mandado nada, e a
+# reação natural seria subir o teto, evaporando a proteção.
+#
+# A alternativa descartada foi `sent_by_ai`, que é coluna MORTA: nenhum código a escreve (só é
+# lida em routes.py:534), 0 de 26.767 linhas com true. Escolher booleano foi o que a matou.
+COLUNA_MARCADOR_ENVIO_NAT = "nat_etapa"
 
 
 def _agora_sp() -> datetime:
@@ -109,19 +121,27 @@ def dentro_horario_comercial(quando: datetime | None = None) -> bool:
 async def contar_envios_nat_ultima_hora(db: AsyncSession) -> int:
     """Envios ATRIBUÍVEIS À NAT na última hora.
 
-    Enquanto COLUNA_MARCADOR_ENVIO_NAT for None, a NAT não tem caminho de envio e nada lhe
-    é atribuível: retorna 0 por ser verdade, não por desistência.
-    """
-    if COLUNA_MARCADOR_ENVIO_NAT is None:
-        return 0
+    A query final é:
 
+        SELECT count(*) FROM messages
+         WHERE direction = 'outbound'
+           AND timestamp > (agora_sp - 1h)
+           AND nat_etapa IS NOT NULL
+
+    Coberta pelo índice parcial idx_messages_nat_etapa_ts, que indexa só as linhas da NAT em
+    vez de varrer as 26.767 (e crescendo) de messages — isto roda ANTES DE CADA ENVIO.
+
+    O corte vem de _agora_sp(), nunca de now() do Postgres: o banco está em UTC e os
+    timestamps são naive em SP, então um corte do banco ficaria 3h à frente e a contagem
+    daria 0 para sempre — teto que nunca segura nada, sem erro visível.
+    """
     corte = _agora_sp() - timedelta(hours=1)
     marcador = getattr(Message, COLUNA_MARCADOR_ENVIO_NAT)
     res = await db.execute(
         select(func.count()).select_from(Message).where(
             Message.direction == "outbound",
             Message.timestamp > corte,
-            marcador.is_(True),
+            marcador.isnot(None),
         )
     )
     return int(res.scalar() or 0)
@@ -217,10 +237,6 @@ async def nat_pode_atuar(lead_ou_contato, db: AsyncSession, *,
             return bloqueia("max_envios_hora não definido")
         if enviados >= teto:
             return bloqueia(f"teto de envios/hora estourado ({enviados}/{teto})")
-
-        if COLUNA_MARCADOR_ENVIO_NAT is None:
-            print("⚠️  NAT: teto não é exigível ainda — não há marcador de envio da NAT "
-                  "(COLUNA_MARCADOR_ENVIO_NAT is None). Contador vale 0 por construção.")
 
         print(f"✅ NAT liberada para {wa_id} (funil {funnel_id}, SDR {assigned_to}, "
               f"{enviados}/{teto} na última hora)")

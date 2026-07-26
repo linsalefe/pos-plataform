@@ -27,7 +27,9 @@ import {
   FileText,
   Square,
   Trash2,
-  Lock
+  Lock,
+  PhoneCall,
+  CheckCircle2
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
@@ -67,6 +69,21 @@ interface Contact {
   created_at: string | null;
   channel_id: number | null;
   assigned_to: number | null;
+}
+
+// Estado do fluxo NAT do contato aberto. Vem de GET /api/nat/{wa_id}/estado.
+// `pode_assumir` é decidido pelo BACKEND (etapa === aguardando_ligacao && ninguém assumiu) —
+// a regra é a mesma que o handler do SLA aplica, e replicá-la aqui daria dois lugares para
+// ela divergir.
+interface NatEstado {
+  em_fluxo: boolean;
+  etapa: string | null;
+  transferido_em: string | null;
+  assumido_por: number | null;
+  assumido_por_nome: string | null;
+  assumido_em: string | null;
+  escalonamento_nivel: number;
+  pode_assumir: boolean;
 }
 
 interface Message {
@@ -112,6 +129,8 @@ export default function ConversationsPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [showCRM, setShowCRM] = useState(true);
+  const [natEstado, setNatEstado] = useState<NatEstado | null>(null);
+  const [assumindo, setAssumindo] = useState(false);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showSdrMenu, setShowSdrMenu] = useState(false);
   const [showTagMenu, setShowTagMenu] = useState(false);
@@ -215,12 +234,23 @@ export default function ConversationsPage() {
       setLoadingMessages(true);
       setMessages([]);
       loadMessages(selectedWaId);
+      loadNatEstado(selectedWaId);
       setNotesValue(selectedContact?.notes || '');
       // Marcar como lido sem forçar reload da lista
       api.post(`/contacts/${selectedWaId}/read`).catch(() => {});
       const interval = setInterval(() => loadMessages(selectedWaId), 3000);
       return () => clearInterval(interval);
     }
+    setNatEstado(null);
+  }, [selectedWaId]);
+
+  // O estado da NAT muda por fora desta tela: o lead responde e o fluxo avança, ou o outro
+  // SDR assume. 15s é o passo do NotificationBell — mesma ordem de frescor, e bem mais
+  // barato que os 3s das mensagens para um dado que muda a cada minutos.
+  useEffect(() => {
+    if (!selectedWaId) return;
+    const interval = setInterval(() => loadNatEstado(selectedWaId), 15000);
+    return () => clearInterval(interval);
   }, [selectedWaId]);
 
   // Scroll simples: sempre vai pro final quando mensagens mudam
@@ -294,6 +324,35 @@ export default function ConversationsPage() {
     } catch (err) {
       console.error('Erro:', err);
       setLoadingMessages(false);
+    }
+  };
+
+  const loadNatEstado = async (waId: string) => {
+    try {
+      const res = await api.get(`/nat/${waId}/estado`);
+      setNatEstado(res.data);
+    } catch {
+      // Silencioso de propósito: quase nenhum contato está no fluxo da NAT, e um erro aqui
+      // não pode poluir o console nem atrapalhar a conversa. Sem estado, nada é mostrado.
+      setNatEstado(null);
+    }
+  };
+
+  const assumirLigacao = async () => {
+    if (!selectedWaId || assumindo) return;
+    setAssumindo(true);
+    try {
+      const res = await api.post(`/nat/${selectedWaId}/assumir`);
+      // A resposta JÁ traz o estado novo — usa ela em vez de um segundo GET, para o botão não
+      // piscar entre "assumir" e "assumido".
+      setNatEstado(res.data);
+    } catch (err) {
+      console.error('Erro ao assumir ligação:', err);
+      // Recarrega: o motivo mais provável de falha é outro SDR ter assumido primeiro, e nesse
+      // caso o certo é mostrar quem ficou com o lead.
+      loadNatEstado(selectedWaId);
+    } finally {
+      setAssumindo(false);
     }
   };
 
@@ -1085,6 +1144,41 @@ export default function ConversationsPage() {
 
                 {/* ✅ ALTERAÇÃO 1: Botão Ligar + botão CRM */}
                 <div className="flex items-center gap-1">
+                  {/* NAT — SLA da ligação (Bloco 5).
+                      Só aparece quando o backend diz que dá para assumir; depois de assumido,
+                      vira o registro de quem pegou e quando. Fora do fluxo da NAT, nada é
+                      renderizado — é o caso da esmagadora maioria dos contatos. */}
+                  {natEstado?.pode_assumir && (
+                    <button
+                      onClick={assumirLigacao}
+                      disabled={assumindo}
+                      className="flex items-center gap-1.5 px-3 py-2 mr-1 rounded-xl bg-amber-500 text-white text-[12px] font-semibold hover:bg-amber-600 disabled:opacity-60 transition-all duration-200 shadow-sm"
+                      title="Parar o SLA e assumir a ligação deste lead"
+                    >
+                      {assumindo
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <PhoneCall className="w-4 h-4" />}
+                      {assumindo ? 'Assumindo…' : 'Assumir ligação'}
+                    </button>
+                  )}
+
+                  {natEstado?.assumido_por && (
+                    <span
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 mr-1 rounded-xl bg-emerald-50 text-emerald-700 text-[11px] font-medium"
+                      title={`Ligação assumida por ${natEstado.assumido_por_nome}`}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                      {natEstado.assumido_por_nome}
+                      {natEstado.assumido_em && (
+                        <span className="text-emerald-600/70">
+                          · {new Date(natEstado.assumido_em).toLocaleTimeString('pt-BR', {
+                            hour: '2-digit', minute: '2-digit',
+                          })}
+                        </span>
+                      )}
+                    </span>
+                  )}
+
                   <button
                     onClick={() => {
                       const phone = selectedContact?.wa_id || '';

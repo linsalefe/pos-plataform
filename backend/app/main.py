@@ -53,6 +53,7 @@ from app.routes import router
 from app.auth_routes import router as auth_router
 from app.exact_routes import router as exact_router
 from app.auto_welcome_routes import router as auto_welcome_router
+from app.nat_routes import router as nat_router
 from app.exact_spotter import sync_exact_leads
 
 load_dotenv()
@@ -185,15 +186,22 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(cleanup_recordings_job())
     window_task = asyncio.create_task(window_alerts_job())
     scheduled_task = asyncio.create_task(scheduled_messages_job())
+    # Agendador da NAT (Bloco 7). Sobe SEMPRE, inclusive com a NAT desligada: ele não envia
+    # nada nem decide nada — só executa o que já foi agendado, e com a NAT desligada ninguém
+    # agenda. Fila vazia custa um SELECT por minuto.
+    from app.nat_scheduler import nat_scheduler_job, INTERVALO_SEGUNDOS as NAT_SCHED_S
+    nat_scheduler_task = asyncio.create_task(nat_scheduler_job())
     print("✅ Sync Exact Spotter agendado (a cada 10 min)")
     print("✅ Alertas de janela 24h agendados (a cada 5 min)")
     print("✅ Agendamento de templates ativo (checa a cada 60s)")
+    print(f"✅ Agendador NAT ativo (checa a cada {NAT_SCHED_S}s)")
     yield
     # Shutdown: cancela o job
     task.cancel()
     cleanup_task.cancel()
     window_task.cancel()
     scheduled_task.cancel()
+    nat_scheduler_task.cancel()
 
 
 app = FastAPI(title="Cenat WhatsApp API", lifespan=lifespan)
@@ -213,6 +221,7 @@ app.include_router(auto_welcome_router)
 app.include_router(ai_router)
 app.include_router(kanban_router)
 app.include_router(calendar_router)
+app.include_router(nat_router)
 VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
 app.include_router(twilio_router)
 
