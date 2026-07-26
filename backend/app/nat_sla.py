@@ -18,10 +18,17 @@ Não reagendar no nível 2 é o que impede escalonamento infinito: sem novo sla_
 ciclo futuro volta a este lead. O nível 2 no banco existe para o caso de uma ação atrasada
 chegar depois — ela encontra o nível 2 e não faz nada.
 
-Só há 2 SDRs, então "o outro" é subtração, não round-robin. Se o dono não for um dos dois
-(lead que caiu no fallback da gestão por estar sem SDR), não existe "o outro": o nível 0 PULA
-direto para a gestão e marca nível 2. Avisar de novo quem já foi avisado na transferência é
-correto — a mensagem agora é "ninguém assumiu", que é informação nova.
+Só há 2 SDRs, então "o outro" é subtração, não round-robin.
+
+CASO ESPECIAL — LEAD SEM SDR. Se o dono não é um dos dois (lead que caiu no fallback da gestão
+no Bloco 5 por estar sem `assigned_to`), não existe "o outro SDR" — mas existem OS DOIS, e são
+eles que ligam. O nível 0 então avisa AMBOS (4 e 5) e encerra no nível 2.
+
+Encerrar em vez de reagendar para a gestão porque a gestão JÁ foi avisada na transferência: um
+terceiro aviso para ela não acrescenta informação, e quem faltava saber eram os SDRs. A versão
+anterior deste módulo notificava a gestão de novo e encerrava — a gestora recebia duas
+notificações do mesmo lead e os SDRs nunca ficavam sabendo, que é o oposto do que o
+escalonamento existe para fazer.
 
 ------------------------------------------------------------------------------------------
 O QUE PARA O RELÓGIO
@@ -94,21 +101,31 @@ async def _nome_do_usuario(user_id: int | None, db: AsyncSession) -> str:
 
 
 def montar_notificacao_escalonamento(nivel_destino: int, nome: str, wa_id: str, curso: str,
-                                     dono: str, esperando_desde) -> tuple[str, str]:
+                                     dono: str, esperando_desde,
+                                     *, sem_dono: bool = False) -> tuple[str, str]:
     """(title, body) de uma notificação de escalonamento.
 
     O TÍTULO TEM QUE DIZER QUE É ESCALONAMENTO, não lead novo. Quem recebe no nível 1 é um SDR
     que não é o dono do lead: se o título parecesse uma transferência normal, ele assumiria
     achando que o lead é dele, e o dono de verdade nunca saberia que perdeu o SLA.
 
-    Mesmas restrições de formato do Bloco 5 (NotificationBell.tsx): o `title` aparece inteiro
-    e o `body` é truncado em ~50 caracteres numa linha só. Por isso o telefone vai nos dois.
+    `sem_dono` é o caso do lead que nem chegou a ter SDR: aí não há "o dono não assumiu", há
+    "ninguém é dono". A distinção importa porque muda o que o SDR deve fazer — no escalonamento
+    normal ele está cobrindo o colega, aqui ele está adotando um lead órfão.
+
+    Formato ditado pelo NotificationBell.tsx: o `title` aparece inteiro (sem `truncate`) e o
+    `body` é limitado a DUAS linhas (`line-clamp-2`). Por isso o telefone vai nos dois — no
+    título ele é garantido, e no começo do corpo ele é a primeira coisa a sobrar.
     """
     fone = telefone_legivel(wa_id)
     quem = nome or "Lead sem nome"
     desde = f"{esperando_desde:%H:%M}" if esperando_desde else "?"
 
-    if nivel_destino == NIVEL_GESTAO:
+    if sem_dono:
+        title = f"SLA estourado — lead SEM SDR, assuma: {quem} — {fone}"
+        partes = [fone, f"aguardando desde {desde}",
+                  "ninguém é dono deste lead — assuma se for ligar"]
+    elif nivel_destino == NIVEL_GESTAO:
         title = f"SLA 2º nível — ninguém assumiu: {quem} — {fone}"
         partes = [fone, f"aguardando desde {desde}",
                   f"{dono} e o outro SDR foram avisados e não assumiram"]
@@ -194,18 +211,31 @@ async def sla_check(acao: dict, db: AsyncSession) -> None:
         alvo = outro_sdr(state.sdr_user_id)
 
         if alvo is None:
-            # Lead sem SDR conhecido: não existe "o outro". Pula para a gestão e encerra —
-            # reagendar aqui só gastaria um ciclo para chegar ao mesmo lugar.
-            print(f"↪️  NAT SLA: {wa_id} sem SDR dono conhecido "
-                  f"(sdr_user_id={state.sdr_user_id}) — pulando direto para a gestão")
+            # LEAD SEM SDR. Não existe "o outro SDR", mas existem OS DOIS — e são eles que
+            # ligam. A versão anterior notificava a gestão de novo e encerrava; o efeito
+            # prático era o oposto do que o escalonamento existe para fazer: a gestora recebia
+            # duas notificações do mesmo lead (a da transferência e esta) e Valéria e Thobias
+            # nunca ficavam sabendo que havia um lead esperando ligação.
+            #
+            # Agora avisa AMBOS e encerra no nível 2. Encerrar (em vez de reagendar para a
+            # gestão) porque a gestão JÁ foi avisada na transferência, pelo fallback do Bloco
+            # 5: um terceiro aviso para ela não acrescenta informação, e quem faltava saber
+            # eram os SDRs.
+            print(f"↪️  NAT SLA: {wa_id} sem SDR dono (sdr_user_id={state.sdr_user_id}) — "
+                  f"avisando AMBOS os SDRs {sorted(SDR_IDS_PERMITIDOS)}")
             title, body = montar_notificacao_escalonamento(
-                NIVEL_GESTAO, dados["nome"], wa_id, dados["curso"], dono,
-                state.transferido_em)
-            await _notificar(db, user_id=GESTOR_USER_ID, wa_id=wa_id,
-                             tipo=TIPO_NOTIF_SLA_GESTAO, acao_id=acao_id,
-                             title=title, body=body)
+                NIVEL_OUTRO_SDR, dados["nome"], wa_id, dados["curso"], dono,
+                state.transferido_em, sem_dono=True)
+            avisados = []
+            for sdr in sorted(SDR_IDS_PERMITIDOS):
+                if await _notificar(db, user_id=sdr, wa_id=wa_id,
+                                    tipo=TIPO_NOTIF_SLA_SDR, acao_id=acao_id,
+                                    title=title, body=body):
+                    avisados.append(sdr)
             state.escalonamento_nivel = NIVEL_GESTAO
-            print(f"🔺 NAT SLA: {wa_id} nível 0 → {NIVEL_GESTAO} (gestão) — não reagenda")
+            print(f"🔺 NAT SLA: {wa_id} nível 0 → {NIVEL_GESTAO} — SDRs avisados: "
+                  f"{avisados or 'nenhum'}. Fim da escada, NÃO reagenda "
+                  "(a gestão já foi avisada na transferência)")
             return
 
         title, body = montar_notificacao_escalonamento(

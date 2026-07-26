@@ -126,18 +126,18 @@ def montar_notificacao_transferencia(nome: str, wa_id: str, curso: str, resposta
     """(title, body) da notificação de transferência.
 
     O FORMATO É DITADO PELO FRONTEND, não por gosto. Em NotificationBell.tsx:
-      * o `title` (linha 211) NÃO tem `truncate` — quebra linha e aparece INTEIRO;
-      * o `body` (linha 214) tem `truncate`, que é `white-space: nowrap` + ellipsis: uma
-        única linha, ~45-55 caracteres visíveis num painel de 330px. Quebra de linha no
-        corpo é colapsada e não ajuda.
+      * o `title` (linha 211) NÃO é limitado — quebra linha e aparece INTEIRO;
+      * o `body` (linha 214) é `line-clamp-2`: DUAS linhas num painel de 330px, o que cobre
+        o corpo inteiro nos casos reais. Antes era `truncate` (uma linha, ~50 caracteres), e
+        aí só o telefone e o começo do nome sobreviviam — o curso e a fala do lead ficavam
+        fora, e o SDR precisava abrir a conversa dentro dos 2 minutos do SLA.
 
-    Daí as duas decisões:
-      1. TELEFONE NO TÍTULO, junto do nome. É o único lugar garantidamente visível, e é o
-         dado sem o qual o SDR não liga. Sem isto ele abriria a conversa só para copiar o
-         número — e os 2 minutos do SLA já teriam ido.
-      2. TELEFONE TAMBÉM NO COMEÇO DO CORPO, para o que sobra dos ~50 caracteres ser o
-         telefone e não a palavra "Curso". O resto (curso, resposta do lead) fica legível no
-         popup do navegador, que mostra mais, e no banco.
+    Daí as duas decisões, que seguem valendo com duas linhas:
+      1. TELEFONE NO TÍTULO, junto do nome. É o lugar garantidamente visível, e é o dado sem
+         o qual o SDR não liga.
+      2. TELEFONE NO COMEÇO DO CORPO, para ser a primeira coisa a sobrar em qualquer corte —
+         inclusive no popup do navegador, cujo truncamento varia por sistema operacional e
+         não está sob nosso controle.
     """
     fone = telefone_legivel(wa_id)
     quem = nome or "Lead sem nome"

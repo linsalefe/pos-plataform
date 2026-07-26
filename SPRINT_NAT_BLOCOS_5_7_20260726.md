@@ -1,6 +1,7 @@
 # Sprint NAT — Blocos 5 e 7: transferência, SLA, escalonamento e agendador (2026-07-26)
 
-Branch `feat/nat-blocos-5-7-20260726`. **Sem merge.** A NAT continua **DESLIGADA** —
+Branch `feat/nat-blocos-5-7-20260726`, **mergeada em `main` em 26/07 por decisão do Álefe**
+(o plano original dizia "não dar merge"; ele sobrepôs). A NAT continua **DESLIGADA** —
 `nat_enabled=false`, `nat_start_at=NULL`. Nada disto entra em operação nesta sprint.
 
 O buraco que a sprint fecha: o lead chegava em `aguardando_ligacao` e **ninguém era avisado**.
@@ -181,8 +182,8 @@ O formato é ditado pelo frontend, não por gosto. Em `NotificationBell.tsx`:
 
 | campo | | consequência |
 |---|---|---|
-| `title` (linha 211) | **sem** `truncate` | quebra linha, aparece **inteiro** |
-| `body` (linha 214) | **com** `truncate` | uma linha, ~45-55 ch, `\n` colapsado |
+| `title` (linha 211) | sem limite | quebra linha, aparece **inteiro** |
+| `body` (linha 214) | **`line-clamp-2`** | **duas linhas**, cobre o corpo inteiro nos casos reais |
 
 Daí: **telefone no título** (único lugar garantido) **e no começo do corpo**, formatado —
 o SDR tem 2 minutos, e `5585999865219` é mais lento de ler e mais fácil de errar que
@@ -195,8 +196,11 @@ sem SDR   title: Ligar agora (SEM SDR): Paulo Alberto — +55 11 98765-4321
           body : +55 11 98765-4321 · Neuropsicologia · disse: "…" · lead sem SDR atribuído
 ```
 
-Se quiser o corpo inteiro visível no sino, trocar `truncate` por `line-clamp-2` na linha 214
-resolve — não foi tocado por estar fora do escopo da sprint.
+A linha 214 era `truncate` (uma linha, ~50 ch) e virou `line-clamp-2` na revisão do
+Checkpoint 7: com uma linha só, sobreviviam o telefone e o começo do nome — o curso e a fala do
+lead ficavam fora, e o SDR tinha que abrir a conversa dentro dos 2 min do SLA. Nada mais depende
+do corpo ser uma linha: o `showPopup` passa o body para a Notification API nativa (indiferente a
+CSS) e o `truncate` de `templates/page.tsx:167` é de outra entidade (corpo de template).
 
 ### Os três passos, em savepoints separados
 
@@ -224,7 +228,7 @@ passo 1 — justamente o passo cuja falha cancela os outros.
 | nível de entrada | ação | saída | reagenda? |
 |---|---|---|---|
 | **0** | avisa **o outro SDR** (4 ↔ 5) | 1 | **sim**, +2 min |
-| **0**, sem SDR dono | **pula** para a gestão | **2** | **não** |
+| **0**, sem SDR dono | avisa **AMBOS os SDRs** (4 e 5) | **2** | **não** |
 | **1** | avisa a **gestão** (id 2) | **2** | **não** |
 | **2** | nada | 2 | não |
 
@@ -312,7 +316,7 @@ O `SavepointFalso` **desfaz de verdade** o que foi adicionado dentro dele — se
 | 5 | transferência completa: notificação + carimbo + timeline(5s) + SLA +2min | 12 |
 | 6 | **Exact falha → notificação sobrevive**; e o inverso (SLA falha → sobrevive) | 7 |
 | 7 | `sla_check` já assumido → nada (+ etapa diferente, + sem estado) | 5 |
-| 8 | nível 0 → outro SDR e reagenda; sem SDR dono → pula p/ gestão sem reagendar | 8 |
+| 8 | nível 0 → outro SDR e reagenda; sem SDR dono → **ambos os SDRs**, nível 2, sem reagendar | 15 |
 | 9 | nível 1 → gestão, **não** reagenda | 6 |
 | 10 | nível 2 → nada | 3 |
 | 11 | `assumir` cancela o SLA; falha no cancelamento preserva o carimbo | 7 |
@@ -376,4 +380,7 @@ estágio no Exact (ver Fase 1).
   `funis=18535,18537,25588`. O `enabled=false` foi decisão do Álefe por causa da fatura da Meta,
   não desta sprint.
 - `nat_scheduled_actions=0`, `nat_flow_state=0`, `nat_button_events=0`
-- **Nenhuma mensagem de WhatsApp enviada. Nenhum sync do Exact rodado à mão. Sem merge.**
+- **Nenhuma mensagem de WhatsApp enviada. Nenhum sync do Exact rodado à mão.**
+- Merge em `main` e restart feitos em 26/07 com aprovação explícita do Álefe, fora do plano
+  original. Smoke pós-restart: 5 jobs no ar, inbound ponta a ponta (com limpeza), rotas novas
+  respondendo, sync do ciclo seguinte com `new: 0, sent: 0, failed: 0`.
