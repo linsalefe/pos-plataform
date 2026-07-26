@@ -196,7 +196,12 @@ async def get_channel(channel_id: int, db: AsyncSession) -> Channel:
     return channel
 
 
-@router.post("/send/text")
+# AUTENTICAÇÃO (Fase 5). No decorator e não na assinatura, pelo mesmo motivo documentado em
+# exact_routes.bulk-send-template: mantém as funções chamáveis de dentro do processo sem que
+# a dependência de request vaze para a assinatura. Aqui não há chamador interno hoje, mas a
+# forma é a mesma nos quatro endpoints de disparo — um padrão só, e o que já existia em
+# /{exact_id}/resend-welcome.
+@router.post("/send/text", dependencies=[Depends(get_current_user)])
 async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db)):
     channel = await get_channel(req.channel_id, db)
     result = await send_text_message(req.to, req.text, channel.phone_number_id, channel.whatsapp_token)
@@ -227,7 +232,7 @@ async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db)):
     return result
 
 
-@router.post("/send/template")
+@router.post("/send/template", dependencies=[Depends(get_current_user)])
 async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get_db)):
     # ⛔ TRAVA ÚNICA: o template de boas-vindas não sai por envio manual. Sem isto, um SDR
     # poderia abrir "Nova conversa", colar o telefone de um lead antigo e mandar a boas-vindas.
@@ -272,7 +277,7 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
     return result
 
 
-@router.post("/send/media")
+@router.post("/send/media", dependencies=[Depends(get_current_user)])
 async def send_media(
     file: UploadFile = File(...),
     to: str = Form(...),

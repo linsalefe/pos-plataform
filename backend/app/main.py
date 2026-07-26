@@ -46,8 +46,69 @@ def _erro_do_status(status_update: dict) -> dict:
     except Exception:
         return {}
 
+
+# Status da Meta que dizem algo sobre ENTREGA. 'sent' fica de fora de propósito: é exatamente
+# o que o envio já carimbou, e foi acreditar nele que fez o painel mostrar 254 sucessos
+# enquanto 100% falhava. 'sent' não é notícia — só 'failed', 'delivered' e 'read' são.
+_STATUS_ENTREGA = {"failed", "delivered", "read"}
+
+
+async def _realimentar_welcome_status(wa_message_id: str, novo_status: str, erro: dict,
+                                      db) -> None:
+    """Corrige `exact_leads.welcome_status` quando a Meta diz o que houve com a boas-vindas.
+
+    O CARIMBO DO ENVIO É UMA PROMESSA, NÃO UM FATO. `send_welcome_to_new_lead` grava 'sent'
+    quando a Meta ACEITA a mensagem (HTTP 200 com um wamid). Se ela é recusada depois — como
+    nos 4 dias do 131042 — quem sabe disso é o webhook de status, e até agora ele jogava essa
+    informação fora. Esta função é o caminho de volta.
+
+    O PAREAMENTO É O PRÓPRIO TESTE DE "É BOAS-VINDAS?". `welcome_wamid` é escrito por um
+    caminho só (o envio da boas-vindas), então um status que casa com ele é necessariamente de
+    uma boas-vindas. Não é preciso — nem se deve — olhar `message_type`: status de mensagem
+    de atendente, de campanha ou de qualquer outro fluxo simplesmente não casa com lead nenhum
+    e sai daqui sem tocar em `exact_leads`.
+
+    NÃO altera a guarda de idempotência do envio (exact_spotter.py:186), que continua testando
+    `welcome_status is not None`. Só o carimbo passa a ser verdadeiro; quem pode reenviar é
+    decisão de outra fase.
+    """
+    # Sem wamid não há pareamento possível. Este early-return não é decorativo: `welcome_wamid
+    # == None` vira `IS NULL` no SQL e casaria com os 8.664 leads que nunca tiveram envio —
+    # um carimbo em massa a partir de um payload malformado.
+    if not wa_message_id or novo_status not in _STATUS_ENTREGA:
+        return
+
+    lead = (await db.execute(
+        select(ExactLead).where(ExactLead.welcome_wamid == wa_message_id))).scalar_one_or_none()
+    if lead is None:
+        return
+
+    if novo_status == "failed":
+        # O `details` da Meta é a explicação em linguagem natural e vai LITERAL: foi a ausência
+        # dele que transformou "está falhando" em quatro dias de investigação. O código sozinho
+        # ('131042') não diz que a conta está com pagamento pendente; o details diz.
+        partes = [str(erro.get("error_code")) if erro.get("error_code") is not None else None,
+                  erro.get("error_details") or erro.get("error_title")]
+        lead.welcome_status = "failed"
+        lead.welcome_error = " — ".join(p for p in partes if p) or "recusada pela Meta sem detalhe"
+        print(f"📉 Boas-vindas de {lead.name} (exact_id={lead.exact_id}) recusada: "
+              f"{lead.welcome_error}")
+        return
+
+    # delivered / read → chegou. 'read' também vira 'delivered': o que esta coluna responde é
+    # "a mensagem chegou?", e distinguir lido de entregue não muda nenhuma decisão nossa.
+    if lead.welcome_status == "failed":
+        # Uma entrega NÃO desfaz uma falha. A Meta não entrega o que recusou, então isto só
+        # aconteceria com webhook fora de ordem — e nesse caso apagar o 'failed' devolveria
+        # justamente a mentira que esta sprint existe para eliminar.
+        return
+
+    lead.welcome_status = "delivered"
+    lead.welcome_error = None
+
+
 from app.database import get_db, async_session
-from app.models import Channel, Contact, Message, NatButtonEvent
+from app.models import Channel, Contact, ExactLead, Message, NatButtonEvent
 from app.nat_buttons import extrair_evento_botao, conteudo_legivel
 from app.routes import router
 from app.auth_routes import router as auth_router
@@ -191,10 +252,16 @@ async def lifespan(app: FastAPI):
     # agenda. Fila vazia custa um SELECT por minuto.
     from app.nat_scheduler import nat_scheduler_job, INTERVALO_SEGUNDOS as NAT_SCHED_S
     nat_scheduler_task = asyncio.create_task(nat_scheduler_job())
+    # Vigia da saúde de entrega (Fase 4). Sobe SEMPRE e independe da NAT e da boas-vindas
+    # estarem desligadas: ele observa TODO template que sai, e a pergunta "a Meta está
+    # aceitando o que mandamos?" continua valendo com as automações no chão.
+    from app.delivery_health import delivery_health_job, INTERVALO_SEGUNDOS as SAUDE_S
+    delivery_health_task = asyncio.create_task(delivery_health_job())
     print("✅ Sync Exact Spotter agendado (a cada 10 min)")
     print("✅ Alertas de janela 24h agendados (a cada 5 min)")
     print("✅ Agendamento de templates ativo (checa a cada 60s)")
     print(f"✅ Agendador NAT ativo (checa a cada {NAT_SCHED_S}s)")
+    print(f"✅ Alerta de saúde de entrega ativo (checa a cada {SAUDE_S // 60} min)")
     yield
     # Shutdown: cancela o job
     task.cancel()
@@ -202,6 +269,7 @@ async def lifespan(app: FastAPI):
     window_task.cancel()
     scheduled_task.cancel()
     nat_scheduler_task.cancel()
+    delivery_health_task.cancel()
 
 
 app = FastAPI(title="Cenat WhatsApp API", lifespan=lifespan)
@@ -413,6 +481,20 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                           f"code={erro['error_code']} title={erro['error_title']!r} "
                           f"details={erro['error_details']!r}"
                           f"{'' if existing else ' [mensagem não encontrada no banco]'}")
+
+                # REALIMENTAÇÃO DO CARIMBO DO LEAD (Fase 2).
+                #
+                # Em SAVEPOINT e com except largo: este bloco é ADITIVO e não pode, em hipótese
+                # nenhuma, custar a atualização de status das outras mensagens do mesmo lote.
+                # Um try/except puro não bastaria — um erro de banco aqui deixaria a transação
+                # do asyncpg abortada e todo status seguinte falharia com InFailedSQLTransaction.
+                try:
+                    async with db.begin_nested():
+                        await _realimentar_welcome_status(
+                            wa_message_id, new_status, erro, db)
+                except Exception as e:
+                    print(f"⚠️  welcome_status não realimentado ({wa_message_id}): "
+                          f"{type(e).__name__}: {e}")
 
             # === AGENTE IA: DESATIVADO TEMPORARIAMENTE ===
             # for msg in value.get("messages", []):
