@@ -17,6 +17,35 @@ import asyncio
 
 SP_TZ = timezone(timedelta(hours=-3))
 
+
+def _erro_do_status(status_update: dict) -> dict:
+    """Extrai o primeiro erro de statuses[].errors[]. Dict vazio quando não há erro.
+
+    DEFENSIVO DE PROPÓSITO: `errors` pode não existir, vir vazio, vir com formato diferente,
+    ou sem `error_data`. Nada aqui pode levantar exceção — um campo inesperado da Meta não
+    pode derrubar o processamento do lote de status e travar a atualização de TODAS as outras
+    mensagens do mesmo webhook.
+
+    `error_data.details` é onde a Meta escreve a explicação em linguagem natural; o `title`
+    costuma ser genérico. Por isso os três campos, e não só o código.
+    """
+    try:
+        erros = status_update.get("errors")
+        if not isinstance(erros, list) or not erros:
+            return {}
+        erro = erros[0]
+        if not isinstance(erro, dict):
+            return {}
+        dados = erro.get("error_data")
+        codigo = erro.get("code")
+        return {
+            "error_code": codigo if isinstance(codigo, int) else None,
+            "error_title": erro.get("title"),
+            "error_details": dados.get("details") if isinstance(dados, dict) else None,
+        }
+    except Exception:
+        return {}
+
 from app.database import get_db, async_session
 from app.models import Channel, Contact, Message, NatButtonEvent
 from app.nat_buttons import extrair_evento_botao, conteudo_legivel
@@ -358,6 +387,23 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 existing = result.scalar_one_or_none()
                 if existing:
                     existing.status = new_status
+
+                # MOTIVO DA FALHA. Até aqui o webhook copiava só o `status` e jogava fora
+                # statuses[].errors[] — por isso 53 envios de nat_boasvindas falharam desde
+                # 23/07 sem que ninguém pudesse dizer POR QUÊ. O erro só existe no payload
+                # deste instante; não há como recuperá-lo depois.
+                erro = _erro_do_status(status_update)
+                if erro:
+                    if existing:
+                        existing.error_code = erro["error_code"]
+                        existing.error_title = erro["error_title"]
+                        existing.error_details = erro["error_details"]
+                    # Loga mesmo quando a mensagem não está no nosso banco: o motivo da
+                    # recusa é informação, ainda que não haja linha para carimbar.
+                    print(f"❌ Meta recusou {wa_message_id}: status={new_status} "
+                          f"code={erro['error_code']} title={erro['error_title']!r} "
+                          f"details={erro['error_details']!r}"
+                          f"{'' if existing else ' [mensagem não encontrada no banco]'}")
 
             # === AGENTE IA: DESATIVADO TEMPORARIAMENTE ===
             # for msg in value.get("messages", []):

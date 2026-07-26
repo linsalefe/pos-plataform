@@ -61,6 +61,13 @@ class Message(Base):
     sent_by_ai = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
 
+    # Motivo da falha, vindo de statuses[].errors[] no webhook (ver migrate_message_error.py).
+    # Só é preenchido quando a Meta reporta erro; NULL é o caso normal.
+    # error_details é onde a Meta explica em linguagem natural — vale mais que o title.
+    error_code = Column(Integer, nullable=True)
+    error_title = Column(Text, nullable=True)
+    error_details = Column(Text, nullable=True)
+
     contact = relationship("Contact", back_populates="messages")
     channel = relationship("Channel", back_populates="messages")
 
