@@ -211,7 +211,12 @@ export default function NotificationBell({ collapsed = false }: { collapsed?: bo
                       <p className={`text-[12.5px] ${n.is_read ? 'text-gray-600' : 'font-semibold text-[#27273D]'}`}>{n.title}</p>
                       <span className="text-[10px] text-gray-400 flex-shrink-0 mt-0.5">{timeAgo(n.created_at)}</span>
                     </div>
-                    {n.body && <p className="text-[11.5px] text-gray-400 truncate mt-0.5">{n.body}</p>}
+                    {/* line-clamp-2, não truncate: `truncate` é white-space:nowrap e cortava o
+                        corpo em UMA linha (~50 ch), o que na notificação de transferência da NAT
+                        deixava visível só o telefone e o começo do nome — o curso e a fala do
+                        lead ficavam fora, e o SDR tinha que abrir a conversa dentro dos 2 min
+                        do SLA. Duas linhas cobrem o corpo inteiro nos casos reais. */}
+                    {n.body && <p className="text-[11.5px] text-gray-400 line-clamp-2 mt-0.5">{n.body}</p>}
                   </button>
                 ))
               )}

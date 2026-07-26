@@ -504,14 +504,30 @@ async def teste_8_nivel_zero():
           f"{agendados}")
     check("dono=5 escalona para 4 (simétrico)", nat_sla.outro_sdr(5) == 4)
 
-    # Lead sem SDR conhecido: não existe "o outro" -> pula direto para a gestão, sem reagendar.
+    # LEAD SEM SDR: não existe "o outro", mas existem OS DOIS — e são eles que ligam.
     sem_dono = _estado(sdr=None, nivel=0)
     s2, a2 = await _roda_sla(sem_dono, nivel_dono="sem SDR")
-    check("sem SDR dono -> pula para a gestão",
-          len(s2.notificacoes()) == 1 and s2.notificacoes()[0].user_id == GESTOR_USER_ID)
-    check("e vai direto para o nível 2, sem reagendar",
+    destinos = sorted(n.user_id for n in s2.notificacoes())
+
+    check("sem SDR dono -> avisa AMBOS os SDRs (4 e 5)", destinos == [4, 5], f"{destinos}")
+    check("NÃO notifica a gestão de novo (já avisada na transferência)",
+          GESTOR_USER_ID not in destinos, f"{destinos}")
+    check("as duas são do tipo nat_sla_sdr",
+          all(n.type == nat_sla.TIPO_NOTIF_SLA_SDR for n in s2.notificacoes()))
+    if s2.notificacoes():
+        n = s2.notificacoes()[0]
+        check("título diz que é lead SEM SDR", "SEM SDR" in n.title, n.title)
+        check("corpo diz que ninguém é dono", "ninguém é dono" in n.body, n.body)
+        check("corpo NÃO afirma que alguém deixou de assumir",
+              "não assumiu" not in n.body, n.body)
+    check("vai para o nível 2 e encerra, sem reagendar",
           sem_dono.escalonamento_nivel == nat_sla.NIVEL_GESTAO and a2 == [],
           f"nivel={sem_dono.escalonamento_nivel} agendados={a2}")
+
+    # E uma ação atrasada que chegue depois não pode reabrir nada.
+    s3, a3 = await _roda_sla(sem_dono, nivel_dono="sem SDR")
+    check("ação atrasada no nível 2 não notifica nem reagenda",
+          s3.notificacoes() == [] and a3 == [])
 
 
 async def teste_9_nivel_um():
