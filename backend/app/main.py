@@ -18,7 +18,8 @@ import asyncio
 SP_TZ = timezone(timedelta(hours=-3))
 
 from app.database import get_db, async_session
-from app.models import Channel, Contact, Message
+from app.models import Channel, Contact, Message, NatButtonEvent
+from app.nat_buttons import extrair_evento_botao, conteudo_legivel
 from app.routes import router
 from app.auth_routes import router as auth_router
 from app.exact_routes import router as exact_router
@@ -274,6 +275,13 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     media = msg.get("sticker", {})
                     content = f'media:{media.get("id", "")}|{media.get("mime_type", "image/webp")}|'
 
+                # Clique de botão: quick reply de template ("button") ou botão livre
+                # ("interactive"). Antes caíam aqui com content="" e o payload/context se
+                # perdiam — 102 cliques perdidos entre 13/07 e 22/07.
+                evento_botao = extrair_evento_botao(msg, wa_message_id)
+                if evento_botao:
+                    content = conteudo_legivel(evento_botao)
+
                 message = Message(
                     wa_message_id=wa_message_id,
                     contact_wa_id=msg["from"],
@@ -285,6 +293,31 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     status="received",
                 )
                 db.add(message)
+
+                # Persistência do clique em nat_button_events.
+                #
+                # DENTRO DE SAVEPOINT, e nada aqui pode derrubar o webhook. Esta é uma tabela
+                # de observabilidade: ela serve ao fluxo, não o contrário. Se o INSERT falhar
+                # (UNIQUE de wa_message_id, coluna faltando, o que for), perde-se o EVENTO —
+                # nunca o lote de mensagens.
+                #
+                # try/except puro não bastaria: um IntegrityError deixa a transação do asyncpg
+                # em estado abortado e toda operação seguinte na mesma sessão falharia com
+                # InFailedSQLTransaction. O SAVEPOINT (begin_nested) é o que permite reverter
+                # só este INSERT e seguir com o resto intacto.
+                if evento_botao:
+                    # Fora do try: falha ao gravar a própria Message deve propagar como antes.
+                    await db.flush()
+                    try:
+                        async with db.begin_nested():
+                            db.add(NatButtonEvent(**evento_botao))
+                        print(f"🔘 Clique capturado: {evento_botao['source']} "
+                              f"payload={evento_botao['button_payload']!r} "
+                              f"texto={evento_botao['button_text']!r} "
+                              f"context={evento_botao['context_message_id']!r}")
+                    except Exception as e:
+                        print(f"⚠️  Falha ao registrar clique em nat_button_events "
+                              f"({wa_message_id}): {type(e).__name__}: {e}")
 
                 # Notificação de nova mensagem para o SDR dono (se houver)
                 owner_result = await db.execute(select(Contact.assigned_to, Contact.name).where(Contact.wa_id == msg["from"]))
