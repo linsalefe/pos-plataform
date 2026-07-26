@@ -156,10 +156,32 @@ Antes do backfill, ~91% desses 550 seriam ignorados em silêncio.
 
 ---
 
-## Pendente
+## Merge e restart — e uma armadilha de ordem
 
-A correção do parser **só passa a valer no próximo restart** do `cenat-backend.service` — o backfill
-já corrigiu o histórico, mas leads novos continuam entrando com data NULL até o serviço recarregar.
+Merge em `main` (`1782af0`) e restart do `cenat-backend.service` às **03:38** foram feitos a pedido do
+Álefe, ampliando o escopo original da sprint. O merge trouxe junto a instrumentação do erro da Meta e a
+máquina de estados da NAT, que **já rodavam em produção** desde o restart de 01:56 mas não estavam
+registradas na `main` — acerto de registro, não código novo em produção.
+
+### ⚠️ O backfill precisa vir DEPOIS do restart, não antes
+
+O ramo de update do `sync_exact_leads` reescreve as duas colunas com o valor parseado:
+
+```python
+for key, value in lead_data.items():
+    setattr(existing, key, value)
+```
+
+Com o parser antigo em memória, isso grava `None` — ou seja, **o sync apaga o backfill**. Foi
+exatamente o que aconteceu: o backfill rodou, e o sync das 03:33 (processo antigo, ainda sem a
+correção) devolveu `register_date` de 8.656 para **779** antes do restart das 03:38.
+
+Sem dano permanente — o backfill foi reaplicado após o restart e o sync das **03:48**, já com o parser
+corrigido, **preservou** os 99,95%. Mas a ordem correta é restart primeiro, backfill depois. A sprint
+pedia backfill sem restart, o que teria durado no máximo 10 minutos.
+
+**Estado final verificado em produção:** serviço ativo (PID 1293166), sync agendado a cada 10 min,
+`register_date` em 99,95% após um ciclo completo de sync.
 
 ## Fora de escopo (frentes próprias)
 
