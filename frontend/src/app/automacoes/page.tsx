@@ -107,6 +107,7 @@ export default function AutomacoesPage() {
 
   // Template
   const [templates, setTemplates] = useState<any[]>([]);
+  const [templateSearch, setTemplateSearch] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [paramMappings, setParamMappings] = useState<ParamMapping[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -130,6 +131,7 @@ export default function AutomacoesPage() {
   const [awLang, setAwLang] = useState('pt_BR');
   const [awFunnels, setAwFunnels] = useState('');
   const [awTemplates, setAwTemplates] = useState<any[]>([]);
+  const [awTemplateSearch, setAwTemplateSearch] = useState('');
   const [awSaving, setAwSaving] = useState(false);
   const [awPreview, setAwPreview] = useState<AutoWelcomePreview | null>(null);
   const [awConfirm, setAwConfirm] = useState(false);
@@ -282,6 +284,18 @@ export default function AutomacoesPage() {
     return blockedTemplates.includes(n);
   };
 
+  /** Filtro de templates: sem acento, sem case, "_" conta como espaço.
+   *  O WABA já passou de 70 templates — sem busca, achar um é rolar lista. */
+  const filterTemplates = (list: any[], query: string) => {
+    const norm = (s: string) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const terms = norm(query).split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return list;
+    return list.filter((t: any) => {
+      const haystack = norm(`${t.name} ${t.name.replace(/_/g, ' ')} ${t.body || ''} ${t.category || ''}`);
+      return terms.every(term => haystack.includes(term));
+    });
+  };
+
   const loadFunnels = async () => {
     try {
       const res = await api.get('/exact-leads/funnels');
@@ -399,6 +413,9 @@ export default function AutomacoesPage() {
     const matchFunnel = !funnelFilter || String(lead.funnel_id) === funnelFilter;
     return matchSearch && matchStage && matchSubSource && matchSdr && matchFunnel;
   });
+
+  const templatesFiltered = filterTemplates(templates, templateSearch);
+  const awTemplatesFiltered = filterTemplates(awTemplates, awTemplateSearch);
 
   const toggleSelect = (id: number) => {
     const newSet = new Set(selectedIds);
@@ -631,18 +648,36 @@ export default function AutomacoesPage() {
 
               <div className="space-y-1.5">
                 <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block">Template</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                  <input
+                    type="text"
+                    value={awTemplateSearch}
+                    onChange={(e) => setAwTemplateSearch(e.target.value)}
+                    placeholder="Buscar template..."
+                    className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-gray-100 bg-gray-50 text-[12px] text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all"
+                  />
+                </div>
                 <select
                   value={awTemplateName}
                   onChange={(e) => setAwTemplateName(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all cursor-pointer"
                 >
-                  {awTemplates.length === 0 && awTemplateName && (
+                  {/* O template salvo entra sempre na lista: filtrar não pode trocar o que está configurado. */}
+                  {awTemplateName && !awTemplatesFiltered.some((t: any) => t.name === awTemplateName) && (
                     <option value={awTemplateName}>{awTemplateName}</option>
                   )}
-                  {awTemplates.map((t: any) => (
+                  {awTemplatesFiltered.map((t: any) => (
                     <option key={t.name} value={t.name}>{t.name}</option>
                   ))}
                 </select>
+                {awTemplateSearch && (
+                  <p className="text-[11px] text-gray-400">
+                    {awTemplatesFiltered.length === 0
+                      ? 'Nenhum template encontrado'
+                      : `${awTemplatesFiltered.length} de ${awTemplates.length} templates`}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -700,7 +735,7 @@ export default function AutomacoesPage() {
               <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2.5">Canal</h3>
               <select
                 value={activeChannelId}
-                onChange={(e) => { setActiveChannelId(Number(e.target.value)); setTemplates([]); setSelectedTemplate(null); }}
+                onChange={(e) => { setActiveChannelId(Number(e.target.value)); setTemplates([]); setTemplateSearch(''); setSelectedTemplate(null); }}
                 className="w-full px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all cursor-pointer"
               >
                 {channels.map(ch => (
@@ -719,8 +754,31 @@ export default function AutomacoesPage() {
                   Carregar templates
                 </button>
               ) : (
+                <>
+                <div className="relative mb-2">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                  <input
+                    type="text"
+                    value={templateSearch}
+                    onChange={(e) => setTemplateSearch(e.target.value)}
+                    placeholder="Buscar template..."
+                    className="w-full pl-8 pr-8 py-2 rounded-xl border border-gray-100 bg-gray-50 text-[12px] text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2A658F]/10 focus:border-[#2A658F] focus:bg-white transition-all"
+                  />
+                  {templateSearch && (
+                    <button
+                      onClick={() => setTemplateSearch('')}
+                      title="Limpar busca"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                {templatesFiltered.length === 0 ? (
+                  <p className="text-[12px] text-gray-400 text-center py-4">Nenhum template encontrado</p>
+                ) : (
                 <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-                  {templates.map((t: any) => {
+                  {templatesFiltered.map((t: any) => {
                     const blocked = isBlockedTemplate(t.name);
                     return (
                       <button
@@ -747,6 +805,13 @@ export default function AutomacoesPage() {
                     );
                   })}
                 </div>
+                )}
+                {templateSearch && templatesFiltered.length > 0 && (
+                  <p className="text-[10px] text-gray-400 mt-1.5 text-center">
+                    {templatesFiltered.length} de {templates.length} templates
+                  </p>
+                )}
+                </>
               )}
 
               {/* Mapeamento de variáveis */}

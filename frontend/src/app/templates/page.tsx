@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/auth-context';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
 import { toast } from 'sonner';
-import { LayoutTemplate, Plus, Loader2, RefreshCw } from 'lucide-react';
+import { LayoutTemplate, Plus, Loader2, RefreshCw, Search, X } from 'lucide-react';
 
 interface ChannelInfo {
   id: number;
@@ -41,6 +41,7 @@ export default function TemplatesPage() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [channelId, setChannelId] = useState<number | null>(null);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
 
@@ -80,6 +81,15 @@ export default function TemplatesPage() {
 
   if (user && user.role !== 'admin') return null;
 
+  // Busca sem acento e sem case: o catálogo já passou de 70 templates, rolar a lista não escala.
+  const norm = (s: string) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const terms = norm(search).split(/\s+/).filter(Boolean);
+  const filtered = terms.length === 0 ? templates : templates.filter(t => {
+    // Nome com "_" vira espaço pra "boas vindas" achar boas_vindas_v2.
+    const haystack = norm(`${t.name} ${t.name.replace(/_/g, ' ')} ${t.body} ${t.category || ''} ${t.language} ${STATUS_LABEL[t.status] || t.status}`);
+    return terms.every(term => haystack.includes(term));
+  });
+
   const statusBadge = (status: string) => {
     const cls = STATUS_STYLE[status] || 'bg-gray-50 text-gray-600 border-gray-100';
     const label = STATUS_LABEL[status] || status;
@@ -115,8 +125,27 @@ export default function TemplatesPage() {
           Use o botão <em>Atualizar</em> para conferir o status mais recente.
         </div>
 
-        {/* Controles: canal + refresh */}
-        <div className="flex items-center gap-3">
+        {/* Controles: busca + canal + refresh */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar por nome, texto, categoria ou status..."
+              className="w-full pl-9 pr-9 py-2 bg-white border border-gray-200 rounded-xl text-sm text-gray-700 placeholder:text-gray-400 focus:border-[#2A658F] focus:ring-2 focus:ring-[#2A658F]/10 outline-none transition-all"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                title="Limpar busca"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
           <select
             value={channelId ?? ''}
             onChange={e => setChannelId(Number(e.target.value))}
@@ -134,6 +163,11 @@ export default function TemplatesPage() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Atualizar
           </button>
+          {!loading && templates.length > 0 && (
+            <span className="text-[12px] text-gray-400">
+              {terms.length > 0 ? `${filtered.length} de ${templates.length} templates` : `${templates.length} templates`}
+            </span>
+          )}
         </div>
 
         {/* Lista */}
@@ -147,6 +181,14 @@ export default function TemplatesPage() {
               <LayoutTemplate className="w-10 h-10 mb-2 text-gray-300" />
               <p className="text-sm">Nenhum template neste canal</p>
             </div>
+          ) : filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+              <Search className="w-10 h-10 mb-2 text-gray-300" />
+              <p className="text-sm">Nenhum template encontrado para “{search}”</p>
+              <button onClick={() => setSearch('')} className="mt-2 text-[12px] text-[#2A658F] hover:underline">
+                Limpar busca
+              </button>
+            </div>
           ) : (
             <div>
               {/* Table header */}
@@ -157,7 +199,7 @@ export default function TemplatesPage() {
                 <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider text-right">Status</span>
               </div>
 
-              {templates.map((t) => (
+              {filtered.map((t) => (
                 <div
                   key={`${t.name}_${t.language}`}
                   className="grid grid-cols-1 sm:grid-cols-[1fr_120px_110px_120px] items-center px-6 py-4 border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors gap-2 sm:gap-0"
