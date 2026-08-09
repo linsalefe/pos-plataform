@@ -582,22 +582,34 @@ async def list_templates(channel_id: int, status: Optional[str] = "APPROVED", db
     import httpx
     channel = await get_channel(channel_id, db)
     params = {
-        "limit": 50,
+        "limit": 100,
         "fields": "name,language,status,category,components,rejected_reason",
     }
     # Filtra por status só quando não for "all"/vazio.
     if status and status.lower() != "all":
         params["status"] = status
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"https://graph.facebook.com/{GRAPH_VERSION}/{channel.waba_id}/message_templates",
-            headers={"Authorization": f"Bearer {channel.whatsapp_token}"},
-            params=params,
-        )
-        data = response.json()
+
+    # O Meta pagina: sem seguir paging.next o Hub some com os templates além da
+    # primeira página (o WABA já passou de 50). Teto de páginas só pra não girar à toa.
+    url = f"https://graph.facebook.com/{GRAPH_VERSION}/{channel.waba_id}/message_templates"
+    raw = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for page in range(20):
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {channel.whatsapp_token}"},
+                params=params if page == 0 else None,
+            )
+            data = response.json()
+            if data.get("error"):
+                raise HTTPException(status_code=502, detail=data["error"].get("message", "Erro do Meta ao listar templates"))
+            raw.extend(data.get("data", []))
+            url = (data.get("paging") or {}).get("next")
+            if not url:
+                break
 
     templates = []
-    for t in data.get("data", []):
+    for t in raw:
         body = ""
         parameters = []
         for comp in t.get("components", []):
