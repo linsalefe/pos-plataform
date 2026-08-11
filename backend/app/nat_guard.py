@@ -3,8 +3,14 @@
 Princípio único: FALHA FECHADA. Qualquer dúvida, qualquer ausência de dado, qualquer exceção
 inesperada → (False, motivo). Nunca (True) por omissão.
 
-Esta fase só CRIA a função. Ela NÃO está plugada em send_welcome_to_new_lead nem em lugar
-nenhum — plugar muda comportamento de produção e é decisão separada.
+ONDE ESTÁ PLUGADA (conferido em 2026-08-11):
+  * nat_flow.iniciar_fluxo_nat  (nat_flow.py:340) — entrada do lead no fluxo;
+  * nat_sender.send_nat_message (nat_sender.py:94) — TODO envio da NAT.
+
+Ou seja: a função governa produção desde o sprint dos Blocos 2-3-4. O texto anterior deste
+cabeçalho ("só CRIA a função, não está plugada em lugar nenhum") era herdado do sprint dos
+Blocos 0-1 e ficou mentindo — quem lia o módulo para decidir se era seguro ligar a chave lia
+que ela não valia nada.
 
 As 5 verificações, nesta ordem:
   1. nat_config.nat_enabled é true?

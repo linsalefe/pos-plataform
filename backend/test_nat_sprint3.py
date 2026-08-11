@@ -29,6 +29,7 @@ DIVISÃO DE TRABALHO, para não fingir cobertura que não existe:
  10. sla_check nível 2 -> nada (não escala infinito)
  11. assumir cancela o sla_check pendente
  12. assumir duas vezes -> idempotente
+ 12b. assumir encerra o fluxo: etapa vira encerrado, SLA para, NAT não interfere mais
  13. teto por hora conta só nat_etapa IS NOT NULL (envio manual de SDR não conta)
  14. sdr_user_id nulo na transferência -> fallback para a gestão (Bloco 5, ponto 4)
 """
@@ -38,14 +39,15 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy.dialects import postgresql
 
-from app import nat_flow, nat_scheduler as ns, nat_sla, nat_routes
+from app import nat_copy, nat_flow, nat_scheduler as ns, nat_sla, nat_routes
 from app.models import (ACAO_CANCELADO, ACAO_EXECUTADO, ACAO_FALHOU, ACAO_PENDENTE,
-                        ETAPA_AGUARDANDO_LIGACAO, ETAPA_AGUARDANDO_MOTIVACAO, KIND_SLA_CHECK,
-                        MAX_TENTATIVAS_ACAO, Message, Notification)
+                        ETAPA_AGUARDANDO_LIGACAO, ETAPA_AGUARDANDO_MOTIVACAO,
+                        ETAPA_ENCERRADO, KIND_SLA_CHECK, MAX_TENTATIVAS_ACAO, Message,
+                        Notification)
 from app.nat_guard import GESTOR_USER_ID
 
 AGORA = datetime(2026, 7, 26, 15, 0, 0)
@@ -627,6 +629,55 @@ async def teste_12_assumir_idempotente():
           f"{sessao2.savepoints}")
 
 
+async def teste_12b_assumir_encerra_o_fluxo():
+    """Fase 3 do sprint de ativação: assumir é a ÚNICA saída do fluxo.
+
+    Antes, `assumir` gravava assumido_por e deixava a etapa em aguardando_ligacao — o lead
+    ficava preso ali para sempre e todo clique posterior dele era descartado em silêncio,
+    com um humano já conduzindo a conversa.
+    """
+    print("12b) assumir encerra o fluxo e devolve o lead ao humano")
+    state = _estado()
+    resp, _, _ = await _roda_assumir(state, user_id=5, nome="Thobias")
+
+    check("etapa virou encerrado", state.etapa == ETAPA_ENCERRADO, f"{state.etapa}")
+    check("quem assumiu segue registrado", state.assumido_por == 5, f"{state.assumido_por}")
+    check("a resposta ao frontend já traz a etapa nova",
+          resp["etapa"] == ETAPA_ENCERRADO, f"{resp['etapa']}")
+    check("botão some (pode_assumir False)", resp["pode_assumir"] is False)
+    check("selo de quem assumiu aparece (assumido_por preenchido)",
+          resp["assumido_por"] == 5 and resp["assumido_por_nome"], f"{resp}")
+
+    # A segunda rede: mesmo que o cancelamento do sla_check tenha falhado, o handler agora
+    # para na PRIMEIRA das suas três saídas de "nada a fazer" — a etapa mudou.
+    sessao = SessaoFalsa()
+    sessao._resposta = lambda s: ResultadoFalso(state)
+    await nat_sla.sla_check({"contact_wa_id": state.contact_wa_id, "agora": AGORA, "id": 1},
+                            sessao)
+    check("sla_check não escalona lead encerrado",
+          [o for o in sessao.adicionados if isinstance(o, Notification)] == [],
+          "notificou alguém")
+
+    # E a NAT sai do caminho: clique e texto do lead não disparam mais nada.
+    db = MagicMock()
+    with patch.object(nat_flow, "_estado_do_contato", new=AsyncMock(return_value=state)), \
+         patch.object(nat_flow, "send_nat_message", new=AsyncMock(return_value=True)) as spy:
+        destino_clique = await nat_flow.processar_clique(
+            {"contact_wa_id": state.contact_wa_id, "wa_message_id": "wamid.DEPOIS",
+             "button_payload": nat_copy.NAT_SIM, "button_text": "Sim",
+             "source": "template"}, db)
+        destino_texto = await nat_flow.processar_texto(
+            state.contact_wa_id, "obrigada!", "wamid.DEPOIS2", db)
+
+    check("clique após encerrado -> ignorado sem erro", destino_clique is None,
+          f"{destino_clique}")
+    check("texto após encerrado -> ignorado sem erro", destino_texto is None,
+          f"{destino_texto}")
+    check("NADA foi enviado ao lead depois de encerrado", spy.await_count == 0,
+          f"{spy.await_count} envios")
+    check("etapa continua encerrado", state.etapa == ETAPA_ENCERRADO, f"{state.etapa}")
+
+
 # ==========================================================================================
 # 13: TETO POR HORA
 # ==========================================================================================
@@ -727,6 +778,7 @@ async def main():
     await teste_10_nivel_dois()
     await teste_11_assumir_cancela_sla()
     await teste_12_assumir_idempotente()
+    await teste_12b_assumir_encerra_o_fluxo()
     await teste_13_teto_conta_so_nat()
     await teste_13b_sender_grava_marcador()
     await teste_14_sem_sdr()

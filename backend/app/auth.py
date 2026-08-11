@@ -61,7 +61,13 @@ async def get_current_user(
 
 
 def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
-    """Gate de admin: 403 para quem não tem role='admin'."""
+    """Gate de admin: 403 para quem não tem role='admin'.
+
+    A mensagem é genérica desde que o gate deixou de servir só aos templates: ele também
+    protege o kill switch da NAT (nat_routes), e "podem gerenciar templates" mandaria quem
+    tentou desligar a NAT procurar o problema na tela errada.
+    """
     if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Apenas administradores podem gerenciar templates.")
+        raise HTTPException(status_code=403,
+                            detail="Apenas administradores podem fazer esta operação.")
     return current_user
