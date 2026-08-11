@@ -127,6 +127,77 @@ curl -X POST https://hub.cenatdata.online/api/exact-leads/sync
 
 ---
 
+## 🔴 NAT — kill switch
+
+**DESLIGAR A NAT EM EMERGÊNCIA.** Este é o comando. Precisa de token de **admin**.
+
+```bash
+curl -sX PATCH https://hub.cenatdata.online/api/nat/config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"nat_enabled": false}'
+```
+
+Desligar **nunca** é barrado por validação, e **não** apaga o `nat_start_at` — religar depois
+não perde o corte. A resposta traz `"atuando": false`, que é a confirmação de que parou.
+
+Pegar o token (mesmo login da tela):
+
+```bash
+TOKEN=$(curl -sX POST https://hub.cenatdata.online/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"SEU_EMAIL","password":"SUA_SENHA"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+```
+
+Ver o estado atual:
+
+```bash
+curl -s https://hub.cenatdata.online/api/nat/config -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"nat_enabled": false, "nat_start_at": null, "nat_start_at_sp": null,
+ "max_envios_hora": 20, "updated_at": "...", "atuando": false}
+```
+
+`atuando` é o que vale: a NAT só age com `nat_enabled=true` **e** `nat_start_at` preenchido.
+
+**Ligar** (os dois campos juntos — ligar sem corte é recusado com 422):
+
+```bash
+curl -sX PATCH https://hub.cenatdata.online/api/nat/config \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"nat_enabled": true, "nat_start_at": "agora"}'
+```
+
+**Estrangular sem desligar** (deixa o fluxo dos leads já dentro seguir, mas não entra ninguém
+novo pelo teto):
+
+```bash
+-d '{"max_envios_hora": 0}'
+```
+
+> ⚠️ **`nat_start_at` é UTC**, não horário de São Paulo — é comparado com
+> `exact_leads.register_date`, que a Exact entrega em UTC. Use `"agora"` e deixe o servidor
+> resolver. Data ISO **sem fuso** é recusada de propósito: interpretada como horário de SP ela
+> poria o corte 3h no passado e deixaria leads retroativos entrarem no fluxo. Com fuso
+> explícito funciona: `"2026-08-11T12:00:00-03:00"`.
+
+Quem mexeu no switch, e quando:
+
+```bash
+sudo journalctl -u cenat-backend | grep "NAT CONFIG"
+```
+
+Estado do fluxo direto no banco:
+
+```bash
+sudo -u postgres psql cenat_whatsapp -c "SELECT * FROM nat_config;"
+sudo -u postgres psql cenat_whatsapp -c "SELECT etapa, count(*) FROM nat_flow_state GROUP BY 1;"
+```
+
+---
+
 ## Espaço em disco
 
 ```bash

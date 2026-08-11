@@ -7,12 +7,19 @@ Transições implementadas:
 
   gatilho                        origem                 ação                          destino
   ---------------------------------------------------------------------------------------------
+  boas-vindas JÁ enviada,        —                      NADA (só adota o lead)        aguardando_resposta
+    dentro do horário
+  boas-vindas JÁ enviada,        —                      NADA                          (fora do fluxo)
+    fora do horário
   lead entra, dentro do horário  —                      envia nat_boasvindas          aguardando_resposta
   lead entra, fora do horário    —                      NADA                          aguardando_horario
   payload NAT_SIM                aguardando_resposta    envia nat_sim                 aguardando_motivacao
-  payload NAT_OUTRO_HORARIO      aguardando_resposta    envia nat_outro_horario       reagendado
+  payload NAT_OUTRO_HORARIO      aguardando_resposta    nat_outro_horario + avisa SDR reagendado
   texto qualquer                 aguardando_motivacao   envia confirma_transferencia  aguardando_ligacao
-  texto qualquer                 reagendado             grava horário preferencial    reagendado
+  1º texto                       reagendado             grava período + atualiza      reagendado
+                                                        o aviso do SDR
+  SDR clica "Assumir ligação"    aguardando_ligacao     (nat_routes.assumir_ligacao)  encerrado
+  clique ou texto                encerrado              nada — o humano conduz        encerrado
   qualquer outro                 qualquer               nada, só loga                 inalterado
 
 Duas regras que valem para tudo neste módulo:
@@ -49,6 +56,11 @@ from app.nat_sender import send_nat_message
 SLA_LIGACAO_MINUTOS = 2
 
 TIPO_NOTIF_TRANSFERENCIA = "nat_transferencia"
+
+# Tipo separado do de transferência, e não um campo dentro dela: são pedidos OPOSTOS do lead
+# ("me ligue agora" x "me ligue depois"), e o tipo é o que permite perguntar ao banco quantos
+# leads pediram reagendamento sem parsear título — mesma razão dos dois tipos do nat_sla.
+TIPO_NOTIF_REAGENDADO = "nat_reagendado"
 
 # A Exact roda dentro do processamento do webhook. 5s em vez do default de 15s: com a Exact
 # fora do ar, 15s segurariam o lote de mensagens de TODOS os leads daquele webhook.
@@ -158,6 +170,50 @@ def montar_notificacao_transferencia(nome: str, wa_id: str, curso: str, resposta
     return title[:255], " · ".join(partes)
 
 
+def montar_notificacao_reagendamento(nome: str, wa_id: str, curso: str, periodo: str,
+                                     *, sem_sdr: bool = False) -> tuple[str, str]:
+    """(title, body) do aviso de "o lead quer falar, mas depois".
+
+    Mesmo formato da transferência, pela mesma razão (ver montar_notificacao_transferencia):
+    telefone no título, que o NotificationBell.tsx mostra inteiro, e telefone no começo do
+    corpo, que é `line-clamp-2` — é o dado sem o qual o SDR não liga.
+
+    O QUE MUDA EM RELAÇÃO À TRANSFERÊNCIA é a urgência, e o título tem que dizer isso. Lá é
+    "Ligar agora" com SLA de 2 minutos correndo; aqui o lead pediu explicitamente para NÃO
+    ser ligado agora. Um título parecido faria o SDR ligar na hora — exatamente o contrário
+    do que o lead pediu, e depois de a NAT ter prometido a ele que não ligaríamos.
+
+    `periodo` é o texto livre do lead ("de manhã", "depois das 18h") e chega DEPOIS do clique,
+    numa segunda mensagem — quando chega. Sem ele o aviso já vale: o SDR sabe que o lead está
+    interessado e quer outro horário, e pode perguntar qual. Com ele, o período entra no
+    título, porque é o que decide QUANDO o SDR volta, e o título é o que sobrevive a qualquer
+    corte.
+    """
+    fone = telefone_legivel(wa_id)
+    quem = nome or "Lead sem nome"
+    resumo = _resumir(periodo, 30) if periodo else ""
+
+    if sem_sdr:
+        title = f"Reagendar (SEM SDR): {quem} — {fone}"
+    elif resumo:
+        title = f"Reagendar — {resumo}: {quem} — {fone}"
+    else:
+        title = f"Reagendar: {quem} — {fone}"
+
+    partes = [fone]
+    if curso:
+        partes.append(curso)
+    if periodo:
+        partes.append(f'prefere: "{_resumir(periodo)}"')
+    else:
+        partes.append("pediu outro horário — ainda não disse quando")
+    if sem_sdr:
+        partes.append("lead sem SDR atribuído — avisando a gestão")
+
+    return title[:255], " · ".join(partes)
+
+
+
 async def usuario_existe(user_id: int | None, db: AsyncSession) -> bool:
     """O id existe em `users`? None devolve False.
 
@@ -172,8 +228,12 @@ async def usuario_existe(user_id: int | None, db: AsyncSession) -> bool:
     return res.first() is not None
 
 
-async def _destinatario_da_transferencia(state: NatFlowState, db: AsyncSession):
+async def _destinatario_do_aviso(state: NatFlowState, db: AsyncSession):
     """(user_id, eh_fallback) de quem recebe a notificação. (None, _) se não há ninguém.
+
+    Vale para os DOIS avisos que o fluxo emite — a transferência (lead quer falar agora) e o
+    reagendamento (lead quer falar depois). A regra de destinatário é a mesma nos dois: o SDR
+    dono, e a gestão como rede.
 
     O guard bloqueia lead sem SDR na ENTRADA do fluxo, mas `assigned_to` pode ser limpo entre
     a entrada e a transferência (troca de dono, correção manual na tela). Sem fallback, a
@@ -188,7 +248,7 @@ async def _destinatario_da_transferencia(state: NatFlowState, db: AsyncSession):
         return state.sdr_user_id, False
 
     if await usuario_existe(GESTOR_USER_ID, db):
-        print(f"⚠️  NAT: {state.contact_wa_id} chegou na transferência sem SDR válido "
+        print(f"⚠️  NAT: {state.contact_wa_id} precisa de aviso e está sem SDR válido "
               f"(sdr_user_id={state.sdr_user_id}) — notificando a gestão "
               f"(id={GESTOR_USER_ID})")
         return GESTOR_USER_ID, True
@@ -222,7 +282,7 @@ async def transferir_para_sdr(state: NatFlowState, resposta_do_lead: str,
     dados = await _dados_do_lead(state, db)
 
     # ---- PASSO 1: notificação (+ carimbo) — se falhar, aborta o resto ----
-    destinatario, eh_fallback = await _destinatario_da_transferencia(state, db)
+    destinatario, eh_fallback = await _destinatario_do_aviso(state, db)
     if destinatario is None:
         print(f"❌ NAT: transferência de {wa_id} sem destinatário possível "
               f"(sdr_user_id={state.sdr_user_id}, gestor id={GESTOR_USER_ID} não existe) — "
@@ -292,13 +352,121 @@ async def transferir_para_sdr(state: NatFlowState, resposta_do_lead: str,
     return True
 
 
-async def iniciar_fluxo_nat(lead, db: AsyncSession) -> str | None:
+async def _aviso_de_reagendamento(wa_id: str, db: AsyncSession):
+    """O aviso de reagendamento já existente deste contato, se houver."""
+    res = await db.execute(
+        select(Notification)
+        .where(Notification.contact_wa_id == wa_id,
+               Notification.type == TIPO_NOTIF_REAGENDADO)
+        .order_by(Notification.id.desc())
+        .limit(1))
+    return res.scalar_one_or_none()
+
+
+async def notificar_reagendamento(state: NatFlowState, periodo: str | None,
+                                  wa_message_id: str, db: AsyncSession) -> bool:
+    """Avisa quem deve reagendar o contato. True se o aviso saiu.
+
+    Chamada em DOIS momentos, e o segundo ATUALIZA o aviso do primeiro em vez de criar outro:
+
+      1. no clique em "Prefiro outro horário", sem período — o SDR já pode agir;
+      2. no texto que o lead manda depois, com o período.
+
+    POR QUE ATUALIZAR E NÃO CRIAR UM SEGUNDO AVISO. Os dois falam do MESMO pedido, para a
+    MESMA pessoa, e o primeiro não tem nenhuma informação que o segundo não tenha — ele diz
+    estritamente menos. Dois itens no sino colocariam o SDR diante de um aviso obsoleto e de
+    um atual, sem nada que os distinga à primeira vista, e agir pelo obsoleto significa ligar
+    sem saber o horário que o lead acabou de informar. (É o oposto do caso do nat_sla, que
+    cria um aviso por degrau de propósito: lá cada evento vai para uma PESSOA diferente e
+    registra uma falha distinta.)
+
+    `is_read` volta para False na atualização, e é isso que faz o aviso reaparecer: o sino
+    marca o não-lido em negrito e com fundo. Sem esse reset, o SDR que já tinha lido o aviso
+    do clique nunca ficaria sabendo do período — que é justamente o que esta fase entrega.
+
+    `created_at` NÃO é mexido, e o `ref` continua apontando para o clique. O carimbo de tempo
+    responde "desde quando este lead está esperando", que é a pergunta do SDR e não muda
+    porque o lead mandou uma segunda mensagem; e o `ref` guarda o evento que originou o
+    pedido, que é o que dá idempotência se este caminho for reexecutado.
+    """
+    wa_id = state.contact_wa_id
+    dados = await _dados_do_lead(state, db)
+
+    destinatario, eh_fallback = await _destinatario_do_aviso(state, db)
+    if destinatario is None:
+        print(f"❌ NAT: {wa_id} pediu outro horário e não há destinatário possível "
+              f"(sdr_user_id={state.sdr_user_id}, gestor id={GESTOR_USER_ID} não existe) — "
+              "ninguém foi avisado")
+        return False
+
+    title, body = montar_notificacao_reagendamento(
+        dados["nome"], wa_id, dados["curso"], periodo or "", sem_sdr=eh_fallback)
+
+    try:
+        async with db.begin_nested():
+            existente = await _aviso_de_reagendamento(wa_id, db)
+            if existente is None:
+                db.add(Notification(
+                    user_id=destinatario,
+                    contact_wa_id=wa_id,
+                    type=TIPO_NOTIF_REAGENDADO,
+                    ref=wa_message_id,
+                    title=title,
+                    body=body,
+                ))
+                acao = "criado"
+            else:
+                existente.user_id = destinatario
+                existente.title = title
+                existente.body = body
+                existente.is_read = False
+                acao = "atualizado"
+    except Exception as e:
+        print(f"❌ NAT: aviso de reagendamento FALHOU para {wa_id} "
+              f"({type(e).__name__}: {e})")
+        return False
+
+    print(f"🗓️  NAT: reagendamento de {wa_id} {acao} para user {destinatario}"
+          f"{' (FALLBACK gestão)' if eh_fallback else ''}: {title}")
+    return True
+
+async def iniciar_fluxo_nat(lead, db: AsyncSession, *,
+                            boas_vindas_wamid: str | None = None) -> str | None:
     """Cria o estado inicial do lead. Retorna a etapa criada, ou None se a NAT não atuou.
 
     `lead` é um ExactLead ou o dict lead_data que o sync monta.
 
-    Fora do horário comercial NÃO envia nada — o lead fica em aguardando_horario, que é a fila
-    que a fase 2 do Cenário 2 (fora de escopo) vai varrer às 09h.
+    ADOÇÃO x ENVIO — `boas_vindas_wamid` decide qual dos dois modos roda:
+
+      * PREENCHIDO: a nat_boasvindas JÁ SAIU, enviada por quem chamou (o único chamador em
+        produção é send_welcome_to_new_lead, exact_spotter.py:322). Esta função NÃO envia
+        nada — só ADOTA o lead, criando o estado em aguardando_resposta. Era daqui que vinha
+        a duplicata: send_welcome_to_new_lead mandava o template e, uma linha depois, esta
+        função mandava O MESMO template de novo via send_nat_message, porque com a janela de
+        24h fechada (lead novo, sem inbound) o sender cai no ramo de template. Nada entre os
+        dois deduplicava.
+
+      * None: modo antigo, a NAT é quem envia. Não tem chamador em produção hoje — sobrevive
+        para os testes e para um eventual disparo que não venha da boas-vindas. O
+        comportamento dele NÃO mudou.
+
+    FORA DO HORÁRIO COMERCIAL, no modo adoção, o lead NÃO entra no fluxo (retorna None).
+    Medido em 2026-08-11: a sync roda 24/7 e 55% das boas-vindas do funil 18535 saem fora de
+    09h-19h — ou seja, o lead já está com os dois botões na mão quando chegamos aqui. As duas
+    alternativas eram piores:
+
+      * aguardando_horario seria um beco: não existe handler que drene essa etapa, então o
+        clique do lead cairia em "clique fora da etapa" e seria engolido PARA SEMPRE — e a
+        premissa que justificava a fila ("o lead não recebe nada, então não há dano") deixou
+        de valer no momento em que a boas-vindas passou a sair antes;
+      * adotar assim mesmo faria a NAT responder e prometer ligação às 22h de um sábado —
+        64% dos cliques históricos vieram fora do horário — para um SDR que não vai ligar.
+
+    Sem estado, o clique noturno segue o caminho que já existe para qualquer mensagem: fica
+    em messages e em nat_button_events, e o SDR dono recebe a notificação de "nova mensagem"
+    (main.py:452). Atendimento humano, sem a NAT no meio. O custo é cobertura: ~45% dos leads
+    elegíveis entram no fluxo, e quem recebeu a boas-vindas à noite fica fora dele em
+    definitivo, inclusive se clicar às 09h do dia seguinte.
     """
     from app.exact_spotter import format_phone
 
@@ -330,6 +498,26 @@ async def iniciar_fluxo_nat(lead, db: AsyncSession) -> str | None:
         res = await db.execute(select(Contact.assigned_to).where(Contact.wa_id == wa_id))
         row = res.first()
         sdr_user_id = row[0] if row else None
+
+        # ---- MODO ADOÇÃO: a boas-vindas já saiu, ninguém envia nada aqui ----
+        if boas_vindas_wamid:
+            if not dentro_horario_comercial():
+                print(f"🌙 NAT: {wa_id} recebeu a boas-vindas fora de 09h-19h — fluxo NÃO "
+                      "adotado. O clique dele segue para atendimento humano.")
+                return None
+
+            # O wamid do envio que JÁ aconteceu mora em ultimo_wa_message_id: o campo é
+            # "último id de mensagem que este estado contabilizou", e guardá-lo aqui mantém o
+            # rastro da mensagem que abriu o fluxo sem exigir coluna nova. Não atrapalha a
+            # trava de reentrega de _ja_processado: id de mensagem é único global na Meta, e
+            # este é de OUTBOUND — nenhum webhook de inbound vai chegar com ele.
+            db.add(NatFlowState(
+                contact_wa_id=wa_id, exact_lead_id=exact_lead_id, sdr_user_id=sdr_user_id,
+                etapa=ETAPA_AGUARDANDO_RESPOSTA, ultimo_wa_message_id=boas_vindas_wamid,
+            ))
+            print(f"✅ NAT: {wa_id} adotado em {ETAPA_AGUARDANDO_RESPOSTA} a partir da "
+                  f"boas-vindas {boas_vindas_wamid} (nenhum envio novo)")
+            return ETAPA_AGUARDANDO_RESPOSTA
 
         # FORA DO HORÁRIO: enfileira, não envia.
         if not dentro_horario_comercial():
@@ -440,6 +628,20 @@ async def processar_clique(evento: dict, db: AsyncSession) -> str | None:
         state.etapa = destino
         state.ultimo_wa_message_id = wa_message_id
         print(f"➡️  NAT: {wa_id} {ETAPA_AGUARDANDO_RESPOSTA} → {destino}")
+
+        # SAÍDA DE `reagendado`. Vem DEPOIS do envio do nat_outro_horario e depois da
+        # transição, pelo mesmo raciocínio de processar_texto: a mensagem já está com o lead,
+        # e o que pode falhar é o efeito colateral, nunca a transição.
+        #
+        # Sem isto, `reagendado` é beco sem saída: o lead diz que quer falar depois, a NAT
+        # responde, e ninguém fica sabendo — o período iria para um campo que nenhum código
+        # lê. O reagendamento AUTOMÁTICO do envio é Bloco 6; o que entra aqui é o aviso ao
+        # humano, que é o que impede o lead de ser esquecido enquanto o Bloco 6 não existe.
+        if destino == ETAPA_REAGENDADO:
+            if not await notificar_reagendamento(state, None, wa_message_id, db):
+                print(f"🚨 NAT: {wa_id} pediu outro horário e NINGUÉM foi avisado. O lead "
+                      "está em reagendado sem ninguém encarregado de voltar nele.")
+
         return destino
 
     except Exception as e:
@@ -464,12 +666,21 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
             return state.etapa
 
         # Em reagendado, o período só chega por texto — o clique sozinho não traz período.
+        #
+        # Só o PRIMEIRO texto conta, como já era antes desta sprint: o lead que manda cinco
+        # mensagens seguidas não reescreve cinco vezes o período nem ressuscita o aviso cinco
+        # vezes no sino do SDR. As mensagens seguintes seguem visíveis na conversa e geram a
+        # notificação de "nova mensagem" de sempre (main.py) — nada se perde.
         if state.etapa == ETAPA_REAGENDADO:
             if state.horario_preferencial is None and (texto or "").strip():
                 state.horario_preferencial = texto.strip()
                 state.ultimo_wa_message_id = wa_message_id
                 print(f"🗓️  NAT: horário preferencial de {contact_wa_id} registrado: "
                       f"{state.horario_preferencial!r}")
+                # ATUALIZA o aviso do clique com o período (não cria um segundo) — ver
+                # notificar_reagendamento.
+                await notificar_reagendamento(state, state.horario_preferencial,
+                                              wa_message_id, db)
             return state.etapa
 
         if state.etapa != ETAPA_AGUARDANDO_MOTIVACAO:

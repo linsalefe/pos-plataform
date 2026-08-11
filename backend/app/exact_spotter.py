@@ -268,8 +268,10 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
         from datetime import timezone, timedelta
         SP_TZ = timezone(timedelta(hours=-3))
 
+        welcome_wamid = send_result["messages"][0]["id"]
+
         db.add(Message(
-            wa_message_id=send_result["messages"][0]["id"],
+            wa_message_id=welcome_wamid,
             contact_wa_id=phone,
             channel_id=channel_id,
             direction="outbound",
@@ -303,7 +305,7 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             lead_row.welcome_sent_at = datetime.now(SP_TZ).replace(tzinfo=None)
             lead_row.welcome_status = "sent"
             lead_row.welcome_error = None
-            lead_row.welcome_wamid = send_result["messages"][0]["id"]
+            lead_row.welcome_wamid = welcome_wamid
 
         # PONTO DE ENTRADA DO FLUXO NAT.
         #
@@ -318,10 +320,17 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
         # Guardado por nat_pode_atuar: com a NAT desligada isto é no-op puro. Dentro de
         # SAVEPOINT porque falha aqui não pode desfazer o carimbo de welcome_status nem o
         # registro da mensagem que JÁ saiu para o lead.
+        #
+        # boas_vindas_wamid É O QUE IMPEDE O ENVIO DUPLICADO. O template acabou de sair, dez
+        # linhas acima; passar o wamid diz a iniciar_fluxo_nat "a nat_boasvindas já está com o
+        # lead, só adote o estado". Sem ele, a NAT mandava o MESMO template outra vez — a
+        # janela de 24h está fechada para um lead novo, então o sender caía no ramo de
+        # template e repetia a mensagem. Ver o docstring de iniciar_fluxo_nat.
         try:
             async with db.begin_nested():
                 from app.nat_flow import iniciar_fluxo_nat
-                await iniciar_fluxo_nat(lead_row if lead_row is not None else lead_data, db)
+                await iniciar_fluxo_nat(lead_row if lead_row is not None else lead_data, db,
+                                        boas_vindas_wamid=welcome_wamid)
         except Exception as e:
             print(f"⚠️  NAT: fluxo não iniciado para {phone}: {type(e).__name__}: {e}")
 
