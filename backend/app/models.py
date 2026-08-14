@@ -414,9 +414,15 @@ ACAO_FALHOU = "falhou"
 
 STATUS_ACAO_VALIDOS = frozenset({ACAO_PENDENTE, ACAO_EXECUTADO, ACAO_CANCELADO, ACAO_FALHOU})
 
-# Tipos de ação agendada. Nesta sprint só existe o sla_check. NÃO há CHECK no banco para
-# `kind` (ver migrate_nat_sprint3.py): é ponto de extensão, não máquina de estados fechada.
+# Tipos de ação agendada. NÃO há CHECK no banco para `kind` (ver migrate_nat_sprint3.py): é
+# ponto de extensão, não máquina de estados fechada. O preço disso é que um kind cujo módulo
+# não esteja em nat_scheduler.MODULOS_DE_HANDLERS vira `falhou` — ruidoso, mas só depois de a
+# ação vencer. Acrescentar constante aqui sem registrar o módulo lá é o erro a evitar.
 KIND_SLA_CHECK = "sla_check"
+
+# Bloco 6: 10 min depois de o SDR marcar "não consegui contato", cobra o SDR de novo. O
+# destinatário é o SDR, NUNCA o lead — a mensagem ao lead sai uma única vez, no clique.
+KIND_RETRY_CONTATO = "retry_contato"
 
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3
@@ -449,3 +455,35 @@ class NatScheduledAction(Base):
     attempts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, server_default=func.now())
     processed_at = Column(DateTime, nullable=True)
+
+
+class NatContactAttempt(Base):
+    """Histórico das tentativas de ligação sem sucesso — Bloco 6 (recuperação).
+
+    Uma linha por clique do SDR em "Não consegui contato". O CONTADOR VIVO não é esta tabela:
+    é nat_flow_state.tentativas_contato, e é ele que o endpoint lê para aplicar o teto de 2.
+    Aqui fica o histórico — quem marcou, quando, com que desfecho —, que é o que permite
+    auditar um lead que encerrou cedo. Contador e histórico devem bater; divergirem é bug, e
+    guardar `tentativa_num` em cada linha é o que torna isso conferível.
+
+    Tabela nova em vez de call_logs: `call_logs.call_sid` é UNIQUE NOT NULL e uma tentativa
+    marcada à mão não tem sid nenhum — reusar exigiria inventar um sid falso numa tabela que
+    hoje é fiel ao que o Twilio reportou. Ver migrate_nat_contact_attempts.py.
+
+    SEM FK em lugar nenhum — nem contact_wa_id para contacts, nem registrado_por para users.
+    Mesma razão de NatFlowState, NatButtonEvent e NatScheduledAction: a escrita acontece
+    dentro do fluxo da NAT e não pode ser a causa de uma falha em cascata. `registrado_por`
+    aponta para users.id sem que o banco cobre isso, igual a NatFlowState.assumido_por.
+
+    `resultado` é VARCHAR livre, sem CHECK: hoje o único valor gravado é "sem_contato", mas o
+    conjunto ainda não está fechado (Sprint B/C podem acrescentar outros desfechos). Mesmo
+    critério do `kind` acima — máquina de estados fechada leva CHECK, ponto de extensão não.
+    """
+    __tablename__ = "nat_contact_attempts"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    contact_wa_id = Column(String(20), nullable=False)
+    tentativa_num = Column(Integer, nullable=False)
+    registrado_por = Column(Integer, nullable=True)
+    resultado = Column(String(20), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
