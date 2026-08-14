@@ -29,6 +29,7 @@ import {
   Trash2,
   Lock,
   PhoneCall,
+  PhoneOff,
   CheckCircle2
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
@@ -75,6 +76,11 @@ interface Contact {
 // `pode_assumir` é decidido pelo BACKEND (etapa === aguardando_ligacao && ninguém assumiu) —
 // a regra é a mesma que o handler do SLA aplica, e replicá-la aqui daria dois lugares para
 // ela divergir.
+// `pode_marcar_sem_contato` segue a mesma regra e por um motivo mais forte: a condição dele
+// inclui o TETO de tentativas, que é o que impede a NAT de mandar mensagem a quem já não
+// respondeu duas vezes. Um teto replicado aqui é um teto que um dia diverge — e o lado que
+// diverge é o que envia. Por isso a tela só lê o booleano; `tentativas_contato` e
+// `max_tentativas_contato` servem para EXIBIR "tentativa N de 2", nunca para decidir.
 interface NatEstado {
   em_fluxo: boolean;
   etapa: string | null;
@@ -84,6 +90,9 @@ interface NatEstado {
   assumido_em: string | null;
   escalonamento_nivel: number;
   pode_assumir: boolean;
+  tentativas_contato: number;
+  max_tentativas_contato: number;
+  pode_marcar_sem_contato: boolean;
 }
 
 interface Message {
@@ -131,6 +140,7 @@ export default function ConversationsPage() {
   const [showCRM, setShowCRM] = useState(true);
   const [natEstado, setNatEstado] = useState<NatEstado | null>(null);
   const [assumindo, setAssumindo] = useState(false);
+  const [marcandoSemContato, setMarcandoSemContato] = useState(false);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showSdrMenu, setShowSdrMenu] = useState(false);
   const [showTagMenu, setShowTagMenu] = useState(false);
@@ -353,6 +363,24 @@ export default function ConversationsPage() {
       loadNatEstado(selectedWaId);
     } finally {
       setAssumindo(false);
+    }
+  };
+
+  const marcarSemContato = async () => {
+    if (!selectedWaId || marcandoSemContato) return;
+    setMarcandoSemContato(true);
+    try {
+      const res = await api.post(`/nat/${selectedWaId}/sem-contato`);
+      // A resposta já traz o estado novo (tentativa registrada, etapa nova) — usa ela em vez
+      // de um segundo GET, para o contador não piscar entre o clique e a atualização.
+      setNatEstado(res.data);
+    } catch (err) {
+      console.error('Erro ao marcar sem contato:', err);
+      // Recarrega: o motivo mais provável é o lead ter saído da etapa (alguém assumiu, ou o
+      // próprio lead respondeu) — e aí o certo é mostrar o estado de verdade.
+      loadNatEstado(selectedWaId);
+    } finally {
+      setMarcandoSemContato(false);
     }
   };
 
@@ -1160,6 +1188,36 @@ export default function ConversationsPage() {
                         : <PhoneCall className="w-4 h-4" />}
                       {assumindo ? 'Assumindo…' : 'Assumir ligação'}
                     </button>
+                  )}
+
+                  {/* NAT — recuperação (Bloco 6). O SDR ligou e ninguém atendeu.
+                      A visibilidade é SÓ do backend: pode_marcar_sem_contato já embute a
+                      etapa e o teto de tentativas. Nada é calculado aqui. */}
+                  {natEstado?.pode_marcar_sem_contato && (
+                    <button
+                      onClick={marcarSemContato}
+                      disabled={marcandoSemContato}
+                      className="flex items-center gap-1.5 px-3 py-2 mr-1 rounded-xl bg-slate-600 text-white text-[12px] font-semibold hover:bg-slate-700 disabled:opacity-60 transition-all duration-200 shadow-sm"
+                      title="Registrar que a ligação não foi atendida e avisar o lead"
+                    >
+                      {marcandoSemContato
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <PhoneOff className="w-4 h-4" />}
+                      {marcandoSemContato ? 'Registrando…' : 'Não consegui contato'}
+                    </button>
+                  )}
+
+                  {/* Quantas tentativas já foram gastas. Aparece assim que a primeira é
+                      registrada e permanece depois do teto, quando o botão já sumiu — é o
+                      que explica na tela POR QUE ele sumiu. */}
+                  {!!natEstado?.tentativas_contato && (
+                    <span
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 mr-1 rounded-xl bg-slate-100 text-slate-600 text-[11px] font-medium"
+                      title="Tentativas de contato registradas pelo SDR"
+                    >
+                      <PhoneOff className="w-3.5 h-3.5 flex-shrink-0" />
+                      tentativa {natEstado.tentativas_contato} de {natEstado.max_tentativas_contato}
+                    </span>
                   )}
 
                   {natEstado?.assumido_por && (
