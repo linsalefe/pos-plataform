@@ -21,7 +21,7 @@ conectividade não é um problema de código.
  10. send_nat_message: janela aberta -> texto livre; fechada -> template
  11. nat_sim sem formação -> frase removida, sem buraco no texto
  12. send_template_message sem button_payloads -> corpo idêntico ao de hoje (NÃO-REGRESSÃO)
- 13. drift: nat_copy.py x corpo aprovado na Meta
+ 13. drift: nat_copy.py x corpo aprovado na Meta (corpos, botoes, status e limite de 20)
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -379,7 +379,14 @@ async def caso_13_drift_de_copy():
             resp = await c.get(
                 f"https://graph.facebook.com/v22.0/{row[0]}/message_templates",
                 headers={"Authorization": f"Bearer {row[1]}"}, params={"limit": 100})
-        aprovados = {t["name"]: t for t in resp.json().get("data", [])}
+        # FILTRA POR IDIOMA ANTES DE INDEXAR POR NOME. O mesmo nome pode ter mais de uma
+        # versão aprovada no WABA, e nome não é chave única lá — nat_recuperacao_sdr existe
+        # em `en` e em `pt_BR`, com corpos DIFERENTES. Sem o filtro, quem fica no dict é o
+        # último que a Graph API devolver, e a ordem da lista não é contrato: um dia este
+        # teste passaria a comparar o corpo em inglês e acusaria drift que não existe.
+        # O idioma certo é o que o envio pede (nat_sender: language=nat_copy.IDIOMA).
+        aprovados = {t["name"]: t for t in resp.json().get("data", [])
+                     if t.get("language") == nat_copy.IDIOMA}
     except Exception as e:
         print(f" 13. drift: NAO VERIFICADO (sem acesso a Meta: {type(e).__name__}) — "
               "problema de rede, nao de codigo")
@@ -389,8 +396,12 @@ async def caso_13_drift_de_copy():
     for chave, corpo_local in nat_copy.CORPO_APROVADO.items():
         t = aprovados.get(chave)
         if t is None:
-            divergencias.append(f"{chave}: NAO EXISTE mais no WABA")
+            divergencias.append(f"{chave}: NAO EXISTE mais no WABA em {nat_copy.IDIOMA}")
             continue
+        # Um template REJECTED/PAUSED continua na listagem. Fora de APPROVED ele não sai para
+        # o lead com a janela fechada, e descobrir isso aqui é melhor do que num envio recusado.
+        if t.get("status") != "APPROVED":
+            divergencias.append(f"{chave}: status {t.get('status')} (esperado APPROVED)")
         corpo_meta = next((c.get("text") for c in t.get("components", [])
                            if c.get("type") == "BODY"), None)
         if corpo_meta != corpo_local:
@@ -402,13 +413,30 @@ async def caso_13_drift_de_copy():
             divergencias.append(
                 f"{chave}: botoes divergentes — Meta={botoes_meta} local={botoes_local}")
 
+        # Os botões LIVRES são os mesmos botões em mensagem interactive. A lista tem que ter o
+        # MESMO TAMANHO e a MESMA ORDEM da aprovada: a posição é o índice do quick_reply no
+        # envio por template (payloads_dos_botoes), então um botão a mais, a menos ou trocado
+        # de lugar manda o payload errado — o lead clica em "outro horário" e o fluxo entende
+        # "quero falar agora". O limite de 20 é da Cloud API: acima disso a Meta recusa.
+        livres = nat_copy.BOTOES_LIVRES.get(chave, [])
+        if botoes_meta and len(livres) != len(botoes_meta):
+            divergencias.append(
+                f"{chave}: {len(livres)} botao(oes) livre(s) para {len(botoes_meta)} "
+                "aprovado(s) — a ordem/indice deixaria de casar")
+        for b in livres:
+            if len(b["titulo"]) > nat_copy.LIMITE_TITULO_BOTAO:
+                divergencias.append(
+                    f"{chave}: titulo livre {b['titulo']!r} tem {len(b['titulo'])} chars "
+                    f"(limite {nat_copy.LIMITE_TITULO_BOTAO})")
+
     if divergencias:
         print(" 13. drift: ⚠️  DIVERGENCIA entre nat_copy.py e a Meta:")
         for d in divergencias:
             print(f"       - {d}")
         raise AssertionError("copy divergiu do template aprovado")
-    print(f" 13. drift: nenhum — {len(nat_copy.CORPO_APROVADO)} corpos e os botoes de "
-          "nat_boasvindas batem com a Meta")
+    com_botoes = sorted(nat_copy.BOTOES_APROVADOS)
+    print(f" 13. drift: nenhum — {len(nat_copy.CORPO_APROVADO)} corpos em "
+          f"{nat_copy.IDIOMA} e os botoes de {', '.join(com_botoes)} batem com a Meta")
 
 
 async def main():

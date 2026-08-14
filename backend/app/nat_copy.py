@@ -27,6 +27,15 @@ por isso que estes aqui não podem ser genéricos tipo "SIM".
 NAT_SIM = "NAT_SIM"
 NAT_OUTRO_HORARIO = "NAT_OUTRO_HORARIO"
 
+# Payloads da recuperação (Bloco 6), disparada quando o SDR marca "não consegui contato".
+# Separados de NAT_SIM/NAT_OUTRO_HORARIO embora o SENTIDO seja parecido ("falo agora" x "falo
+# depois"): o que o roteamento precisa saber não é a intenção, é DE QUAL MENSAGEM o clique
+# veio. Um NAT_SIM chegando em sem_contato seria indistinguível de um clique atrasado no botão
+# da boas-vindas, e o fluxo trataria um lead que acabou de pedir nova ligação como quem está
+# respondendo a uma pergunta de dez etapas atrás.
+NAT_TENTAR_AGORA = "NAT_TENTAR_AGORA"
+NAT_AGENDAR_OUTRO = "NAT_AGENDAR_OUTRO"
+
 # Limite de caracteres do TÍTULO de botão em mensagem interativa (não-template) da Cloud API.
 LIMITE_TITULO_BOTAO = 20
 
@@ -35,6 +44,7 @@ NAT_BOASVINDAS = "nat_boasvindas"
 NAT_MSG_SIM = "nat_sim"
 NAT_CONFIRMA_TRANSFERENCIA = "nat_confirma_transferencia"
 NAT_MSG_OUTRO_HORARIO = "nat_outro_horario"
+NAT_MSG_RECUPERACAO = "nat_recuperacao_sdr"
 
 IDIOMA = "pt_BR"
 
@@ -67,6 +77,17 @@ CORPO_APROVADO = {
         "Sem problemas 🙏\n"
         "Qual período costuma ser melhor para você?"
     ),
+    # ⚠️ EXISTEM DOIS nat_recuperacao_sdr APROVADOS NO WABA, com corpos DIFERENTES: um em
+    # `en` e este, em `pt_BR`. O envio pede language=IDIOMA (nat_sender), então o que o lead
+    # recebe é o pt_BR — e é ele que está copiado aqui, verbatim, lido da Meta em 2026-08-14.
+    # Quem for conferir drift precisa filtrar por idioma antes de indexar por nome; sem o
+    # filtro, a comparação depende da ordem em que a Graph API devolve a lista.
+    NAT_MSG_RECUPERACAO: (
+        "Olá {{1}}! Tentamos falar com você há alguns minutos, mas não conseguimos concluir "
+        "o contato. 🥺\n\n"
+        "Ainda tenho muito interesse em ajudar você com sua aplicação para a Pós-Graduação "
+        "em {{2}}. Gostaria de tentar novamente agora ou prefere agendar para outro período?"
+    ),
 }
 
 # nat_sim SEM a formação do lead — {{1}} nome, {{2}} curso (o {{3}} do aprovado vira {{2}}).
@@ -92,6 +113,10 @@ CORPO_SEM_FORMACAO = {
 # teste de drift conferir contra a Meta — o envio por template usa o rótulo que já está lá.
 BOTOES_APROVADOS = {
     NAT_BOASVINDAS: ["Sim, Posso conversar agora", "Prefiro outro horário"],
+    # Ordem lida da Meta, não escolhida aqui: o índice do botão no webhook vem do template
+    # aprovado, e inverter esta lista trocaria "quer falar agora" por "quer falar depois" em
+    # todo clique que caia no fallback por texto.
+    NAT_MSG_RECUPERACAO: ["Tentar novamente agora", "Agendar outro horário"],
 }
 
 # Título dos MESMOS botões em mensagem livre (interactive), onde o limite é 20 caracteres.
@@ -107,6 +132,16 @@ BOTOES_LIVRES = {
     NAT_BOASVINDAS: [
         {"payload": NAT_SIM, "titulo": "Sim, posso agora"},
         {"payload": NAT_OUTRO_HORARIO, "titulo": "Outro horário"},
+    ],
+    # Recuperação (Bloco 6). Os aprovados têm 22 e 21 caracteres — nenhum dos dois cabe no
+    # limite de 20. Encurtados à mão pelo mesmo critério da boas-vindas (preservar o sentido
+    # em vez de cortar cego, que deixaria 'Tentar novamente ago' na tela do lead):
+    #
+    #   'Tentar novamente agora' (22) -> 'Tentar agora'   (12)
+    #   'Agendar outro horário'  (21) -> 'Outro horário'  (13)
+    NAT_MSG_RECUPERACAO: [
+        {"payload": NAT_TENTAR_AGORA, "titulo": "Tentar agora"},
+        {"payload": NAT_AGENDAR_OUTRO, "titulo": "Outro horário"},
     ],
 }
 
@@ -148,6 +183,11 @@ def parametros_template(chave: str, *, nome: str = "", curso: str = "",
         return [nome]
     if chave == NAT_MSG_OUTRO_HORARIO:
         return []
+    if chave == NAT_MSG_RECUPERACAO:
+        # {{1}} nome, {{2}} curso — as duas variáveis que a boas-vindas já usa. Sem a
+        # formação, então não existe aqui o caso "não dá para montar com honestidade" que
+        # obriga o nat_sim a devolver None.
+        return [nome, curso]
     return None
 
 
