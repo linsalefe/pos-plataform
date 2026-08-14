@@ -19,7 +19,14 @@ Transições implementadas:
   1º texto                       reagendado             grava período + atualiza      reagendado
                                                         o aviso do SDR
   SDR clica "Assumir ligação"    aguardando_ligacao     (nat_routes.assumir_ligacao)  encerrado
-  clique ou texto                encerrado              nada — o humano conduz        encerrado
+  SDR marca "sem contato"        aguardando_ligacao     envia nat_recuperacao_sdr,    sem_contato
+    (1ª vez)                                            arma retry de 10 min            (Bloco 6)
+  SDR marca "sem contato"        sem_contato            envia, NÃO arma retry         encerrado
+    (2ª vez = teto)
+  payload NAT_TENTAR_AGORA       sem_contato, ou        avisa SDR, arma sla_check     aguardando_ligacao
+                                 encerrado PELO TETO
+  payload NAT_AGENDAR_OUTRO      idem                   avisa SDR (reagendamento)     reagendado
+  clique ou texto                encerrado por ASSUMIR  nada — o humano conduz        encerrado
   qualquer outro                 qualquer               nada, só loga                 inalterado
 
 Duas regras que valem para tudo neste módulo:
@@ -42,8 +49,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import nat_copy
 from app.models import (ETAPA_AGUARDANDO_HORARIO, ETAPA_AGUARDANDO_LIGACAO,
                         ETAPA_AGUARDANDO_MOTIVACAO, ETAPA_AGUARDANDO_RESPOSTA,
-                        ETAPA_REAGENDADO, KIND_SLA_CHECK, Contact, ExactLead, Notification,
-                        NatFlowState, User)
+                        ETAPA_ENCERRADO, ETAPA_REAGENDADO, ETAPA_SEM_CONTATO, KIND_SLA_CHECK,
+                        Contact, ExactLead, Notification, NatFlowState, User)
 from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
                            nat_pode_atuar)
 from app.nat_sender import send_nat_message
@@ -552,37 +559,183 @@ async def iniciar_fluxo_nat(lead, db: AsyncSession, *,
         return None
 
 
+# Todos os payloads que a NAT fixa nos próprios envios. Derivado de nat_copy em vez de
+# listado à mão: um payload novo lá passa a ser reconhecido aqui sem ninguém lembrar.
+PAYLOADS_CONHECIDOS = frozenset(
+    p for chave in nat_copy.BOTOES_LIVRES
+    for p in (nat_copy.payloads_dos_botoes(chave) or []))
+
+
+def _clique_e_da_recuperacao(state: NatFlowState) -> bool:
+    """O último botão que este lead recebeu é o da recuperação, e ele ainda pode ser clicado?
+
+    `sem_contato` é o caso óbvio. O outro é `encerrado` COM tentativa registrada, e ele existe
+    porque a 2ª tentativa manda a mensagem E encerra o fluxo no mesmo ato: sem esta linha, o
+    lead receberia dois botões vivos apontando para um estado que descarta cliques em
+    silêncio — a mesma classe de bug dos cliques perdidos que esta sprint existe para matar.
+    Um lead que clica é um lead respondendo; encerrar o fluxo foi decisão NOSSA, não dele.
+
+    `assumido_por` é o corte: se um humano assumiu a ligação, `encerrado` significa "o
+    atendimento é dele agora" e a NAT não retoma o lead — é exatamente o que o /assumir
+    documenta. Aí o clique volta a ser ignorado, e ignorar é a resposta certa.
+    """
+    if state.etapa == ETAPA_SEM_CONTATO:
+        return True
+    return (state.etapa == ETAPA_ENCERRADO
+            and (state.tentativas_contato or 0) > 0
+            and state.assumido_por is None)
+
+
+def _chave_dos_botoes(state: NatFlowState) -> str | None:
+    """Qual MENSAGEM tem botões esperados no estado atual. None = texto não identifica nada.
+
+    É o que dá sentido ao fallback por texto: o mesmo rótulo "Outro horário" pertence à
+    boas-vindas e à recuperação, e só o lugar do lead no fluxo desempata.
+    """
+    if state.etapa == ETAPA_AGUARDANDO_RESPOSTA:
+        return nat_copy.NAT_BOASVINDAS
+    if _clique_e_da_recuperacao(state):
+        return nat_copy.NAT_MSG_RECUPERACAO
+    return None
+
+
 def _payload_do_evento(evento: dict, state: NatFlowState) -> str | None:
     """Payload do clique. Texto do botão é FALLBACK, nunca o mecanismo principal.
 
     O payload é o que distingue os botões; o texto não distingue nada — "Prefiro outro
-    horário" é idêntico em nat_boasvindas e em nat_reativacao_09h. O fallback por texto só
-    existe para os cliques que chegarem SEM payload (template disparado antes desta sprint,
-    quando ainda não fixávamos payload no envio) e só resolve porque a ETAPA em que o lead
-    está já elimina a ambiguidade — não porque o texto seja confiável.
+    horário" é idêntico em nat_boasvindas e em nat_reativacao_09h, e "Outro horário" é o
+    título livre TANTO da boas-vindas QUANTO da recuperação. O fallback por texto só existe
+    para os cliques que chegarem SEM payload (template disparado antes desta sprint, quando
+    ainda não fixávamos payload no envio) e só resolve porque a ETAPA em que o lead está já
+    elimina a ambiguidade — não porque o texto seja confiável. É por isso que ele é indexado
+    pela etapa: o MESMO texto resolve para NAT_OUTRO_HORARIO em aguardando_resposta e para
+    NAT_AGENDAR_OUTRO em sem_contato, e não há como acertar isso sem saber onde o lead está.
+
+    A POSIÇÃO é o que casa texto com payload — 1º botão, 2º botão —, e a ordem das listas de
+    nat_copy é a ordem aprovada na Meta. Inverter uma delas faria "quero falar agora" virar
+    "quero falar depois", em silêncio.
     """
     payload = (evento.get("button_payload") or "").strip()
-    if payload in (nat_copy.NAT_SIM, nat_copy.NAT_OUTRO_HORARIO):
+    if payload in PAYLOADS_CONHECIDOS:
         return payload
 
-    if state.etapa != ETAPA_AGUARDANDO_RESPOSTA:
+    chave = _chave_dos_botoes(state)
+    if chave is None:
         return payload or None
 
     texto = (evento.get("button_text") or "").strip().lower()
     if not texto:
         return payload or None
 
-    aprovados = nat_copy.BOTOES_APROVADOS.get(nat_copy.NAT_BOASVINDAS, [])
-    livres = [b["titulo"] for b in nat_copy.BOTOES_LIVRES.get(nat_copy.NAT_BOASVINDAS, [])]
-    if texto in {t.lower() for t in (aprovados[:1] + livres[:1])}:
-        print(f"↪️  NAT: clique sem payload conhecido, resolvido por texto → {nat_copy.NAT_SIM}")
-        return nat_copy.NAT_SIM
-    if texto in {t.lower() for t in (aprovados[1:2] + livres[1:2])}:
-        print("↪️  NAT: clique sem payload conhecido, resolvido por texto → "
-              f"{nat_copy.NAT_OUTRO_HORARIO}")
-        return nat_copy.NAT_OUTRO_HORARIO
+    aprovados = nat_copy.BOTOES_APROVADOS.get(chave, [])
+    livres = [b["titulo"] for b in nat_copy.BOTOES_LIVRES.get(chave, [])]
+    payloads = nat_copy.payloads_dos_botoes(chave) or []
+
+    for posicao, esperado in enumerate(payloads[:2]):
+        titulos = {t.lower() for t in (aprovados[posicao:posicao + 1]
+                                       + livres[posicao:posicao + 1])}
+        if texto in titulos:
+            print(f"↪️  NAT: clique sem payload conhecido em {state.etapa}, resolvido por "
+                  f"texto → {esperado}")
+            return esperado
 
     return payload or None
+
+
+async def _clique_na_recuperacao(state: NatFlowState, payload: str | None,
+                                 wa_message_id: str, db: AsyncSession) -> str | None:
+    """Cliques na mensagem de recuperação (Bloco 6). Devolve a etapa nova, ou None.
+
+    NENHUM DOS DOIS CAMINHOS MANDA MENSAGEM AO LEAD. É a diferença em relação ao ramo da
+    boas-vindas, e é deliberada: o lead já recebeu a única mensagem deste fluxo, e o que ele
+    pede agora — ser chamado agora, ou depois — se resolve com um HUMANO, não com mais texto.
+    (O acusar-recebimento ao lead ficou de fora desta sprint; ver o relatório do Bloco 6.)
+
+    "Tentar novamente agora" devolve o lead à FILA DE LIGAÇÃO, e devolver de verdade exige
+    três coisas além da etapa:
+
+      * cancelar o retry_contato pendente — a cobrança de 10 min perdeu o objeto no instante
+        em que o lead respondeu; deixá-la de pé faria o SDR ser cobrado por um lead que já
+        voltou para a fila;
+      * ZERAR o escalonamento e recarimbar transferido_em. Sem isso o sla_check novo nasce
+        morto: o ciclo anterior quase sempre terminou em nível 2, e a PRIMEIRA coisa que o
+        handler faz é sair calado quando o nível já é 2. O relógio que estamos armando aqui
+        é de uma promessa NOVA ("um consultor vai te ligar agora"), e uma promessa nova pede
+        uma escada nova — o histórico de quem já foi avisado antes não deve calar o aviso
+        desta vez;
+      * agendar o sla_check, que é o que garante que alguém seja cobrado se o SDR não
+        assumir.
+
+    "Agendar outro horário" cai em `reagendado` e reaproveita inteiro o aviso que já existe
+    na saída dessa etapa. A extração do período (a IA que lê "de tarde") é Sprint B; até lá o
+    SDR recebe o pedido e combina o horário por conta própria.
+    """
+    from app.models import KIND_RETRY_CONTATO
+    from app.nat_recuperacao import (TIPO_NOTIF_TENTAR_AGORA, montar_notificacao_tentar_agora,
+                                     notificar_sdr)
+    from app.nat_scheduler import agendar, cancelar
+
+    wa_id = state.contact_wa_id
+    origem = state.etapa  # sem_contato, ou encerrado pelo teto — ver _clique_e_da_recuperacao
+
+    if payload not in (nat_copy.NAT_TENTAR_AGORA, nat_copy.NAT_AGENDAR_OUTRO):
+        print(f"↩️  NAT: payload '{payload}' não é da recuperação (lead está em "
+              f"{origem}) — ignorado")
+        return None
+
+    # O retry morre nos DOIS caminhos: o lead respondeu, e cobrar o SDR daqui a 10 minutos
+    # por falta de resposta seria falso. (O handler também se protege relendo a etapa; isto
+    # aqui é o mecanismo, aquilo é a rede.)
+    try:
+        async with db.begin_nested():
+            await cancelar(KIND_RETRY_CONTATO, wa_id, db)
+    except Exception as e:
+        print(f"⚠️  NAT: retry_contato de {wa_id} não pôde ser cancelado "
+              f"({type(e).__name__}: {e}) — o handler ainda relê a etapa e sai calado")
+
+    if payload == nat_copy.NAT_AGENDAR_OUTRO:
+        state.etapa = ETAPA_REAGENDADO
+        state.ultimo_wa_message_id = wa_message_id
+        print(f"➡️  NAT: {wa_id} {origem} → {ETAPA_REAGENDADO} "
+              "(lead pediu outro horário depois da tentativa de ligação)")
+        if not await notificar_reagendamento(state, None, wa_message_id, db):
+            print(f"🚨 NAT: {wa_id} pediu outro horário e NINGUÉM foi avisado. O lead está "
+                  "em reagendado sem ninguém encarregado de voltar nele.")
+        return ETAPA_REAGENDADO
+
+    # --- NAT_TENTAR_AGORA: de volta para a fila de ligação ---
+    dados = await _dados_do_lead(state, db)
+    title, body = montar_notificacao_tentar_agora(dados["nome"], wa_id, dados["curso"])
+
+    try:
+        async with db.begin_nested():
+            avisado = await notificar_sdr(state, db, tipo=TIPO_NOTIF_TENTAR_AGORA,
+                                          ref=wa_message_id, title=title, body=body)
+            state.etapa = ETAPA_AGUARDANDO_LIGACAO
+            state.ultimo_wa_message_id = wa_message_id
+            state.transferido_em = _agora_sp()
+            state.escalonamento_nivel = 0
+    except Exception as e:
+        print(f"❌ NAT: clique 'tentar agora' de {wa_id} falhou ao registrar "
+              f"({type(e).__name__}: {e}) — estado permanece em {state.etapa}")
+        return None
+
+    if not avisado:
+        print(f"🚨 NAT: {wa_id} pediu NOVA LIGAÇÃO e ninguém foi avisado diretamente. O "
+              f"sla_check de {SLA_LIGACAO_MINUTOS} min é a única rede que sobrou.")
+
+    try:
+        async with db.begin_nested():
+            await agendar(KIND_SLA_CHECK, wa_id,
+                          _agora_sp() + timedelta(minutes=SLA_LIGACAO_MINUTOS),
+                          {"origem": "recuperacao_tentar_agora"}, db)
+    except Exception as e:
+        print(f"⚠️  NAT: sla_check NÃO agendado para {wa_id} ({type(e).__name__}: {e}) — o "
+              "aviso ao SDR permanece, mas NÃO haverá escalonamento automático")
+
+    print(f"➡️  NAT: {wa_id} {origem} → {ETAPA_AGUARDANDO_LIGACAO} "
+          "(lead pediu nova tentativa agora)")
+    return ETAPA_AGUARDANDO_LIGACAO
 
 
 async def processar_clique(evento: dict, db: AsyncSession) -> str | None:
@@ -606,6 +759,12 @@ async def processar_clique(evento: dict, db: AsyncSession) -> str | None:
             return state.etapa
 
         payload = _payload_do_evento(evento, state)
+
+        # RECUPERAÇÃO (Bloco 6). Ramo próprio: os cliques daqui não enviam nada ao lead e não
+        # seguem a máquina de estados da boas-vindas. Vem ANTES da checagem de etapa porque
+        # inclui um caso de `encerrado` — ver _clique_e_da_recuperacao.
+        if _clique_e_da_recuperacao(state):
+            return await _clique_na_recuperacao(state, payload, wa_message_id, db)
 
         if state.etapa != ETAPA_AGUARDANDO_RESPOSTA:
             print(f"↩️  NAT: clique '{payload}' fora da etapa esperada "

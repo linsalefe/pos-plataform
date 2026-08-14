@@ -3,8 +3,9 @@
 Dois grupos, com públicos diferentes, todos autenticados:
 
   A TELA DE CONVERSAS (Bloco 5, Fase 7) — qualquer usuário logado:
-  GET  /api/nat/{wa_id}/estado    o que a tela precisa para decidir o que mostrar
-  POST /api/nat/{wa_id}/assumir   o botão "Assumir ligação"
+  GET  /api/nat/{wa_id}/estado       o que a tela precisa para decidir o que mostrar
+  POST /api/nat/{wa_id}/assumir      o botão "Assumir ligação"
+  POST /api/nat/{wa_id}/sem-contato  o botão "Não consegui contato" (Bloco 6)
 
   O PAINEL DE CONTROLE (sprint de ativação, Fase 4) — só admin:
   GET   /api/nat/config           lê o kill switch
@@ -16,17 +17,27 @@ notificação: o sino pode ser limpo sem intenção, e "vi o alerta" não é "vo
 O mesmo clique é também a ÚNICA SAÍDA do fluxo: leva o lead para `encerrado`. Antes desta
 sprint nenhum caminho atribuía essa etapa e o lead morria em `aguardando_ligacao`.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import nat_copy
 from app.auth import get_current_admin, get_current_user
 from app.database import get_db
-from app.models import (ETAPA_AGUARDANDO_LIGACAO, ETAPA_ENCERRADO, KIND_SLA_CHECK,
-                        NatConfig, NatFlowState, User)
+from app.models import (ETAPA_AGUARDANDO_LIGACAO, ETAPA_ENCERRADO, ETAPA_SEM_CONTATO,
+                        KIND_RETRY_CONTATO, KIND_SLA_CHECK, NatConfig, NatContactAttempt,
+                        NatFlowState, User)
+from app.nat_flow import _dados_do_lead
 from app.nat_guard import SP_TZ, _agora_sp
+from app.nat_recuperacao import (JANELA_IDEMPOTENCIA_SEGUNDOS, MAX_TENTATIVAS_CONTATO,
+                                 RESULTADO_SEM_CONTATO, RETRY_CONTATO_MINUTOS)
+from app.nat_sender import send_nat_message
+
+# Etapas em que "não consegui contato" faz sentido: o lead está esperando ligação, ou já
+# levou uma tentativa sem sucesso. Fora daí o botão não aparece e o endpoint recusa.
+ETAPAS_PODE_MARCAR_SEM_CONTATO = frozenset({ETAPA_AGUARDANDO_LIGACAO, ETAPA_SEM_CONTATO})
 
 router = APIRouter(prefix="/api/nat", tags=["nat"])
 
@@ -50,7 +61,18 @@ async def _payload(state: NatFlowState, db: AsyncSession) -> dict:
     `pode_assumir` é calculado AQUI, não no TSX. A regra é "está em aguardando_ligacao e
     ninguém assumiu" — a mesma que o handler do sla_check aplica. Duplicá-la no frontend
     criaria dois lugares para ela divergir, e o frontend perderia primeiro.
+
+    `pode_marcar_sem_contato` segue a mesma disciplina, e por um motivo mais forte: a regra
+    dele tem DUAS partes (a etapa e o teto de tentativas), e é o teto que impede a NAT de
+    mandar uma terceira mensagem para quem já não respondeu duas vezes. Uma condição de teto
+    replicada no TSX é uma condição de teto que um dia diverge — e o lado que diverge é o que
+    manda mensagem.
+
+    `tentativas_contato` e `max_tentativas_contato` vão junto porque a tela mostra
+    "tentativa N de 2": sem os dois números, o frontend teria que saber o teto, que é
+    exatamente o que a linha acima evita.
     """
+    tentativas = state.tentativas_contato or 0
     return {
         "em_fluxo": True,
         "etapa": state.etapa,
@@ -61,13 +83,18 @@ async def _payload(state: NatFlowState, db: AsyncSession) -> dict:
         "escalonamento_nivel": state.escalonamento_nivel or 0,
         "pode_assumir": (state.etapa == ETAPA_AGUARDANDO_LIGACAO
                          and state.assumido_por is None),
+        "tentativas_contato": tentativas,
+        "max_tentativas_contato": MAX_TENTATIVAS_CONTATO,
+        "pode_marcar_sem_contato": (state.etapa in ETAPAS_PODE_MARCAR_SEM_CONTATO
+                                    and tentativas < MAX_TENTATIVAS_CONTATO),
     }
 
 
 VAZIO = {
     "em_fluxo": False, "etapa": None, "transferido_em": None, "assumido_por": None,
     "assumido_por_nome": None, "assumido_em": None, "escalonamento_nivel": 0,
-    "pode_assumir": False,
+    "pode_assumir": False, "tentativas_contato": 0,
+    "max_tentativas_contato": MAX_TENTATIVAS_CONTATO, "pode_marcar_sem_contato": False,
 }
 
 
@@ -166,6 +193,185 @@ async def assumir_ligacao(wa_id: str, db: AsyncSession = Depends(get_db),
 
     await db.refresh(state)
     return {"ja_assumido": False, "cancelados": cancelados, **await _payload(state, db)}
+
+
+async def _estado_travado(wa_id: str, db: AsyncSession) -> NatFlowState | None:
+    """O estado do fluxo, com a LINHA TRAVADA até o fim desta transação.
+
+    `with_for_update()` e não o SELECT comum de `_estado`, porque este é o único endpoint da
+    NAT que ENVIA MENSAGEM AO LEAD. Sem o lock, dois cliques simultâneos (dois SDRs, ou a
+    mesma pessoa em duas abas) leriam `tentativas_contato = 0` ao mesmo tempo, os dois
+    passariam pela janela de idempotência, e o lead receberia DUAS mensagens — queimando as
+    duas tentativas de uma vez. Com o lock, o segundo espera o primeiro commitar e então
+    enxerga a tentativa já registrada, que é o que faz a janela de 30s funcionar de fato.
+
+    O /assumir não precisa disto: ele não manda nada ao lead, e o pior desfecho da corrida lá
+    é um segundo carimbo que a checagem de `assumido_por` já rejeita.
+    """
+    res = await db.execute(
+        select(NatFlowState).where(NatFlowState.contact_wa_id == wa_id).with_for_update())
+    return res.scalar_one_or_none()
+
+
+async def _tentativa_recente(wa_id: str, agora: datetime,
+                             db: AsyncSession) -> NatContactAttempt | None:
+    """A última tentativa deste contato, se ela for recente demais para ser um ato novo.
+
+    Por CONTATO, não por usuário: o que a janela protege é o lead (uma mensagem só), e um
+    segundo clique de outra pessoa entrega o mesmo dano que um segundo clique da mesma.
+
+    Compara contra `created_at` gravado por nós em horário de SP — ver a nota do modelo sobre
+    o DEFAULT NOW() ser UTC e não servir para comparação de negócio.
+    """
+    res = await db.execute(
+        select(NatContactAttempt)
+        .where(NatContactAttempt.contact_wa_id == wa_id)
+        .order_by(NatContactAttempt.created_at.desc())
+        .limit(1))
+    ultima = res.scalar_one_or_none()
+    if ultima is None or ultima.created_at is None:
+        return None
+    idade = (agora - ultima.created_at).total_seconds()
+    return ultima if 0 <= idade < JANELA_IDEMPOTENCIA_SEGUNDOS else None
+
+
+@router.post("/{wa_id}/sem-contato")
+async def marcar_sem_contato(wa_id: str, db: AsyncSession = Depends(get_db),
+                             current_user: User = Depends(get_current_user)):
+    """O botão "Não consegui contato". Registra a tentativa, avisa o lead e cobra o SDR depois.
+
+    O SDR ligou e ninguém atendeu. Sem este botão o lead ficava parado em
+    `aguardando_ligacao` até alguém lembrar dele — e o SLA já tinha escalonado e se esgotado,
+    então não havia mais nenhum mecanismo olhando para aquele lead.
+
+    A SEQUÊNCIA, e por que ela é esta:
+
+      1. TRAVA a linha do estado (ver _estado_travado) — é o que serializa cliques
+         simultâneos, e é a única defesa contra mandar duas mensagens ao mesmo lead;
+      2. IDEMPOTÊNCIA por contato, 30s — clique duplo é um ato só;
+      3. TETO — se o lead já esgotou as tentativas, nada é enviado e o fluxo encerra;
+      4. REGISTRA a tentativa (histórico + contador + etapa), tudo num savepoint só, porque é
+         uma escrita lógica única: "houve uma tentativa";
+      5. CANCELA o sla_check pendente — o relógio da transferência perdeu o objeto: o SDR
+         ligou, e o que falta agora não é alguém assumir, é o lead responder;
+      6. ENVIA a mensagem ao lead (a ÚNICA deste fluxo);
+      7. AGENDA o retry de 10 min, que cobra o SDR — nunca o lead.
+
+    NA 2ª TENTATIVA O FLUXO ENCERRA: a mensagem ainda sai (é a segunda e última chance de o
+    lead reagir), mas nenhum retry é agendado e a etapa vai para `encerrado`. É o teto se
+    fechando — sem ele, "recuperação" viraria insistência automática.
+
+    O QUE NÃO ABORTA O REGISTRO. O envio ao lead e o agendamento do retry são efeitos
+    colaterais: se a Meta recusar, ou se a NAT estiver desligada (que é o caso hoje), a
+    tentativa continua registrada e a etapa continua mudando. O SDR ligou de fato — esse é um
+    acontecimento do mundo, não uma consequência do envio. A resposta diz o que aconteceu com
+    cada passo (`mensagem_enviada`, `retry_agendado`) em vez de fingir sucesso.
+    """
+    agora = _agora_sp()
+
+    state = await _estado_travado(wa_id, db)
+    if state is None:
+        raise HTTPException(404, "Este contato não está no fluxo da NAT.")
+
+    if state.etapa not in ETAPAS_PODE_MARCAR_SEM_CONTATO:
+        raise HTTPException(
+            409,
+            f"O lead não está aguardando ligação (etapa atual: {state.etapa}). "
+            "Não há tentativa de contato a registrar.")
+
+    # --- 2. IDEMPOTÊNCIA (por contato, 30s) ---
+    recente = await _tentativa_recente(wa_id, agora, db)
+    if recente is not None:
+        print(f"↩️  NAT: 'sem contato' de {wa_id} repetido em menos de "
+              f"{JANELA_IDEMPOTENCIA_SEGUNDOS}s (tentativa {recente.tentativa_num} já "
+              f"registrada por user {recente.registrado_por}) — nada gravado, nada enviado")
+        return {"registrado": False, "motivo": "duplicado",
+                "tentativa_num": recente.tentativa_num, "mensagem_enviada": False,
+                "retry_agendado": False, "cancelados": 0, **await _payload(state, db)}
+
+    tentativas_antes = state.tentativas_contato or 0
+
+    # --- 3. TETO já estourado ANTES desta tentativa ---
+    # Caminho de aba velha ou chamada direta à API: a tela esconde o botão quando
+    # pode_marcar_sem_contato é falso. Não envia, não agenda, e deixa o lead em `encerrado` —
+    # que é onde ele já deveria estar.
+    if tentativas_antes >= MAX_TENTATIVAS_CONTATO:
+        async with db.begin_nested():
+            state.etapa = ETAPA_ENCERRADO
+        await db.commit()
+        await db.refresh(state)
+        print(f"🛑 NAT: 'sem contato' de {wa_id} recusado — teto de "
+              f"{MAX_TENTATIVAS_CONTATO} tentativas já atingido ({tentativas_antes}). "
+              f"Nada enviado; lead em {ETAPA_ENCERRADO}.")
+        return {"registrado": False, "motivo": "teto_de_tentativas",
+                "tentativa_num": tentativas_antes, "mensagem_enviada": False,
+                "retry_agendado": False, "cancelados": 0, **await _payload(state, db)}
+
+    tentativa_num = tentativas_antes + 1
+    ultima = tentativa_num >= MAX_TENTATIVAS_CONTATO
+
+    # --- 4. REGISTRO: histórico + contador + etapa, um savepoint só ---
+    async with db.begin_nested():
+        db.add(NatContactAttempt(
+            contact_wa_id=wa_id,
+            tentativa_num=tentativa_num,
+            registrado_por=current_user.id,
+            resultado=RESULTADO_SEM_CONTATO,
+            # Carimbo em SP, escrito por nós: é ele que a janela de idempotência compara. O
+            # DEFAULT NOW() da coluna é UTC e serviria só de auditoria.
+            created_at=agora,
+        ))
+        state.tentativas_contato = tentativa_num
+        state.etapa = ETAPA_ENCERRADO if ultima else ETAPA_SEM_CONTATO
+
+    # --- 5. CANCELA o sla_check pendente ---
+    cancelados = 0
+    try:
+        async with db.begin_nested():
+            from app.nat_scheduler import cancelar
+            cancelados = await cancelar(KIND_SLA_CHECK, wa_id, db)
+    except Exception as e:
+        print(f"⚠️  NAT: {wa_id} marcado sem contato, mas o cancelamento do sla_check "
+              f"falhou ({type(e).__name__}: {e}). O SLA não escalona: o handler relê o "
+              f"estado e a etapa já não é {ETAPA_AGUARDANDO_LIGACAO}.")
+
+    # --- 6. A ÚNICA MENSAGEM AO LEAD ---
+    # Fora de savepoint, como em nat_flow.processar_clique: send_nat_message engole as
+    # próprias exceções e devolve False, e o Message que ela grava tem que entrar no MESMO
+    # commit do registro — um savepoint revertido aqui apagaria da conversa uma mensagem que
+    # o lead já recebeu.
+    dados = await _dados_do_lead(state, db)
+    enviada = await send_nat_message(wa_id, nat_copy.NAT_MSG_RECUPERACAO, db,
+                                     nome=dados["nome"], curso=dados["curso"])
+
+    # --- 7. RETRY que cobra o SDR (nunca o lead). Não existe na última tentativa. ---
+    retry_agendado = False
+    if not ultima:
+        try:
+            async with db.begin_nested():
+                from app.nat_scheduler import agendar
+                await agendar(
+                    KIND_RETRY_CONTATO, wa_id,
+                    agora + timedelta(minutes=RETRY_CONTATO_MINUTOS),
+                    {"tentativa": tentativa_num, "registrado_por": current_user.id}, db)
+                retry_agendado = True
+        except Exception as e:
+            print(f"⚠️  NAT: retry_contato NÃO agendado para {wa_id} "
+                  f"({type(e).__name__}: {e}) — a tentativa está registrada, mas ninguém "
+                  "será cobrado automaticamente daqui a "
+                  f"{RETRY_CONTATO_MINUTOS} min")
+
+    await db.commit()
+    await db.refresh(state)
+    print(f"📵 NAT: {wa_id} sem contato (tentativa {tentativa_num}/"
+          f"{MAX_TENTATIVAS_CONTATO}) por {current_user.name} (id={current_user.id}) → "
+          f"{state.etapa} — mensagem {'enviada' if enviada else 'NÃO enviada'}, "
+          f"{cancelados} sla_check cancelado(s), retry "
+          f"{'agendado' if retry_agendado else 'não agendado'}")
+
+    return {"registrado": True, "motivo": None, "tentativa_num": tentativa_num,
+            "mensagem_enviada": enviada, "retry_agendado": retry_agendado,
+            "cancelados": cancelados, **await _payload(state, db)}
 
 
 # ==========================================================================================
