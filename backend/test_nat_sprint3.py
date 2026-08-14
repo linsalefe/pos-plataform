@@ -200,10 +200,15 @@ class FilaFalsa:
 
 
 def _estado(etapa=ETAPA_AGUARDANDO_LIGACAO, sdr=4, assumido_por=None, nivel=0,
-            wa="5511900000001", exact_lead_id=51000001):
+            wa="5511900000001", exact_lead_id=51000001, tentativas=0):
+    # `tentativas_contato` espelha a coluna que o Bloco 6 passou a consumir (o payload do
+    # /estado e o roteamento de clique leem esse campo). Um dublê sem ele deixaria de
+    # exercitar o código real e estouraria AttributeError dentro do try/except do fluxo —
+    # que é o pior desfecho num teste: verde por engano.
     return SimpleNamespace(
         contact_wa_id=wa, etapa=etapa, sdr_user_id=sdr, exact_lead_id=exact_lead_id,
-        assumido_por=assumido_por, assumido_em=(AGORA if assumido_por else None),
+        tentativas_contato=tentativas, assumido_por=assumido_por,
+        assumido_em=(AGORA if assumido_por else None),
         escalonamento_nivel=nivel, transferido_em=AGORA - timedelta(minutes=2),
         ultimo_wa_message_id=None, horario_preferencial=None)
 
