@@ -437,6 +437,7 @@ boxes e **0** leads com "TESTE API". O órfão não bloqueia o horário: um `Box
 2027-03-10 14:00–14:45 foi aceito depois (201, box 43722400, removido em seguida).
 
 **Total de órfãos invisíveis deixados pela investigação: 2** (43722204 e 43722368).
+Mais um veio do E2E da implementação — ver §10. **Total geral: 3.**
 
 ---
 
@@ -596,6 +597,48 @@ que é usado em relatório. Fixar como constante do módulo e não aceitar da qu
 - **Não testei `duplicityValidation: true`** nem o erro de duplicidade que ele produz.
 - **Não testei `BoxesUpdate`** — existe no `$metadata` e pode ser caminho para mover um box sem
   reunião; provavelmente recusa box com reunião, pela mesma mensagem "not possible to change".
+
+---
+
+## 10. E2E da implementação (17/08/2026)
+
+`backend/test_agendamento_e2e.py --sim-eu-quero` — atravessa o caminho **real** de
+`fluxo.agendar()`, o mesmo que o `POST /api/agendamento/agendar` chama. Nada mockado: Exact
+de produção e banco de produção. Só a grade é trocada por env, para o alvo cair em **2027**.
+
+| # | verificação | resultado |
+|---|---|---|
+| 1 | `2027-03-17` sem nenhum box para `comercial@` | vazio |
+| 2 | fluxo completo | agendamento #1, lead **51434831**, box **43722680**, reunião **4724744** |
+| 3 | lead no funil | `etapa=Agendados`, `funil=18535`, `salesRep=comercial@`, `source=Rd Marketing`, `subSource=DialogicasTurma` |
+| 4 | box | `status=busy`, `leadId=51434831`, `start=2027-03-17T11:00:00Z` |
+| 5 | estado local | `passo=agendado`, slot `2027-03-17 11:00`, e-mail guardado |
+| 6 | limpeza | lead excluído (204); box **não removível** (tem reunião) |
+| 7 | confirmação | 0 leads "TESTE API", 0 boxes visíveis em 2027-03-17, `$count` de volta a 276 |
+
+**A prova de fuso está no passo 4.** A grade pediu 11:00 e a Exact gravou `11:00:00Z`. Se o
+módulo convertesse para UTC, teria gravado `14:00:00Z` e a reunião cairia 3 horas adiantada —
+o teste falha explicitamente nesse caso, com a mensagem `FUSO ERRADO`.
+
+### O que o passo 7 ensinou
+
+Na primeira execução ele falhou: `contains(lead,'TESTE API')` ainda devolvia o lead que
+`id eq 51434831` já não encontrava. **O `DELETE` não falhou — o índice de texto da Exact
+atrasa alguns segundos.** O teste passou a insistir (6 tentativas, 5s) em vez de afirmar de
+primeira. Vale para qualquer código que confirme exclusão por busca textual na Exact.
+
+### Resíduo
+
+Box **43722680** — órfão, invisível em todo GET, não bloqueia a agenda. Autorizado de
+antemão. A linha de `agendamentos` foi removida e a tabela voltou a zero.
+
+### Suíte offline
+
+`backend/test_agendamento.py` — 11 casos, sem rede e sem banco: grade e antecedência; o fuso
+que não converte; slot forjado recusado; subtração de disponibilidade (sobrepor remove,
+encostar não); caminho feliz na ordem box->lead->schedule; compensação do passo 2; compensação
+do passo 3 **com o lead preservado**; slot ocupado sem tocar em lead nem schedule; duplo
+clique; os três desfechos da faxina; e o rate limit por IP.
 
 ---
 

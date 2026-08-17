@@ -449,3 +449,54 @@ class NatScheduledAction(Base):
     attempts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, server_default=func.now())
     processed_at = Column(DateTime, nullable=True)
+
+
+# ==========================================================================================
+# AGENDAMENTO PELA LANDING PAGE
+# ==========================================================================================
+
+# Passos do fluxo, na ordem em que acontecem. O valor é gravado ANTES de cada chamada à
+# Exact, nunca depois: se o processo morrer no meio, a linha mostra até onde chegou.
+PASSO_INICIADO = "iniciado"          # nada foi para a Exact ainda
+PASSO_BOX_CRIADO = "box_criado"      # BoxesAdd passou. Reversível — a faxina limpa.
+PASSO_LEAD_CRIADO = "lead_criado"    # LeadsAdd passou. O lead está em Entrada.
+PASSO_AGENDADO = "agendado"          # scheduleAdd passou. DEFINITIVO.
+PASSO_FALHOU = "falhou"              # desistimos; `erro` diz por quê
+
+
+class Agendamento(Base):
+    """Uma tentativa de agendamento vinda da LP — inclusive as que falharam.
+
+    A ESCRITA É NOSSA ANTES DE SER DA EXACT. A Exact não guarda tentativa que não deu certo:
+    um fluxo que morre entre o BoxesAdd e o scheduleAdd não deixa rastro nenhum lá. Sem esta
+    tabela não há como responder "quantos agendamentos ficaram pela metade ontem?", e o job
+    de faxina não teria como saber quais boxes são nossos para remover.
+
+    slot_inicio/slot_fim são NAIVE EM SÃO PAULO, igual a messages.timestamp e a
+    nat_scheduled_actions.run_at — e igual ao que a Exact grava em Boxes.start, que é hora de
+    parede apesar do sufixo 'Z' (AGENDAMENTO_FINDINGS.md §1). Guardar UTC aqui obrigaria a
+    converter nos dois sentidos e criaria exatamente o erro de 3h que o módulo evita.
+
+    Sem FK para exact_leads: o lead nasce na Exact e só entra em exact_leads no sync seguinte
+    (até 10 min depois). Uma FK recusaria a linha justamente no instante do agendamento.
+
+    `meeting_id` é preenchido best-effort depois do scheduleAdd, que devolve booleano e não o
+    id da reunião (FINDINGS §4). NULL aqui não significa que a reunião não existe.
+    """
+    __tablename__ = "agendamentos"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    nome = Column(String(200), nullable=False)
+    email = Column(String(200), nullable=True)   # a Exact não tem campo de e-mail no lead
+    telefone = Column(String(20), nullable=False)
+    slot_inicio = Column(DateTime, nullable=False)
+    slot_fim = Column(DateTime, nullable=False)
+    sales_rep_email = Column(String(200), nullable=False)
+    box_id = Column(BigInteger, nullable=True)
+    lead_id = Column(BigInteger, nullable=True)
+    meeting_id = Column(BigInteger, nullable=True)
+    passo = Column(String(20), nullable=False, default=PASSO_INICIADO)
+    erro = Column(Text, nullable=True)           # mensagem crua da Exact, sem tradução
+    origem_ip = Column(String(45), nullable=True)  # 45 = IPv6 textual
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)

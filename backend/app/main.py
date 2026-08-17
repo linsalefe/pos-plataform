@@ -115,6 +115,7 @@ from app.auth_routes import router as auth_router
 from app.exact_routes import router as exact_router
 from app.auto_welcome_routes import router as auto_welcome_router
 from app.nat_routes import router as nat_router
+from app.agendamento.routes import router as agendamento_router
 from app.exact_spotter import sync_exact_leads
 
 load_dotenv()
@@ -257,11 +258,17 @@ async def lifespan(app: FastAPI):
     # aceitando o que mandamos?" continua valendo com as automações no chão.
     from app.delivery_health import delivery_health_job, INTERVALO_SEGUNDOS as SAUDE_S
     delivery_health_task = asyncio.create_task(delivery_health_job())
+    # Faxina do agendamento pela LP. Sobe SEMPRE: ela só toca em box cujo id está na NOSSA
+    # tabela e que não chegou a `agendado`. Com a tabela vazia custa um SELECT indexado por
+    # minuto, e sem ela um fluxo que morra no meio deixa horário fantasma na agenda real.
+    from app.agendamento.faxina import faxina_job, IDADE_MINIMA as FAXINA_IDADE
+    faxina_task = asyncio.create_task(faxina_job())
     print("✅ Sync Exact Spotter agendado (a cada 10 min)")
     print("✅ Alertas de janela 24h agendados (a cada 5 min)")
     print("✅ Agendamento de templates ativo (checa a cada 60s)")
     print(f"✅ Agendador NAT ativo (checa a cada {NAT_SCHED_S}s)")
     print(f"✅ Alerta de saúde de entrega ativo (checa a cada {SAUDE_S // 60} min)")
+    print(f"✅ Faxina de agendamento ativa (remove box nosso parado há {FAXINA_IDADE})")
     yield
     # Shutdown: cancela o job
     task.cancel()
@@ -270,13 +277,26 @@ async def lifespan(app: FastAPI):
     scheduled_task.cancel()
     nat_scheduler_task.cancel()
     delivery_health_task.cancel()
+    faxina_task.cancel()
 
 
 app = FastAPI(title="Cenat WhatsApp API", lifespan=lifespan)
 
+# Origens do Hub (interno, com credenciais) + as da landing page (pública, sem credenciais).
+# A LP fica em outro domínio (Netlify) e chama /api/agendamento/*, então precisa estar aqui —
+# sem isso o navegador bloqueia a chamada antes de ela sair.
+#
+# Configurável porque o domínio da LP muda (preview do Netlify, domínio próprio depois):
+#     AGENDAMENTO_CORS_ORIGINS=https://cenat.netlify.app,https://www.cenat.com.br
+_ORIGENS_HUB = ["http://localhost:3000", "http://localhost:3001", "https://hub.cenatdata.online"]
+_ORIGENS_LP = [o.strip() for o in os.getenv("AGENDAMENTO_CORS_ORIGINS", "").split(",") if o.strip()]
+if not _ORIGENS_LP:
+    print("⚠️ AGENDAMENTO_CORS_ORIGINS vazio — a landing page será bloqueada pelo CORS. "
+          "Defina o domínio do Netlify no .env antes de publicar o obrigado.html.")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "https://hub.cenatdata.online"],
+    allow_origins=_ORIGENS_HUB + _ORIGENS_LP,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -290,6 +310,8 @@ app.include_router(ai_router)
 app.include_router(kanban_router)
 app.include_router(calendar_router)
 app.include_router(nat_router)
+# Único router PÚBLICO da aplicação — ver o cabeçalho de app/agendamento/routes.py.
+app.include_router(agendamento_router)
 VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
 app.include_router(twilio_router)
 
