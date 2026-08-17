@@ -4,11 +4,12 @@
   ==========================================================================================
 
   COMO USAR
-    1. Ajuste API_BASE abaixo para a URL pública do backend.
-    2. Cole este bloco inteiro (style + div + script) dentro do <body> do obrigado.html.
-    3. Garanta que o domínio da LP está em AGENDAMENTO_CORS_ORIGINS no .env do backend —
-       sem isso o navegador bloqueia a chamada antes de ela sair, e o console mostra erro
-       de CORS, não de rede.
+    1. Cole este bloco inteiro (style + div + script) dentro do <body> do obrigado.html.
+    2. Confira que o domínio da LP casa com AGENDAMENTO_CORS_ORIGIN_SUFFIXES no .env do
+       backend (padrão: .cenatsaudemental.com e .netlify.app). Qualquer subdomínio desses
+       dois é aceito, inclusive os previews de deploy do Netlify — não é preciso mexer no
+       backend a cada publicação. Um domínio fora deles é bloqueado pelo navegador, e o
+       console mostra erro de CORS, não de rede.
 
   NÃO DEPENDE DE NADA
     Sem jQuery, sem framework, sem build, sem requisição externa. Só fetch e DOM. É de
@@ -86,8 +87,9 @@
 (function () {
   "use strict";
 
-  // AJUSTE AQUI: URL pública do backend, sem barra no fim.
-  var API_BASE = "https://api.cenatdata.online";
+  // URL pública do backend, sem barra no fim. Confirmado no nginx: `location /api/` em
+  // hub.cenatdata.online faz proxy para o backend (127.0.0.1:8001).
+  var API_BASE = "https://hub.cenatdata.online";
 
   var $ = function (id) { return document.getElementById(id); };
   var dias = {}, diaSel = null, slotSel = null, semGrade = false;

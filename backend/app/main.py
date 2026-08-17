@@ -116,6 +116,8 @@ from app.exact_routes import router as exact_router
 from app.auto_welcome_routes import router as auto_welcome_router
 from app.nat_routes import router as nat_router
 from app.agendamento.routes import router as agendamento_router
+from app.agendamento.cors import (PADRAO_ENV as _SUFIXOS_PADRAO, PREFIXO as _PREFIXO_AGENDAMENTO,
+                                  AgendamentoCORSMiddleware)
 from app.exact_spotter import sync_exact_leads
 
 load_dotenv()
@@ -282,25 +284,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Cenat WhatsApp API", lifespan=lifespan)
 
-# Origens do Hub (interno, com credenciais) + as da landing page (pública, sem credenciais).
-# A LP fica em outro domínio (Netlify) e chama /api/agendamento/*, então precisa estar aqui —
-# sem isso o navegador bloqueia a chamada antes de ela sair.
-#
-# Configurável porque o domínio da LP muda (preview do Netlify, domínio próprio depois):
-#     AGENDAMENTO_CORS_ORIGINS=https://cenat.netlify.app,https://www.cenat.com.br
-_ORIGENS_HUB = ["http://localhost:3000", "http://localhost:3001", "https://hub.cenatdata.online"]
-_ORIGENS_LP = [o.strip() for o in os.getenv("AGENDAMENTO_CORS_ORIGINS", "").split(",") if o.strip()]
-if not _ORIGENS_LP:
-    print("⚠️ AGENDAMENTO_CORS_ORIGINS vazio — a landing page será bloqueada pelo CORS. "
-          "Defina o domínio do Netlify no .env antes de publicar o obrigado.html.")
-
+# CORS do Hub — lista fixa, com credenciais. NÃO acrescentar origem da landing page aqui:
+# estas rotas respondem a token, e uma origem larga em cima delas deixaria qualquer site do
+# domínio permitido disparar requisição autenticada do navegador de quem está logado.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_ORIGENS_HUB + _ORIGENS_LP,
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "https://hub.cenatdata.online"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# CORS da landing page — SÓ em /api/agendamento/*, por sufixo de domínio, sem credenciais.
+# Registrado DEPOIS do CORSMiddleware de propósito: `add_middleware` insere na posição 0 e a
+# pilha é montada em ordem reversa, então o último registrado é o MAIS EXTERNO — e só assim
+# ele intercepta o preflight da LP antes de o middleware do Hub respondê-lo com 400.
+app.add_middleware(AgendamentoCORSMiddleware)
+print(f"✅ CORS do agendamento: {os.getenv('AGENDAMENTO_CORS_ORIGIN_SUFFIXES', _SUFIXOS_PADRAO)} "
+      f"(somente {_PREFIXO_AGENDAMENTO}/*)")
 
 app.include_router(router)
 app.include_router(auth_router)
