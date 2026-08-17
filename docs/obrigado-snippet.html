@@ -1,0 +1,242 @@
+<!--
+  ==========================================================================================
+  AGENDAMENTO NA LANDING PAGE — bloco para colar no obrigado.html
+  ==========================================================================================
+
+  COMO USAR
+    1. Cole este bloco inteiro (style + div + script) dentro do <body> do obrigado.html.
+    2. Confira que o domínio da LP casa com AGENDAMENTO_CORS_ORIGIN_SUFFIXES no .env do
+       backend (padrão: .cenatsaudemental.com e .netlify.app). Qualquer subdomínio desses
+       dois é aceito, inclusive os previews de deploy do Netlify — não é preciso mexer no
+       backend a cada publicação. Um domínio fora deles é bloqueado pelo navegador, e o
+       console mostra erro de CORS, não de rede.
+
+  NÃO DEPENDE DE NADA
+    Sem jQuery, sem framework, sem build, sem requisição externa. Só fetch e DOM. É de
+    propósito: a LP é de outro repositório e de outro time, e um snippet que precise de
+    dependência vira um pedido de deploy.
+
+  OS DADOS QUE ELE ENVIA
+    nome, email, telefone e o id do slot. O id do slot vem do GET /slots e volta verbatim
+    no POST — o backend valida contra a grade dele, então mexer nisso no navegador não
+    agenda nada fora do previsto.
+
+  O AVISO DE REMARCAÇÃO NÃO É DECORATIVO
+    Não existe cancelamento nem remarcação pela API da Exact. Depois de confirmado, o
+    horário é definitivo do lado do sistema, e mudar exige falar com uma pessoa. Por isso o
+    aviso aparece na confirmação, onde é lido, e não em letra miúda no rodapé.
+  ==========================================================================================
+-->
+
+<style>
+  .cenat-ag { --cor: #0b7285; --erro: #c92a2a; --borda: #dee2e6;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 640px; margin: 32px auto; padding: 24px;
+    border: 1px solid var(--borda); border-radius: 12px; }
+  .cenat-ag h2 { margin: 0 0 4px; font-size: 1.35rem; }
+  .cenat-ag p.sub { margin: 0 0 20px; color: #666; font-size: .92rem; }
+  .cenat-ag label { display: block; font-size: .85rem; font-weight: 600; margin: 12px 0 4px; }
+  .cenat-ag input { width: 100%; padding: 10px 12px; font-size: 1rem; box-sizing: border-box;
+    border: 1px solid var(--borda); border-radius: 8px; }
+  .cenat-ag .dias { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 10px; }
+  .cenat-ag .dia { flex: 0 0 auto; padding: 8px 14px; border: 1px solid var(--borda);
+    border-radius: 8px; background: #fff; cursor: pointer; font-size: .85rem; line-height: 1.3;
+    text-align: center; }
+  .cenat-ag .dia.sel { border-color: var(--cor); background: var(--cor); color: #fff; }
+  .cenat-ag .dia small { display: block; opacity: .75; font-size: .75rem; }
+  .cenat-ag .horas { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+    gap: 8px; margin-bottom: 16px; }
+  .cenat-ag .hora { padding: 10px 0; border: 1px solid var(--borda); border-radius: 8px;
+    background: #fff; cursor: pointer; font-size: .95rem; }
+  .cenat-ag .hora.sel { border-color: var(--cor); background: var(--cor); color: #fff; }
+  .cenat-ag button.enviar { width: 100%; margin-top: 8px; padding: 14px; font-size: 1rem;
+    font-weight: 600; color: #fff; background: var(--cor); border: 0; border-radius: 8px;
+    cursor: pointer; }
+  .cenat-ag button.enviar[disabled] { opacity: .5; cursor: not-allowed; }
+  .cenat-ag .msg { margin-top: 14px; padding: 12px 14px; border-radius: 8px; font-size: .92rem; }
+  .cenat-ag .msg.erro { background: #fff5f5; color: var(--erro); }
+  .cenat-ag .msg.ok { background: #e6fcf5; color: #087f5b; }
+  .cenat-ag .aviso { margin-top: 10px; font-size: .85rem; color: #666; }
+</style>
+
+<div class="cenat-ag" id="cenat-ag">
+  <h2>Agende sua conversa</h2>
+  <p class="sub">Escolha o melhor horário. A conversa dura 45 minutos, no horário de Brasília.</p>
+
+  <label for="ag-nome">Nome completo</label>
+  <input id="ag-nome" type="text" autocomplete="name" placeholder="Seu nome">
+
+  <label for="ag-email">E-mail</label>
+  <input id="ag-email" type="email" autocomplete="email" placeholder="voce@email.com">
+
+  <label for="ag-tel">WhatsApp (com DDD)</label>
+  <input id="ag-tel" type="tel" autocomplete="tel" placeholder="(11) 99999-8888">
+
+  <div id="ag-grade">
+    <label>Dia</label>
+    <div class="dias" id="ag-dias"></div>
+    <label>Horário</label>
+    <div class="horas" id="ag-horas"></div>
+  </div>
+
+  <button class="enviar" id="ag-enviar">Confirmar agendamento</button>
+  <div id="ag-msg"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // URL pública do backend, sem barra no fim. Confirmado no nginx: `location /api/` em
+  // hub.cenatdata.online faz proxy para o backend (127.0.0.1:8001).
+  var API_BASE = "https://hub.cenatdata.online";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var dias = {}, diaSel = null, slotSel = null, semGrade = false;
+
+  var MES = ["jan", "fev", "mar", "abr", "mai", "jun",
+             "jul", "ago", "set", "out", "nov", "dez"];
+  var SEM = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+
+  // Monta a data a partir dos pedaços do texto em vez de `new Date("2026-08-19")`. O
+  // construtor de string trata a data como UTC e, num navegador a oeste de Greenwich,
+  // 2026-08-19 vira 18/ago na tela. O backend manda tudo em horário de Brasília e o rótulo
+  // tem que dizer o mesmo dia que o servidor.
+  function rotulo(iso) {
+    var p = iso.split("-");
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    return { semana: SEM[d.getDay()], dia: +p[2], mes: MES[+p[1] - 1] };
+  }
+
+  function msg(texto, classe) {
+    $("ag-msg").innerHTML = texto
+      ? '<div class="msg ' + classe + '">' + texto + "</div>" : "";
+  }
+
+  function pintarDias() {
+    var alvo = $("ag-dias");
+    alvo.innerHTML = "";
+    var chaves = Object.keys(dias).sort();
+    if (!chaves.length) {
+      semGrade = true;
+      $("ag-grade").style.display = "none";
+      msg("Não há horários abertos no momento — deixe seus dados que entramos em contato "
+          + "pelo WhatsApp.", "erro");
+      return;
+    }
+    chaves.forEach(function (iso, i) {
+      var r = rotulo(iso);
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "dia" + (i === 0 ? " sel" : "");
+      b.innerHTML = r.semana + "<small>" + r.dia + " " + r.mes + "</small>";
+      b.onclick = function () {
+        diaSel = iso; slotSel = null;
+        Array.prototype.forEach.call(alvo.children, function (c) { c.className = "dia"; });
+        b.className = "dia sel";
+        pintarHoras();
+      };
+      alvo.appendChild(b);
+      if (i === 0) { diaSel = iso; }
+    });
+    pintarHoras();
+  }
+
+  function pintarHoras() {
+    var alvo = $("ag-horas");
+    alvo.innerHTML = "";
+    (dias[diaSel] || []).forEach(function (slot) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "hora";
+      b.textContent = slot.hora;
+      b.onclick = function () {
+        slotSel = slot.id;
+        Array.prototype.forEach.call(alvo.children, function (c) { c.className = "hora"; });
+        b.className = "hora sel";
+      };
+      alvo.appendChild(b);
+    });
+  }
+
+  function carregarSlots() {
+    return fetch(API_BASE + "/api/agendamento/slots")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        dias = d.dias || {};
+        if (d.fallback) { dias = {}; }
+        pintarDias();
+      })
+      .catch(function () {
+        dias = {};
+        pintarDias();
+      });
+  }
+
+  function enviar() {
+    var nome = $("ag-nome").value.trim();
+    var email = $("ag-email").value.trim();
+    var tel = $("ag-tel").value.trim();
+
+    if (nome.length < 2) { return msg("Escreva seu nome completo.", "erro"); }
+    if (tel.replace(/\D/g, "").length < 10) { return msg("Confira o telefone com DDD.", "erro"); }
+    if (!semGrade && !slotSel) { return msg("Escolha um horário.", "erro"); }
+
+    var botao = $("ag-enviar");
+    botao.disabled = true;
+    msg("Enviando…", "ok");
+
+    // Sem grade, cai no fallback: cadastra o contato e um SDR liga. Perder o lead porque
+    // não havia horário seria o pior desfecho de uma página de obrigado.
+    var rota = semGrade ? "/api/agendamento/lead" : "/api/agendamento/agendar";
+    var corpo = { nome: nome, email: email, telefone: tel };
+    if (!semGrade) { corpo.slot = slotSel; }
+
+    fetch(API_BASE + rota, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(corpo)
+    })
+      .then(function (r) {
+        return r.json().then(function (d) { return { status: r.status, corpo: d }; });
+      })
+      .then(function (res) {
+        botao.disabled = false;
+        if (res.status === 409) {
+          // Alguém pegou o horário entre a exibição e o clique. Recarrega a grade em vez de
+          // deixar o visitante clicar de novo no slot que já morreu.
+          msg("Esse horário acabou de ser preenchido. Escolha outro, por favor.", "erro");
+          slotSel = null;
+          return carregarSlots();
+        }
+        if (res.status >= 400) {
+          return msg(res.corpo.detail || "Não consegui concluir. Tente de novo.", "erro");
+        }
+        confirmar(res.corpo);
+      })
+      .catch(function () {
+        botao.disabled = false;
+        msg("Falha de conexão. Tente de novo em instantes.", "erro");
+      });
+  }
+
+  function confirmar(d) {
+    var texto;
+    if (d.inicio) {
+      var partes = d.inicio.split("T");
+      var r = rotulo(partes[0]);
+      texto = "<strong>Agendado!</strong><br>" + r.semana + ", " + r.dia + " de " + r.mes
+            + " às " + partes[1].slice(0, 5) + " (horário de Brasília).";
+    } else {
+      texto = "<strong>Recebemos seu contato!</strong><br>Nossa equipe fala com você em breve.";
+    }
+    $("cenat-ag").innerHTML =
+      '<div class="msg ok">' + texto + "</div>"
+      + '<p class="aviso">Precisa remarcar ou cancelar? Fale com a gente pelo WhatsApp — '
+      + "é por lá que ajustamos o horário.</p>";
+  }
+
+  $("ag-enviar").onclick = enviar;
+  carregarSlots();
+})();
+</script>
