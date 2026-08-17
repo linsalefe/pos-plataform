@@ -229,8 +229,12 @@ salesRep e cria a reunião. Não é uma operação isolada de agenda.
 | `GET /Boxes/$count?$filter=status eq 'available'` | **4** |
 
 Um filtro devolvendo 5× mais linhas que a consulta sem filtro significa que **o `GET /Boxes`
-sem `$filter` aplica uma janela implícita** (os 276 vão de 2026-07-20 a 2026-11-02 — grosso
-modo ~4 semanas para trás e o futuro agendado). Não é paginação: 276 é o `$count` completo.
+sem `$filter` aplica uma janela implícita** (os 276 vão de 2026-07-20 a 2026-11-02). Não é
+paginação: 276 é o `$count` completo.
+
+**A janela corta o passado, não o futuro.** Um box criado em 2027-03-10 apareceu normalmente na
+listagem sem filtro (277, `$orderby=start desc` trouxe ele no topo). O corte fica ~4 semanas
+atrás — o que é pior do que parece para conflito: o passado recente some, mas nada avisa.
 
 > Qualquer código que decida disponibilidade lendo `GET /Boxes` sem `$filter` está lendo um
 > recorte não documentado que a Exact pode mudar sem aviso. **Sempre passe `$filter` explícito.**
@@ -329,9 +333,10 @@ anteriores: a primeira reunião de `GET /Meetings` é de um lead `"TESTE ROTEAME
    fluxo de LP com pessoas trocando de horário, isso vaza slots da agenda real dos consultores.
    **É a limitação mais grave para o produto.**
 
-3. **Corrida entre duas pessoas na LP.** A trava contra sobreposição existe no `BoxesAdd`
-   (`Boxes are occupied`), mas **não sei se existe no `scheduleAdd`** — ver §8. Se dois
-   visitantes escolherem o mesmo slot, o segundo pode sobrescrever ou duplicar.
+3. ~~**Corrida entre duas pessoas na LP.**~~ **Resolvido em §8:** o `BoxesAdd` é a trava — quem
+   cria o box ganha o horário, e o segundo recebe `Boxes are occupied`. Não há janela de
+   check-then-act. Continua valendo para **duplo clique da mesma pessoa**, que o `BoxesAdd` não
+   cobre (horários diferentes, mesmo visitante).
 
 4. **Fuso.** Enviar UTC de verdade desloca a reunião em 3h. E como `registerDate` é UTC real
    enquanto `start` é local, um único `datetime.utcnow()` usado nos dois lugares erra num deles.
@@ -357,93 +362,240 @@ anteriores: a primeira reunião de `GET /Meetings` é de um lead `"TESTE ROTEAME
 
 ---
 
-## 8. A pergunta em aberto — deliberadamente não testada
+## 8. Resposta: `scheduleAdd` **só aceita box `available`**
 
-**`scheduleAdd` aceita um box `busy` com `leadId: 0`?**
+Testado em 17/08/2026 com autorização explícita para deixar o box órfão. Experimento controlado
+em **2027-03-10** (data escolhida por estar completamente vazia: `$filter=start ge 2027-01-01`
+devolvia 0 boxes), com **o mesmo lead, o mesmo rep, o mesmo dia e o mesmo payload** — variando
+apenas o `status` do box.
 
-É a questão central do desenho, porque em produção **não existem boxes `available`** (§5): a
-agenda real é feita de blocos `busy` com `leadId: 0`. Meu teste usou um box `available` criado
-por mim, que é justamente o caso que **não** ocorre em produção.
+### O experimento
 
-Não testei porque a única forma honesta seria fazer `scheduleAdd` num bloco real de
-`comercial@cenatcursos.com.br`, e §6 mostra que isso é **irreversível**: eu deixaria um slot
-real de uma consultora ocupado por um lead de teste, sem meio de desfazer pela API.
+**Braço A — box `busy` com `leadId: 0`** (a forma exata dos 193 blocos de produção):
 
-Duas leituras possíveis, com implicações opostas:
+```bash
+# BoxesAdd aceita status "busy" livremente -> 201, box 43722357
+curl -X POST ".../BoxesAdd" -H "$H" -d '{"start":"2027-03-10T11:00:00Z",
+  "end":"2027-03-10T11:45:00Z","salesRepEmail":"comercial@cenatcursos.com.br",
+  "status":"busy","typeMeeting":"web","description":"TESTE API 2027 - pode excluir"}'
+```
 
-- **Se aceita** → o módulo **nunca deve criar box**. Lista blocos com `leadId == 0`, oferece na
-  LP e chama `scheduleAdd` no id escolhido. Simples e sem lixo de agenda.
-- **Se recusa** → o módulo precisa criar box novo, e aí esbarra em `Boxes are occupied` sempre
-  que o horário coincidir com um bloco existente — ou seja, só conseguiria agendar **fora** dos
-  horários que os consultores realmente reservaram. Seria um furo de produto.
+Voltou exatamente como um bloco de produção: `status: "busy"`, `leadId: 0`.
 
-**Como resolver com segurança**, em ordem de preferência:
+```bash
+curl -X POST ".../scheduleAdd" -H "$H" -d '{"boxId":43722357,"leadId":51434672,
+  "stageName":"Agendados","salesRepEmail":"comercial@cenatcursos.com.br"}'
+```
 
-1. Perguntar à Exact (suporte) — custo zero, sem escrita.
-2. Pedir a um consultor que crie um bloco de teste na agenda dele pela UI, num horário
-   irrelevante, e testar contra esse bloco. O resíduo fica num slot combinado.
-3. Testar num box `busy` criado por nós numa data distante (ex.: 2027), aceitando de antemão
-   mais um box órfão. Replica a forma de produção sem tocar em agenda real.
+```json
+{"error":{"code":"","message":"Box is already occupied or in the process of being occupied. Please choose another box."}}
+```
 
-Posso executar a opção 3 se você autorizar o resíduo.
+**HTTP 400 — recusado.**
+
+**Braço B — box `available`**, mesmo dia, mesmo rep, mesmo lead (box 43722368, 14:00–14:45):
+
+```json
+{"@odata.context":"...#Edm.Boolean","value":true}
+```
+
+**HTTP 201 — aceito.** Lead foi para `Agendados`, box virou `busy` com `leadId: 51434672`.
+
+### Conclusão
+
+**O discriminador é o `status`.** `scheduleAdd` exige `status: "available"`. Os blocos `busy`
+da agenda dos consultores são **inacessíveis pela API** — não dá para "encaixar" um lead num
+horário que a consultora já reservou.
+
+Isso mata a hipótese de "listar blocos livres e agendar neles": **não existem blocos livres para
+a API**. O módulo obrigatoriamente **cria o próprio box** (`available`) e só então agenda.
+
+### Corolário: `BoxesAdd` é o lock
+
+Como `BoxesAdd` recusa qualquer sobreposição com box existente (§2), e `scheduleAdd` recusa
+qualquer box que não seja `available` (aqui), o par tem uma propriedade útil: **o `BoxesAdd` é,
+ele mesmo, a trava de concorrência.** Não existe janela de check-then-act — quem conseguir criar
+o box ganhou o horário. Isso responde o risco §7.3.
+
+### Bônus: o que trava o `BoxesRemove` é a reunião, não o status
+
+O box `busy` do braço A saiu limpo com `BoxesRemove` → **HTTP 204**. O box do braço B, que
+recebeu `scheduleAdd`, recusou → `400 "It is not possible to change a Box with a scheduled
+meeting."` Confirma §6: o bloqueio vem da reunião vinculada, não de `status: busy`.
+
+### Resíduo desta rodada
+
+| Artefato | Destino |
+|---|---|
+| Lead 51434672 (`TESTE API Alefe 2027`) | excluído, 204 ✅ |
+| Box 43722357 (braço A, `busy`) | removido, 204 ✅ |
+| Box 43722400 (sonda de bloqueio) | removido, 204 ✅ |
+| **Box 43722368** (braço B, com reunião) | **órfão — autorizado** ⚠️ |
+
+Verificado ao final: `$count` de volta a **276** (baseline), **0** boxes visíveis em 2027, **0**
+boxes e **0** leads com "TESTE API". O órfão não bloqueia o horário: um `BoxesAdd` em
+2027-03-10 14:00–14:45 foi aceito depois (201, box 43722400, removido em seguida).
+
+**Total de órfãos invisíveis deixados pela investigação: 2** (43722204 e 43722368).
 
 ---
 
-## 9. Recomendação para `app/agendamento/`
+## 9. Arquitetura recomendada para `app/agendamento/`
 
-### Forma
+Desenho fechado sobre as três premissas definidas: **hora de parede de São Paulo**,
+**agendamento definitivo** (remarcação sai pelo WhatsApp, fora da API) e **grade própria no
+backend**, com `/Boxes` consultado apenas para conflito.
 
-Módulo em `backend/app/agendamento/`, seguindo o que o repo já faz em `exact_spotter.py`:
-`httpx.AsyncClient` com timeout explícito, `get_headers()` reaproveitado, e nunca deixar
-exceção de rede subir para o request da LP.
+As três se encaixam bem com o que a API é. A irreversibilidade do `scheduleAdd` (§7.2), que
+seria o pior problema do módulo, deixa de ser problema quando remarcação não passa pela API. E
+a grade própria é a única saída possível, já que §8 provou que não há slots da Exact para listar.
+
+### Estrutura
 
 ```
 app/agendamento/
-  client.py       # httpx puro contra a Exact: boxes_add, boxes_remove, leads_add,
-                  # schedule_add, meetings_by_lead. Traduz os 400 conhecidos em exceções
-                  # tipadas (SlotOcupado, SdrInexistente, IntervaloInvalido, SdrNaoEncontrado).
-  disponibilidade.py  # lê blocos livres. SEMPRE com $filter explícito.
-  agendar.py      # orquestra o caminho LP -> lead -> agendamento, com registro de estado.
-  horarios.py     # a regra de fuso do §1, isolada num lugar só.
+  grade.py         # a grade própria: quais horários existem, por consultor e dia da semana.
+                   # Fonte da verdade nossa. Não consulta a Exact.
+  horarios.py      # fronteira de fuso. Único lugar do módulo que formata data para a Exact.
+  client.py        # httpx contra a Exact. Traduz os 400 conhecidos em exceções tipadas.
+  disponibilidade.py  # grade.py menos o que a Exact acusa como ocupado. Só leitura.
+  agendar.py       # a transação de 3 passos, com estado local persistido.
+  models.py        # tabela agendamentos (nossa) — ver "estado local"
 ```
 
-### Cinco decisões que eu tomaria
+### 1. `horarios.py` — a fronteira do fuso, isolada
 
-1. **Isolar o fuso numa função única.** Nada no módulo chama `datetime` direto:
+O erro de 3 horas (§1) é silencioso: agenda a reunião no horário errado sem falhar em lugar
+nenhum. Por isso a formatação vive num arquivo só, e nada mais no módulo chama `strftime`:
 
-   ```python
-   SP = ZoneInfo("America/Sao_Paulo")
+```python
+SP = ZoneInfo("America/Sao_Paulo")
 
-   def para_exact(dt: datetime) -> str:
-       """Hora de parede de SP com 'Z' cosmético. NÃO converter para UTC — ver §1."""
-       local = dt.astimezone(SP)
-       return local.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-   ```
+def para_exact(dt: datetime) -> str:
+    """Hora de parede de SP com 'Z' decorativo.
 
-   Um comentário explicando *por que* o `Z` é mentira, senão alguém "corrige" isso em 6 meses.
+    O 'Z' é MENTIRA e é proposital: a Exact grava o valor verbatim e o
+    devolve sem 'Z' em /Meetings (ver AGENDAMENTO_FINDINGS.md §1).
+    Converter para UTC de verdade desloca a reunião em 3 horas.
+    """
+    return dt.astimezone(SP).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+```
 
-2. **Persistir o estado do agendamento em tabela nossa, antes de chamar a Exact.** Dado que não
-   há transação (§7.1) nem desfazer (§7.2), a única forma de auditar o que ficou pela metade é
-   ter linha local com `lead_id`, `box_id`, `meeting_id` e o passo alcançado. É o mesmo padrão
-   que `nat_scheduled_actions` já usa para ações que podem falhar no meio.
+Um teste que trave isso vale mais que o comentário — algo que monte um `datetime` às 14h em SP
+e afirme que a string termina em `T14:00:00Z`, nunca `T17:00:00Z`. É a linha que alguém vai
+"corrigir" daqui a seis meses.
 
-3. **Ordem: box → lead → schedule.** Criar o box primeiro porque é o único passo **reversível**
-   enquanto não há reunião (§6). Se o `LeadsAdd` falhar, `BoxesRemove` limpa e não sobra nada.
-   A ordem inversa deixa lead órfão, que só sai com exclusão dura.
+Atenção: `registerDate` e `updateDate` são UTC **de verdade** (§3). Não passe tudo pela mesma
+função — só `start` e `end` de box são hora de parede.
 
-4. **Nunca chamar `LeadsDelete` como compensação.** É irreversível e cascateia (§7.8). Lead
-   parcial deve ser marcado no nosso lado e resolvido por humano.
+### 2. `grade.py` — a grade própria, nas lacunas dos blocos
 
-5. **Idempotência por lead na LP.** Antes de criar, procurar lead recente com o mesmo telefone
-   (`GET /Leads?$filter=...`) — `duplicityValidation: false` não protege ninguém numa página
-   pública. E envolver o `scheduleAdd` num lock por `box_id` do nosso lado, já que não se sabe
-   se a Exact trava (§8).
+A grade precisa nascer **evitando** os blocos recorrentes dos consultores, porque `BoxesAdd`
+recusa sobreposição (§2) e esses blocos não são agendáveis (§8). Para `comercial@`, os blocos
+observados na janela de agosto são:
 
-### Antes de escrever código
+```
+seg–qui   09:00–10:10 · 13:30–14:30 · 15:00–15:45
+sex       08:00–09:10 · 13:30–14:30 · 15:00–15:45 · 18:00–19:00
+```
 
-Resolver §8. A resposta decide se `disponibilidade.py` **lista** blocos existentes ou se
-`agendar.py` **cria** boxes — são módulos diferentes, e implementar o errado é retrabalho
-inteiro, não ajuste.
+Ou seja, as lacunas úteis são grosso modo **10:15–13:25** e **16:00–18:00**. A grade deve ser
+**configuração, não constante no código** — esses blocos mudam quando a consultora mexe na
+agenda dela, e no dia em que mudarem a grade passa a colidir e o agendamento começa a falhar
+com `Boxes are occupied`.
+
+> Recomendo tratar `Boxes are occupied` como sinal operacional, não só como erro: se ele passar
+> a aparecer com frequência, a grade desencostou da realidade da agenda.
+
+### 3. `disponibilidade.py` — `$filter` sempre explícito
+
+Para exibir horários livres na LP: pega a grade do dia e subtrai o que a Exact reporta ocupado.
+
+```python
+# SEMPRE com $filter — o GET sem filtro corta ~4 semanas de passado (§5)
+params = {"$filter": (
+    f"salesRepEmail eq '{email}' and "
+    f"start ge {para_exact(inicio_dia)} and start le {para_exact(fim_dia)}"
+)}
+```
+
+Isto é **cosmético**, não é a trava: entre exibir e confirmar, alguém pode ter pego o horário.
+Quem decide é o `BoxesAdd` (§8, corolário). Nunca confie nesta leitura para garantir vaga.
+
+### 4. `agendar.py` — a ordem importa
+
+```
+1. BoxesAdd (status="available")   ← reversível, e é O LOCK do horário
+2. LeadsAdd                        ← se falhar: BoxesRemove limpa (204, sem reunião)
+3. scheduleAdd                     ← ponto de não retorno
+```
+
+O box vem primeiro **porque é o único passo desfazível**. Invertendo, um `BoxesAdd` que falhe
+por conflito deixa lead órfão no CRM, e a única saída seria `LeadsDelete` — que é exclusão dura
+e cascateia (§6). **Nunca use `LeadsDelete` como compensação.**
+
+Mapeamento dos erros para a LP:
+
+| Erro da Exact | Passo | Resposta ao visitante |
+|---|---|---|
+| `Boxes are occupied at the desired time.` | 1 | "Esse horário acabou de ser preenchido" + recarrega a grade |
+| `SDR not found.` | 1 | erro nosso de configuração — alerta interno, não expõe |
+| `Start time must precede end time.` | 1 | bug nosso — nunca deveria chegar à API |
+| `Box is already occupied…` | 3 | não deve ocorrer no fluxo (box recém-criado é `available`); se ocorrer, é corrida — alerta |
+
+### 5. Estado local — a única auditoria possível
+
+Tabela nossa, escrita **antes** de cada chamada, no espírito do que `nat_scheduled_actions` já
+faz para ações que podem falhar no meio:
+
+| coluna | por quê |
+|---|---|
+| `id`, `created_at` | |
+| `nome`, `telefone`, `email` | o que veio da LP, antes de existir lead |
+| `slot_inicio`, `slot_fim` | hora de parede de SP, `TIMESTAMP` sem tz |
+| `sales_rep_email` | |
+| `box_id`, `lead_id`, `meeting_id` | preenchidos conforme cada passo passa |
+| `passo` | `iniciado` → `box_criado` → `lead_criado` → `agendado` \| `falhou` |
+| `erro` | mensagem crua da Exact |
+
+Sem isso não há como responder "quantos agendamentos ficaram pela metade ontem?" — a Exact não
+guarda a tentativa que falhou, e `scheduleAdd` nem devolve o `meeting_id` (§4: retorna booleano;
+o id só sai de `GET /Meetings?$filter=lead/id eq {leadId}`).
+
+### 6. Faxina de boxes abandonados
+
+Um fluxo que morra entre o passo 1 e o 3 deixa box `available` na agenda da consultora — e
+`available` é justamente o que a Exact trata como vago, então pode aparecer como oferta na UI.
+
+Job periódico: para cada linha em `passo='box_criado'` há mais de N minutos, `BoxesRemove` no
+`box_id` e marca `falhou`. Funciona porque box sem reunião sai limpo (§8, bônus). Depois do
+passo 3 não há faxina possível — é definitivo, e é a premissa aceita.
+
+### 7. Idempotência e concorrência
+
+- **Duplicidade:** `duplicityValidation: false` não protege numa página pública. Antes do
+  `LeadsAdd`, procurar lead recente com o mesmo telefone (`GET /Leads?$filter=...`). Vale
+  decidir se o mesmo telefone pode agendar duas vezes — hoje pode.
+- **Corrida entre visitantes:** resolvida pelo `BoxesAdd` (§8, corolário). Não precisa de lock
+  nosso para o horário.
+- **Duplo clique do mesmo visitante:** precisa de trava nossa (janela curta por telefone), senão
+  viram dois leads em dois boxes. O `BoxesAdd` só protege o mesmo horário, não a mesma pessoa.
+- **Rate limit 30 req/20s é do token inteiro**, dividido com o `sync_job` da Exact que já roda a
+  cada 600s paginando 500 leads (`exact_spotter.py:88`). Um pico na LP concorre com a ingestão.
+
+### 8. `source` / `subSource` validados na origem
+
+São texto livre resolvido contra cadastro global (§3). Valor errado polui o cadastro de origens,
+que é usado em relatório. Fixar como constante do módulo e não aceitar da query string da LP.
+
+### O que ficou fora e continua verdadeiro
+
+- **Não há cancelamento nem remarcação pela API** — premissa aceita, sai pelo WhatsApp. Mas
+  vale registrar: o box do agendamento cancelado fica ocupado para sempre. Se a taxa de
+  remarcação for alta, a agenda vaza slots ao longo do tempo, e a limpeza é manual na UI.
+- **Não testei `duplicityValidation: true`** nem o erro de duplicidade que ele produz.
+- **Não testei `BoxesUpdate`** — existe no `$metadata` e pode ser caminho para mover um box sem
+  reunião; provavelmente recusa box com reunião, pela mesma mensagem "not possible to change".
 
 ---
 
