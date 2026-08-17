@@ -41,18 +41,20 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agendamento import client, disponibilidade
+from app.agendamento import client, disponibilidade, origens
 from app.agendamento.grade import Slot, grade
 from app.agendamento.horarios import agora_sp
 from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_INICIADO,
                         PASSO_LEAD_CRIADO, Agendamento)
 
-# Constantes de produto, fixas de propósito. `source`/`subSource` são texto livre resolvido
-# contra um cadastro GLOBAL da Exact, usado em relatório (FINDINGS §3): aceitar esses valores
-# da query string da LP deixaria qualquer visitante poluir o cadastro de origens.
+# `source` segue fixo: é a origem de marketing da CENAT inteira, não varia por curso.
+#
+# `subSource` NÃO é mais fixo — vem do corpo do POST, conferido contra a allowlist de
+# `origens.py`. O que não pode é aceitar texto livre: `LeadsAdd` CRIA o subSource quando o
+# valor não existe (medido — ver o cabeçalho de origens.py), e o cadastro é global e usado em
+# relatório. A allowlist é o que separa "configurável" de "qualquer um escreve lá dentro".
 FUNIL_POS_GRADUACAO = 18535
 SOURCE = "Rd Marketing"
-SUB_SOURCE = "DialogicasTurma"
 STAGE_AGENDADOS = "Agendados"
 
 # Janela em que dois POSTs do mesmo telefone são tratados como duplo clique, não como duas
@@ -114,12 +116,20 @@ async def _marcar(db: AsyncSession, ag: Agendamento, passo: str, *, erro: str | 
 
 
 async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: str,
-                  slot_id: str, origem_ip: str | None = None) -> Resultado:
-    """Caminho completo da LP. Levanta SlotInvalido / SlotIndisponivel / AgendamentoFalhou."""
+                  slot_id: str, origem: str | None = None,
+                  origem_ip: str | None = None) -> Resultado:
+    """Caminho completo da LP.
+
+    Levanta SlotInvalido / SlotIndisponivel / AgendamentoFalhou / origens.OrigemInvalida.
+    """
     g = grade()
     slot = g.slot_por_id(slot_id)
     if slot is None:
         raise SlotInvalido(f"slot fora da grade ou vencido: {slot_id!r}")
+
+    # Resolvido ANTES de qualquer escrita: uma origem inválida não pode chegar a criar box e
+    # depois falhar, deixando o horário bloqueado até a faxina passar.
+    sub_source = origens.resolver(origem)
 
     anterior = await _duplo_clique(db, telefone)
     if anterior is not None:
@@ -133,7 +143,7 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     ag = Agendamento(
         nome=nome, email=email, telefone=telefone,
         slot_inicio=slot.inicio, slot_fim=slot.fim,
-        sales_rep_email=g.sales_rep_email,
+        sales_rep_email=g.sales_rep_email, sub_source=sub_source,
         passo=PASSO_INICIADO, origem_ip=origem_ip,
         created_at=agora, updated_at=agora,
     )
@@ -166,7 +176,7 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     try:
         lead_id = await client.criar_lead(
             nome=nome, telefone=telefone, email=email,
-            source=SOURCE, sub_source=SUB_SOURCE, funnel_id=FUNIL_POS_GRADUACAO,
+            source=SOURCE, sub_source=sub_source, funnel_id=FUNIL_POS_GRADUACAO,
         )
     except client.ExactErro as e:
         await _compensar_box(db, ag, motivo="LeadsAdd falhou")
@@ -176,7 +186,8 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
 
     ag.lead_id = lead_id
     await _marcar(db, ag, PASSO_LEAD_CRIADO)
-    print(f"👤 agendamento #{ag.id}: lead {lead_id} criado (Entrada, funil {FUNIL_POS_GRADUACAO})")
+    print(f"👤 agendamento #{ag.id}: lead {lead_id} criado "
+          f"(Entrada, funil {FUNIL_POS_GRADUACAO}, subSource {sub_source})")
 
     # ---- passo 3: ponto de não retorno ----------------------------------------------
     try:
@@ -229,7 +240,8 @@ async def _compensar_box(db: AsyncSession, ag: Agendamento, *, motivo: str) -> N
 
 
 async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str | None,
-                                     telefone: str, origem_ip: str | None = None) -> int:
+                                     telefone: str, origem: str | None = None,
+                                     origem_ip: str | None = None) -> int:
     """Fallback do POST /lead: cadastra e pronto. O lead cai em `Entrada`.
 
     Existe para o visitante que não quer escolher horário, e para o caso de a grade estar
@@ -238,11 +250,12 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
 
     Não cria box e não toca em agenda — por isso não tem compensação nenhuma.
     """
+    sub_source = origens.resolver(origem)
     agora = agora_sp()
     ag = Agendamento(
         nome=nome, email=email, telefone=telefone,
         slot_inicio=agora, slot_fim=agora,  # sem slot; as colunas são NOT NULL
-        sales_rep_email=grade().sales_rep_email,
+        sales_rep_email=grade().sales_rep_email, sub_source=sub_source,
         passo=PASSO_INICIADO, origem_ip=origem_ip,
         created_at=agora, updated_at=agora,
     )
@@ -252,7 +265,7 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
     try:
         lead_id = await client.criar_lead(
             nome=nome, telefone=telefone, email=email,
-            source=SOURCE, sub_source=SUB_SOURCE, funnel_id=FUNIL_POS_GRADUACAO,
+            source=SOURCE, sub_source=sub_source, funnel_id=FUNIL_POS_GRADUACAO,
         )
     except client.ExactErro as e:
         await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
@@ -261,5 +274,6 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
 
     ag.lead_id = lead_id
     await _marcar(db, ag, PASSO_LEAD_CRIADO)
-    print(f"👤 agendamento #{ag.id}: lead {lead_id} cadastrado sem agendar (Entrada)")
+    print(f"👤 agendamento #{ag.id}: lead {lead_id} cadastrado sem agendar "
+          f"(Entrada, subSource {sub_source})")
     return lead_id

@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import agendar as fluxo
-from app.agendamento import disponibilidade
+from app.agendamento import disponibilidade, origens
 from app.agendamento.grade import grade
 from app.database import get_db
 
@@ -94,6 +94,9 @@ class DadosLead(BaseModel):
     nome: str = Field(min_length=2, max_length=200)
     email: str | None = Field(default=None, max_length=200)
     telefone: str = Field(min_length=8, max_length=25)
+    # De qual curso veio. Conferido contra a allowlist em `origens.py`, NUNCA repassado como
+    # texto livre: `LeadsAdd` cria o subSource quando o valor não existe. Ausente = padrão.
+    origem: str | None = Field(default=None, max_length=100)
 
     @field_validator("nome")
     @classmethod
@@ -149,7 +152,12 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
     try:
         r = await fluxo.agendar(db, nome=pedido.nome, email=pedido.email,
                                 telefone=pedido.telefone, slot_id=pedido.slot,
-                                origem_ip=_ip(request))
+                                origem=pedido.origem, origem_ip=_ip(request))
+    except origens.OrigemInvalida as e:
+        # 400 e não 422: o corpo está bem formado, o valor é que não é aceito. E a mensagem
+        # não lista as origens permitidas — é endpoint público, e a lista é dado interno.
+        print(f"⚠️ /agendamento/agendar: {e} (ip {_ip(request)})")
+        raise HTTPException(status_code=400, detail="Origem inválida.") from e
     except fluxo.SlotInvalido as e:
         raise HTTPException(status_code=400, detail="Horário inválido ou expirado.") from e
     except fluxo.SlotIndisponivel as e:
@@ -188,8 +196,11 @@ async def criar_lead_sem_agendar(pedido: DadosLead, request: Request,
     _limitar(request, LIMITE_ESCRITA, "lead")
     try:
         lead_id = await fluxo.cadastrar_lead_sem_agendar(
-            db, nome=pedido.nome, email=pedido.email,
-            telefone=pedido.telefone, origem_ip=_ip(request))
+            db, nome=pedido.nome, email=pedido.email, telefone=pedido.telefone,
+            origem=pedido.origem, origem_ip=_ip(request))
+    except origens.OrigemInvalida as e:
+        print(f"⚠️ /agendamento/lead: {e} (ip {_ip(request)})")
+        raise HTTPException(status_code=400, detail="Origem inválida.") from e
     except fluxo.AgendamentoFalhou as e:
         raise HTTPException(status_code=502,
                             detail="Não consegui registrar seu contato. Tente de novo.") from e

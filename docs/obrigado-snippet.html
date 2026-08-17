@@ -4,6 +4,7 @@
   ==========================================================================================
 
   COMO USAR
+    0. Ajuste ORIGEM abaixo para o curso desta LP (uma LP por curso = um valor por página).
     1. Cole este bloco inteiro (style + div + script) dentro do <body> do obrigado.html.
     2. Confira que o domínio da LP casa com AGENDAMENTO_CORS_ORIGIN_SUFFIXES no .env do
        backend (padrão: .cenatsaudemental.com e .netlify.app). Qualquer subdomínio desses
@@ -90,6 +91,13 @@
   // URL pública do backend, sem barra no fim. Confirmado no nginx: `location /api/` em
   // hub.cenatdata.online faz proxy para o backend (127.0.0.1:8001).
   var API_BASE = "https://hub.cenatdata.online";
+
+  // AJUSTE POR LP: de qual curso é esta página. Tem que ser um valor da allowlist do
+  // backend (AGENDAMENTO_SUBSOURCES) — qualquer outro é recusado com 400, de propósito:
+  // a Exact CRIA a origem quando o valor não existe, e o cadastro dela é global.
+  // Valores válidos hoje: PosMulheridades, posgenerot2, PosPraticasDialogicasTurma1.
+  // Deixe "" para cair no padrão do backend.
+  var ORIGEM = "PosMulheridades";
 
   var $ = function (id) { return document.getElementById(id); };
   var dias = {}, diaSel = null, slotSel = null, semGrade = false;
@@ -190,6 +198,7 @@
     // não havia horário seria o pior desfecho de uma página de obrigado.
     var rota = semGrade ? "/api/agendamento/lead" : "/api/agendamento/agendar";
     var corpo = { nome: nome, email: email, telefone: tel };
+    if (ORIGEM) { corpo.origem = ORIGEM; }
     if (!semGrade) { corpo.slot = slotSel; }
 
     fetch(API_BASE + rota, {

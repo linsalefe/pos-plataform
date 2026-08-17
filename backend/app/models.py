@@ -530,6 +530,12 @@ class Agendamento(Base):
     slot_inicio = Column(DateTime, nullable=False)
     slot_fim = Column(DateTime, nullable=False)
     sales_rep_email = Column(String(200), nullable=False)
+    # De qual curso veio o lead. Conferido contra a allowlist de agendamento/origens.py antes
+    # de ir para a Exact — `LeadsAdd` CRIA o subSource quando o valor não existe, e o cadastro
+    # é global. Guardado aqui porque é a única forma de saber depois de qual LP veio cada
+    # agendamento: em `exact_leads` o dado só aparece no sync seguinte, e some se o lead for
+    # excluído. NULL nas linhas anteriores a esta coluna.
+    sub_source = Column(String(100), nullable=True)
     box_id = Column(BigInteger, nullable=True)
     lead_id = Column(BigInteger, nullable=True)
     meeting_id = Column(BigInteger, nullable=True)

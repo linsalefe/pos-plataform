@@ -320,6 +320,81 @@ async def caso_11_rate_limit():
     print("  11. 6º POST do mesmo IP -> 429; outro IP passa; IP lido do X-Forwarded-For")
 
 
+async def caso_12_allowlist_de_origem():
+    import os
+
+    from app.agendamento import origens
+
+    anterior = os.environ.get("AGENDAMENTO_SUBSOURCES")
+    anterior_padrao = os.environ.get("AGENDAMENTO_SUBSOURCE_PADRAO")
+    os.environ["AGENDAMENTO_SUBSOURCES"] = "PosMulheridades,posgenerot2,PosPraticasDialogicasTurma1"
+    os.environ["AGENDAMENTO_SUBSOURCE_PADRAO"] = "PosPraticasDialogicasTurma1"
+    try:
+        assert origens.resolver(None) == "PosPraticasDialogicasTurma1"
+        assert origens.resolver("") == "PosPraticasDialogicasTurma1"
+        assert origens.resolver("PosMulheridades") == "PosMulheridades"
+
+        # Caixa diferente resolve, mas volta com a caixa da allowlist — senão a Exact criaria
+        # um SEGUNDO cadastro com o mesmo nome em caixa diferente.
+        assert origens.resolver("posmulheridades") == "PosMulheridades"
+        assert origens.resolver("  POSGENEROT2  ") == "posgenerot2"
+
+        for proibida in ("posgenero", "DialogicasTurma", "curso-inventado", "'; DROP TABLE"):
+            try:
+                origens.resolver(proibida)
+                assert False, f"aceitou origem fora da allowlist: {proibida}"
+            except origens.OrigemInvalida:
+                pass
+
+        # Padrão fora da lista é acrescentado em vez de derrubar todo agendamento.
+        os.environ["AGENDAMENTO_SUBSOURCES"] = "PosMulheridades"
+        os.environ["AGENDAMENTO_SUBSOURCE_PADRAO"] = "posgenerot2"
+        assert origens.resolver(None) == "posgenerot2", origens.permitidas()
+        assert set(origens.permitidas()) == {"PosMulheridades", "posgenerot2"}
+    finally:
+        for chave, valor in (("AGENDAMENTO_SUBSOURCES", anterior),
+                             ("AGENDAMENTO_SUBSOURCE_PADRAO", anterior_padrao)):
+            if valor is None:
+                os.environ.pop(chave, None)
+            else:
+                os.environ[chave] = valor
+    print("  12. allowlist: padrão, caixa normalizada, 4 origens recusadas, padrão órfão salvo")
+
+
+async def caso_13_origem_invalida_nao_cria_nada():
+    """A validação vem ANTES do BoxesAdd — senão o horário ficaria travado até a faxina."""
+    from app.agendamento import origens
+
+    db = _DbFalso()
+    slot = _slot_valido()
+    with patch.object(client, "criar_box", AsyncMock()) as box, \
+         patch.object(client, "criar_lead", AsyncMock()) as lead:
+        try:
+            await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                slot_id=slot.id, origem="curso-que-nao-existe")
+            assert False, "deveria ter levantado OrigemInvalida"
+        except origens.OrigemInvalida:
+            pass
+
+    box.assert_not_awaited()
+    lead.assert_not_awaited()
+    assert db.agendamentos() == [], "gravou linha para uma origem que nem chegou à Exact"
+
+    # E o subSource resolvido é o que vai para o lead, não a constante antiga.
+    db = _DbFalso()
+    with patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+         patch.object(client, "criar_lead", AsyncMock(return_value=888)) as lead, \
+         patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+         patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+        await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                            slot_id=slot.id, origem="PosMulheridades")
+    assert lead.await_args.kwargs["sub_source"] == "PosMulheridades", lead.await_args
+    assert db.agendamentos()[0].sub_source == "PosMulheridades"
+    assert not hasattr(fluxo, "SUB_SOURCE"), \
+        "FALHOU: a constante SUB_SOURCE voltou — o valor tem que vir da allowlist"
+    print("  13. origem inválida não cria box nem lead; válida chega ao lead e à nossa tabela")
+
+
 async def main():
     print("\nMódulo de agendamento — Exact mockada, banco dublê, nada real\n")
     await caso_1_grade()
@@ -333,7 +408,9 @@ async def main():
     await caso_9_duplo_clique()
     await caso_10_faxina()
     await caso_11_rate_limit()
-    print("\nOK: 11/11 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
+    await caso_12_allowlist_de_origem()
+    await caso_13_origem_invalida_nao_cria_nada()
+    print("\nOK: 13/13 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
 
 
 if __name__ == "__main__":

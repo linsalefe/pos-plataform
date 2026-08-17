@@ -136,9 +136,11 @@ registerDate: 2026-08-17T18:34:22.8874557Z
 
 Observações:
 
-- **`source`/`subSource` são strings que casam com cadastros existentes.** Vieram resolvidos
-  para os ids 106847 e 176793 — a API não criou origem nova. Um valor não cadastrado
-  provavelmente cria lixo no cadastro; **valide antes de enviar**.
+- ~~**`source`/`subSource` casam com cadastros existentes; a API não criou origem nova.**~~
+  **ERRADO — corrigido em §11.** `subSource` voltou resolvido com o id 176793, e eu li isso
+  como prova de que o cadastro já existia. Não era: **o `LeadsAdd` CRIOU o cadastro**, porque
+  `"DialogicasTurma"` era um nome que eu inventei. O valor voltar com id não distingue
+  "encontrou" de "acabou de criar".
 - **`funnelId` é `18535`** (`Pos Graduacao`), confirmado em `GET /Funnels`. É obrigatório se
   você for informar `stage`; sem ele o lead cai no primeiro estágio do funil padrão.
 - **Sem `stage`, o lead nasce em `Entrada`** (posição 1 do funil 18535).
@@ -639,6 +641,66 @@ que não converte; slot forjado recusado; subtração de disponibilidade (sobrep
 encostar não); caminho feliz na ordem box->lead->schedule; compensação do passo 2; compensação
 do passo 3 **com o lead preservado**; slot ocupado sem tocar em lead nem schedule; duplo
 clique; os três desfechos da faxina; e o rate limit por IP.
+
+---
+
+## 11. `subSource`: a API cria o cadastro, e eu criei um sem querer (17/08/2026)
+
+### A correção
+
+§3 afirmava que `LeadsAdd` só casa com cadastros existentes. **Está errado.** O `subSource`
+`"DialogicasTurma"` — um nome que inventei para o primeiro teste — voltou resolvido com o
+**id 176793**, e eu li o id como prova de que já existia.
+
+`GET /Sources` desmente: 176793 é **o id mais alto de toda a base**, acima de qualquer curso
+real. O `LeadsAdd` criou o cadastro na hora. Ele continua lá depois que o lead de teste foi
+excluído — a exclusão do lead não desfaz a origem.
+
+> **A regra verdadeira:** `source` e `subSource` são texto livre, e o que não existe **é
+> criado**. O cadastro de origens é global e usado em relatório de marketing. Um campo aberto
+> vindo de página pública é uma porta para poluir esse cadastro, e o dano é silencioso.
+
+Foi por isso que o módulo ganhou `app/agendamento/origens.py`: allowlist em env, conferida
+antes de a chamada sair. O que não está na lista é 400, e nada é criado.
+
+### `PosMulheridades` — a resposta da pergunta
+
+`posgenero` **não** é a pós de Mulheridades. São cursos diferentes, e `posgenero` ainda por
+cima é a turma velha.
+
+| subSource | id | leads em `exact_leads` | último lead | o que é |
+|---|---|---|---|---|
+| **`PosMulheridades`** | 173358 | **120** | 17/08/2026 | **a pós de Mulheridades** |
+| `posgenerot2` | 168707 | 325 | 17/08/2026 | pós de Gênero, turma 2 — a viva |
+| `posgenero` | 137321 | 109 | 31/10/2025 | pós de Gênero, turma 1 — morta |
+| `PosPraticasDialogicasTurma1` | 170904 | 90 | 16/08/2026 | pós de Práticas Dialógicas |
+| `DialogicasTurma` | 176793 | 0 | — | **lixo criado por este teste** |
+
+`PosMulheridades` já existe, está ativo e recebe lead hoje. **Não precisa criar nada.**
+
+Todos sob o source `Rd Marketing` (id 106847), que tem 61 subSources no total.
+
+### O que a allowlist tem, e o que ficou de fora
+
+```
+AGENDAMENTO_SUBSOURCES=PosMulheridades,posgenerot2,PosPraticasDialogicasTurma1
+AGENDAMENTO_SUBSOURCE_PADRAO=PosPraticasDialogicasTurma1
+```
+
+Fora de propósito: `posgenero` (turma morta) e `DialogicasTurma` (o lixo). Note que o padrão
+mudou — era `DialogicasTurma`, que **nunca deveria ter sido o valor de produção**. O certo é
+`PosPraticasDialogicasTurma1`.
+
+A comparação é case-insensitive, mas o valor enviado é o da allowlist com a caixa exata: os
+nomes reais misturam convenções (`posgenerot2` e `PosMulheridades` convivem), e mandar
+`posmulheridades` criaria um **segundo** cadastro com o mesmo nome em caixa diferente.
+
+### Dívida deixada
+
+`DialogicasTurma` (176793) continua no cadastro de origens. Não há endpoint de escrita para
+origem no `$metadata` — só `Sources`, sem `SourcesAdd`/`SourcesRemove`. **A limpeza é manual,
+pela UI da Exact.** Não tem lead nenhum apontando para ele, então é cosmético; mas aparece na
+lista de origens de quem for montar um relatório.
 
 ---
 
