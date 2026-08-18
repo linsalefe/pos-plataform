@@ -1163,6 +1163,76 @@ POST /lead origem="posgenerot2" -> 400 (saiu da allowlist, como esperado)
 
 **Órfãos acumulados continuam 9** — esta operação não criou nenhum.
 
+> **Superado em parte:** o source tem **13** subSources desde a 13ª LP — ver §17.
+
+
+---
+
+## 17. A 13ª LP: `Pos Enfermagem em Saude Mental` (18/08/2026)
+
+Mesmo procedimento do §16, agora com o source já existente: uma chamada só, porque `Landing
+Page` (140648) não precisava ser criado. Autorizado após dry-run.
+
+**Resultado: subSource `Pos Enfermagem em Saude Mental` = id 176822**, ativa, sob o source
+140648. Byte a byte idêntica ao valor aprovado (ASCII puro — `Saude`, sem circunflexo).
+
+O source agora tem **13 subSources**. A tabela do §16 continua valendo para as 12 primeiras;
+a lista completa e atual está na seção *Estado atual* logo abaixo.
+
+### O id não é sequencial ao lote anterior
+
+As 12 de hoje saíram em 176807–176818. Esta saiu **176822**, não 176819: os ids 176819–176821
+foram consumidos por outra coisa na base entre as duas operações. Isso não é sinal de erro —
+o contador é global da Exact, não do nosso source. O que importa é que a verificação pós-disparo
+não achou **nenhum subSource inesperado** sob `Landing Page`: 13 valores, 13 esperados, zero
+sobrando.
+
+### ⚠️ Já existia `posenfermagemsm` sob `Rd Marketing`
+
+Achado no dry-run: **id 176805**, sob o source antigo `Rd Marketing` (106847), com **2 leads**.
+Mesmo curso, nomenclatura antiga, criado pouco antes do lote de hoje.
+
+Deixado como está, de propósito, pelo mesmo raciocínio do `PosMulheridades` (§16): o par
+enviado daqui pra frente é sempre (`Landing Page`, `Pos Enfermagem em Saude Mental`), o novo
+recebe o volume e o antigo preserva o que já tem. Com 2 leads não há histórico relevante a
+partir. **Em relatório de marketing, os dois são o mesmo curso** — não somar às cegas nem
+tratar como origens distintas.
+
+### Lead descartável saiu inteiro
+
+`TESTE CRIACAO ORIGEM - excluir`, id **51441741**, telefone de lote `11999990001` (o mesmo do
+§16, para varredura única). `LeadsDelete` → 204, confirmado por `id eq` (0 resultados) e por
+varredura `phone1 eq '5511999990001'` → 0.
+
+Sem box e sem `scheduleAdd`, `LeadsDelete` limpa 100%: **nenhum órfão nesta operação.**
+**Órfãos acumulados continuam 9.**
+
+### Estado atual
+
+`AGENDAMENTO_SUBSOURCES` no `backend/.env` com 13 valores, entre aspas (§16 explica por quê).
+Conferido nos dois leitores: `bash set -a && . .env` devolve `Landing Page` inteiro e 13
+valores, e a validação de startup bate contra a Exact real.
+
+| id | subSource | id | subSource |
+|---|---|---|---|
+| 176807 | `PosMulheridades` | 176814 | `Pos Alcool e Drogas T4` |
+| 176808 | `Pos Grupos e Oficinas T2` | 176815 | `Pos Psicologia Clinica T2` |
+| 176809 | `Pos Infantojuvenil EAD` | 176816 | `Pos Gestao Psicossocial T5` |
+| 176810 | `Pos Psicologia na RAPS T3` | 176817 | `Pos TEA V3` |
+| 176811 | `Pos Psicologia Hospitalar` | 176818 | `Pos Saude do Trabalhador` |
+| 176812 | `Pos Suicidio e Luto T3` | **176822** | **`Pos Enfermagem em Saude Mental`** |
+| 176813 | `Pos Psicologia Escolar` | | |
+
+```
+boot: ✅ agendamento: source 'Landing Page' (id 140648) com as 13 origens da allowlist confirmadas
+
+POST /lead origem="Pos Enfermagem em Saude Mental" -> 200, lead 51441824
+  Exact: Entrada | funnelId 18535 | source 140648 'Landing Page'
+                 | subSource 176822 'Pos Enfermagem em Saude Mental'
+                 | description "E-mail: ... | profissao: ... | como_conheceu: ..."
+  excluído (204), confirmado por id eq e por varredura de telefone
+```
+
 
 ---
 
