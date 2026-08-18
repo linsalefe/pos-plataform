@@ -23,7 +23,12 @@ COMO CONFIGURAR
 ------------------------------------------------------------------------------------------
     AGENDAMENTO_SUBSOURCES=PosMulheridades,posgenerot2,PosPraticasDialogicasTurma1
     AGENDAMENTO_SUBSOURCE_PADRAO=PosPraticasDialogicasTurma1
-    AGENDAMENTO_SOURCE=Rd Marketing
+    AGENDAMENTO_SOURCE="Landing Page"
+
+**ASPAS são obrigatórias em valor com espaço.** Não por causa do systemd nem do dotenv — os
+dois leem bem sem elas — mas do bash: um operador que faça `set -a && . .env` recebe
+`AGENDAMENTO_SOURCE=Landing` e o shell tenta executar `Page` como comando. A variável fica
+pela metade, o código cai no padrão, e nada avisa (FINDINGS §16).
 
 **Valor com espaço é seguro no CSV.** Testado nos dois parsers que leem este `.env`: o
 `EnvironmentFile` do systemd e o `python-dotenv`. Os dois preservam `Pos Saude do Trabalhador`
@@ -60,6 +65,9 @@ SUBSOURCE_PADRAO = "PosPraticasDialogicasTurma1"
 
 # O `source` (nível acima do subSource). Sai daqui e não de `agendar.py` porque tem
 # exatamente o mesmo risco: `LeadsAdd` CRIA source que não existe, igual faz com subSource.
+# Valor de produção desde 18/08/2026: "Landing Page" (id 140648), criado via LeadsAdd —
+# não existe SourcesAdd na API. O padrão abaixo é só a rede para env ausente, e aponta para
+# o source ANTIGO de propósito: se a config sumir, é melhor cair onde o histórico está.
 SOURCE_PADRAO = "Rd Marketing"
 
 

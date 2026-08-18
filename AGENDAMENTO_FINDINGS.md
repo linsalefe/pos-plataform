@@ -1078,6 +1078,94 @@ as variáveis `AGENDAMENTO_*` logo após os imports, e cada caso define o que pr
 
 ---
 
+## 16. Criação do source `Landing Page` e das 12 origens (18/08/2026)
+
+Execução autorizada e controlada: dry-run aprovado antes do disparo, criação em sequência
+parando no primeiro erro, verificação byte a byte, limpeza dos leads descartáveis.
+
+### Como se cria um source (não há endpoint para isso)
+
+Não existe `SourcesAdd` no `$metadata`. **O único jeito de criar source e subSource é pelo
+`LeadsAdd`**, que cria o que não encontra — o mesmo comportamento que §11 registrou como
+acidente, usado aqui de propósito.
+
+A primeira chamada criou **as duas coisas de uma vez**: o source `Landing Page` e a subSource
+`PosMulheridades` dentro dele. As outras 11 só acrescentaram subSource ao source já existente.
+Não foi preciso criar o source separadamente.
+
+### O resultado
+
+**Source `Landing Page` = id 140648**, ativo, com exatamente 12 subSources, todas ativas e
+idênticas byte a byte à lista aprovada (ASCII puro, sem acento — `Suicidio`, `Alcool`,
+`Gestao`, `Saude`, `Clinica`):
+
+| id | subSource | id | subSource |
+|---|---|---|---|
+| 176807 | `PosMulheridades` | 176813 | `Pos Psicologia Escolar` |
+| 176808 | `Pos Grupos e Oficinas T2` | 176814 | `Pos Alcool e Drogas T4` |
+| 176809 | `Pos Infantojuvenil EAD` | 176815 | `Pos Psicologia Clinica T2` |
+| 176810 | `Pos Psicologia na RAPS T3` | 176816 | `Pos Gestao Psicossocial T5` |
+| 176811 | `Pos Psicologia Hospitalar` | 176817 | `Pos TEA V3` |
+| 176812 | `Pos Suicidio e Luto T3` | 176818 | `Pos Saude do Trabalhador` |
+
+Ids sequenciais 176807–176818, na ordem do disparo. Nenhum subSource inesperado apareceu.
+
+`PosMulheridades` passa a existir em **dois** sources — 173358 sob `Rd Marketing` (125 leads
+históricos) e 176807 sob `Landing Page`. É intencional: o par enviado agora é sempre
+(`Landing Page`, `PosMulheridades`), então o novo recebe e o antigo preserva o histórico.
+
+### Os 12 leads descartáveis saíram inteiros
+
+`TESTE CRIACAO ORIGEM - excluir`, telefone exclusivo `11999990001`, ids 51438411–51438422.
+Excluídos por id (204 em todos), confirmados por `id eq` — o filtro consistente — e depois
+por varredura em `phone1 eq '5511999990001'`, que voltou 0 já na primeira tentativa.
+
+Sem box e sem `scheduleAdd`, `LeadsDelete` limpa 100%: **nenhum órfão nesta operação.**
+
+### ⚠️ Valor com espaço no `.env` exige ASPAS
+
+Três coisas leem `backend/.env`, e elas discordam:
+
+| leitor | `KEY=Landing Page` | `KEY="Landing Page"` |
+|---|---|---|
+| systemd `EnvironmentFile` | ✅ ok | ✅ ok |
+| `python-dotenv` | ✅ ok | ✅ ok |
+| **bash `set -a && . .env`** | ❌ **quebra** | ✅ ok |
+
+Sem aspas, o bash lê `AGENDAMENTO_SOURCE=Landing` e tenta executar `Page` como comando:
+
+```
+.env: line 29: Page: command not found
+```
+
+A variável fica pela metade e o código cai no valor padrão — `Rd Marketing` com 3 origens em
+vez de `Landing Page` com 12. **O serviço não é afetado** (systemd + dotenv leem certo), mas
+qualquer script de operação que dê `source` no `.env` roda com a config errada em silêncio.
+
+Foi assim que o problema apareceu: a validação imprimiu `source: 'Rd Marketing' | allowlist: 3`
+numa linha e `✅ source 'Landing Page' ... 12 origens` na seguinte, no mesmo comando — o
+shell tinha uma verdade, o processo Python tinha outra. **Sempre aspar valor com espaço.**
+
+### Estado final verificado
+
+```
+boot: ✅ 2 consultora(s) em rotação — Victória Amorim, Victória Rodrigues
+boot: ✅ source 'Landing Page' (id 140648) com as 12 origens da allowlist confirmadas
+boot: ℹ️ passo 4 (mover para funil de vendas) DESLIGADO
+
+POST /lead origem="Pos Saude do Trabalhador" -> 200, lead 51438429
+  Exact: Entrada | funil 18535 | source 140648 'Landing Page'
+                 | subSource 176818 'Pos Saude do Trabalhador'
+  excluído (204), confirmado por id eq
+
+POST /lead origem="posgenerot2" -> 400 (saiu da allowlist, como esperado)
+```
+
+**Órfãos acumulados continuam 9** — esta operação não criou nenhum.
+
+
+---
+
 ## Apêndice — inventário de endpoints (do `$metadata`)
 
 Agenda: `Boxes` · `BoxesAdd` · `BoxesUpdate` · `BoxesRemove` · `ScheduleAdd` · `Meetings` ·
