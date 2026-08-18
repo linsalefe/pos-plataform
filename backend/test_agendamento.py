@@ -16,6 +16,13 @@ real, nenhum lead é cadastrado.
    9. duplo clique do mesmo telefone devolve o agendamento anterior, sem falar com a Exact
   10. faxina: remove o parado, promove o que tem reunião, mantém o que falhou por rede
   11. rate limit por IP corta o 6º POST na janela
+  12. allowlist de origem: padrão, caixa normalizada, valor fora da lista recusado
+  13. origem inválida não cria nada; válida chega ao lead e à nossa tabela
+  14. leadId válido: LeadsAdd é PULADO e o schedule usa o lead que veio no corpo
+  15. leadId inexistente: 
+      LeadNaoEncontrado antes de qualquer escrita — nem box é criado
+  16. leadId + falha no scheduleAdd: box removido, lead externo intocado
+  17. regressão: sem leadId o fluxo cria o lead como sempre fez
 """
 import asyncio
 from datetime import datetime, timedelta
@@ -395,6 +402,125 @@ async def caso_13_origem_invalida_nao_cria_nada():
     print("  13. origem inválida não cria box nem lead; válida chega ao lead e à nossa tabela")
 
 
+# ==========================================================================================
+# leadId opcional — o fluxo de duas etapas da LP
+# ==========================================================================================
+
+async def caso_14_lead_id_pula_leadsadd():
+    """Com `leadId`, o passo 2 vira verificação. Criar outro lead aqui é O bug a evitar."""
+    recarregar()
+    slot = _slot_valido()
+    db = _DbFalso()
+    buscar = AsyncMock(return_value={"id": 51434608, "stage": "Entrada"})
+    criar = AsyncMock(return_value=999999)
+    schedule = AsyncMock(return_value=True)
+    with patch.object(client, "buscar_lead_por_id", buscar), \
+         patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+         patch.object(client, "criar_lead", criar), \
+         patch.object(client, "agendar_reuniao", schedule), \
+         patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+        r = await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                slot_id=slot.id, lead_id=51434608)
+
+    assert not criar.called, "FALHOU: LeadsAdd foi chamado com leadId presente — lead DUPLICADO"
+    assert buscar.await_args.args[0] == 51434608, buscar.await_args
+    assert r.lead_id == 51434608, r.lead_id
+    # O schedule tem que apontar para o lead que veio, não para outro qualquer.
+    assert schedule.await_args.kwargs["lead_id"] == 51434608, schedule.await_args
+    linha = db.agendamentos()[0]
+    assert linha.lead_id == 51434608 and linha.lead_externo is True, \
+        f"FALHOU: procedência não gravada — lead_id={linha.lead_id} externo={linha.lead_externo}"
+    assert linha.passo == PASSO_AGENDADO, linha.passo
+    print("  14. leadId válido: LeadsAdd pulado, schedule usa o lead do corpo, "
+          "lead_externo=True")
+
+
+async def caso_15_lead_id_inexistente():
+    """Lead que não existe para o fluxo ANTES do BoxesAdd — senão trava a agenda à toa."""
+    recarregar()
+    slot = _slot_valido()
+    db = _DbFalso()
+    box = AsyncMock(return_value=777)
+    criar = AsyncMock(return_value=888)
+    with patch.object(client, "buscar_lead_por_id", AsyncMock(return_value=None)), \
+         patch.object(client, "criar_box", box), \
+         patch.object(client, "criar_lead", criar), \
+         patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)):
+        try:
+            await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                slot_id=slot.id, lead_id=42)
+        except fluxo.LeadNaoEncontrado:
+            pass
+        else:
+            raise AssertionError("FALHOU: leadId inexistente deveria levantar LeadNaoEncontrado")
+
+    assert not box.called, \
+        "FALHOU: box criado antes de validar o lead — o horário fica travado até a faxina"
+    assert not criar.called, "FALHOU: LeadsAdd chamado num fluxo que deveria ter parado"
+    assert not db.agendamentos(), \
+        f"FALHOU: linha gravada sem necessidade — {db.agendamentos()}"
+    print("  15. leadId inexistente: para antes do BoxesAdd, nenhuma escrita em lugar nenhum")
+
+
+async def caso_16_lead_externo_sobrevive_a_falha():
+    """Falha no passo 3 remove o box e NÃO toca no lead — que nem é nosso."""
+    recarregar()
+    slot = _slot_valido()
+    db = _DbFalso()
+    remover = AsyncMock()
+    with patch.object(client, "buscar_lead_por_id",
+                      AsyncMock(return_value={"id": 51434608})), \
+         patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+         patch.object(client, "criar_lead", AsyncMock(return_value=888)), \
+         patch.object(client, "remover_box", remover), \
+         patch.object(client, "agendar_reuniao",
+                      AsyncMock(side_effect=client.BoxIndisponivel("ocupado"))):
+        try:
+            await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                slot_id=slot.id, lead_id=51434608)
+        except fluxo.AgendamentoFalhou as e:
+            assert e.lead_id == 51434608, e.lead_id
+        else:
+            raise AssertionError("FALHOU: deveria levantar AgendamentoFalhou")
+
+    remover.assert_awaited_once_with(777)
+    # A garantia central: nada no módulo pode apagar um lead que não criamos.
+    assert not hasattr(client, "excluir_lead"), \
+        "FALHOU: apareceu um excluir_lead no client — LeadsDelete é exclusão DURA"
+    linha = db.agendamentos()[0]
+    assert linha.passo == PASSO_FALHOU and linha.lead_id == 51434608, linha.passo
+    assert linha.lead_externo is True, linha.lead_externo
+    print("  16. leadId + scheduleAdd falho: box 777 removido, lead externo 51434608 intocado")
+
+
+async def caso_17_sem_lead_id_nao_regrediu():
+    """Retrocompatibilidade: a LP de Mulheridades não manda leadId e não pode mudar."""
+    recarregar()
+    slot = _slot_valido()
+    db = _DbFalso()
+    buscar = AsyncMock(return_value=None)
+    criar = AsyncMock(return_value=888)
+    schedule = AsyncMock(return_value=True)
+    with patch.object(client, "buscar_lead_por_id", buscar), \
+         patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+         patch.object(client, "criar_lead", criar), \
+         patch.object(client, "agendar_reuniao", schedule), \
+         patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+        r = await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                slot_id=slot.id)
+
+    assert not buscar.called, \
+        "FALHOU: sem leadId não pode haver consulta de lead — é requisição à toa na Exact"
+    criar.assert_awaited_once()
+    assert r.lead_id == 888, r.lead_id
+    assert schedule.await_args.kwargs["lead_id"] == 888, schedule.await_args
+    linha = db.agendamentos()[0]
+    assert linha.lead_externo is False, \
+        f"FALHOU: lead criado por nós marcado como externo — {linha.lead_externo}"
+    assert linha.passo == PASSO_AGENDADO, linha.passo
+    print("  17. sem leadId: LeadsAdd chamado, lead 888 criado, lead_externo=False")
+
+
 async def main():
     print("\nMódulo de agendamento — Exact mockada, banco dublê, nada real\n")
     await caso_1_grade()
@@ -410,7 +536,11 @@ async def main():
     await caso_11_rate_limit()
     await caso_12_allowlist_de_origem()
     await caso_13_origem_invalida_nao_cria_nada()
-    print("\nOK: 13/13 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
+    await caso_14_lead_id_pula_leadsadd()
+    await caso_15_lead_id_inexistente()
+    await caso_16_lead_externo_sobrevive_a_falha()
+    await caso_17_sem_lead_id_nao_regrediu()
+    print("\nOK: 17/17 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
 
 
 if __name__ == "__main__":

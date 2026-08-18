@@ -29,6 +29,29 @@ e `LeadsDelete` transformaria uma falha de agendamento numa perda de lead.
 de quem for mexer nisto depois.
 
 ------------------------------------------------------------------------------------------
+O FLUXO DE DUAS ETAPAS: `lead_id` JÁ PRONTO
+------------------------------------------------------------------------------------------
+A landing page trocou o formulário do RD Station por um form nativo, e isso partiu o fluxo
+em duas requisições:
+
+    index.html   -> POST /lead                  -> lead criado em Entrada
+    obrigado.html -> POST /agendar com leadId   -> agenda O MESMO lead
+
+Sem isso, o `/agendar` faria `LeadsAdd` de novo e a pessoa viraria DOIS leads no funil — um
+do formulário, outro do agendamento — com o SDR ligando duas vezes para o mesmo telefone.
+
+Com `lead_id`, o passo 2 deixa de ser criação e vira **verificação**: `GET /Leads` com
+`$filter=id eq {leadId}`. Lead inexistente para o fluxo antes de qualquer escrita.
+
+E a compensação ganha uma razão a mais para não tocar no lead. No fluxo de uma etapa,
+preservar o lead é decisão de produto. Aqui é mais simples que isso: **o lead não é nosso**.
+Foi criado por outra requisição, possivelmente minutos antes, e apagá-lo destruiria o
+contato de alguém que sequer chegou a escolher horário. A coluna `lead_externo` grava essa
+distinção, porque `lead_id` preenchido tem a mesma cara nos dois caminhos.
+
+O caminho SEM `lead_id` continua idêntico ao que sempre foi — a LP de Mulheridades usa ele.
+
+------------------------------------------------------------------------------------------
 O QUE NÃO TEM DESFAZER
 ------------------------------------------------------------------------------------------
 Depois do passo 3 não há compensação nenhuma: não existe `ScheduleRemove` na API. Remarcação
@@ -69,6 +92,15 @@ class SlotInvalido(Exception):
 
 class SlotIndisponivel(Exception):
     """O horário foi tomado entre a exibição e o clique. -> 409, o front recarrega."""
+
+
+class LeadNaoEncontrado(Exception):
+    """O `leadId` do corpo não existe na Exact. -> 404, e NADA foi escrito.
+
+    Acontece de verdade, não é só defesa contra POST forjado: o visitante pode ter deixado
+    o obrigado.html aberto até o lead ser excluído do CRM, ou ter chegado com um `?lead=`
+    copiado de outra sessão.
+    """
 
 
 class AgendamentoFalhou(Exception):
@@ -116,11 +148,15 @@ async def _marcar(db: AsyncSession, ag: Agendamento, passo: str, *, erro: str | 
 
 
 async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: str,
-                  slot_id: str, origem: str | None = None,
+                  slot_id: str, origem: str | None = None, lead_id: int | None = None,
                   origem_ip: str | None = None) -> Resultado:
     """Caminho completo da LP.
 
-    Levanta SlotInvalido / SlotIndisponivel / AgendamentoFalhou / origens.OrigemInvalida.
+    Com `lead_id`, agenda um lead que JÁ existe e pula o `LeadsAdd` — é o fluxo de duas
+    etapas descrito no cabeçalho. Sem ele, cria o lead como sempre fez.
+
+    Levanta SlotInvalido / SlotIndisponivel / LeadNaoEncontrado / AgendamentoFalhou /
+    origens.OrigemInvalida.
     """
     g = grade()
     slot = g.slot_por_id(slot_id)
@@ -130,6 +166,25 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     # Resolvido ANTES de qualquer escrita: uma origem inválida não pode chegar a criar box e
     # depois falhar, deixando o horário bloqueado até a faxina passar.
     sub_source = origens.resolver(origem)
+
+    # Mesma razão para validar o lead externo AQUI e não no passo 2: um `leadId` inválido
+    # depois do BoxesAdd deixaria o horário travado na agenda da consultora até a faxina
+    # passar, e o visitante veria um erro que não tem nada a ver com disponibilidade.
+    #
+    # A falha de REDE nesta consulta é tratada como indisponibilidade, não como "não
+    # existe". Confundir as duas agendaria por cima de um lead inexistente — ou, pior,
+    # recusaria um lead válido porque a Exact piscou.
+    lead_externo = lead_id is not None
+    if lead_externo:
+        try:
+            achado = await client.buscar_lead_por_id(lead_id)
+        except client.ExactErro as e:
+            print(f"❌ agendamento: não consegui verificar o lead {lead_id} — "
+                  f"{type(e).__name__}: {e}")
+            raise AgendamentoFalhou(f"verificação do lead {lead_id} falhou: {e}") from e
+        if achado is None:
+            print(f"⚠️ agendamento: leadId {lead_id} não existe na Exact (ip {origem_ip})")
+            raise LeadNaoEncontrado(f"lead {lead_id} não encontrado")
 
     anterior = await _duplo_clique(db, telefone)
     if anterior is not None:
@@ -144,6 +199,7 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
         nome=nome, email=email, telefone=telefone,
         slot_inicio=slot.inicio, slot_fim=slot.fim,
         sales_rep_email=g.sales_rep_email, sub_source=sub_source,
+        lead_id=lead_id, lead_externo=lead_externo,
         passo=PASSO_INICIADO, origem_ip=origem_ip,
         created_at=agora, updated_at=agora,
     )
@@ -173,21 +229,29 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     print(f"📦 agendamento #{ag.id}: box {box_id} criado para {slot.id}")
 
     # ---- passo 2: o lead ------------------------------------------------------------
-    try:
-        lead_id = await client.criar_lead(
-            nome=nome, telefone=telefone, email=email,
-            source=SOURCE, sub_source=sub_source, funnel_id=FUNIL_POS_GRADUACAO,
-        )
-    except client.ExactErro as e:
-        await _compensar_box(db, ag, motivo="LeadsAdd falhou")
-        await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
-        print(f"❌ agendamento #{ag.id}: LeadsAdd falhou — {type(e).__name__}: {e}")
-        raise AgendamentoFalhou(str(e)) from e
+    # Com lead externo não há chamada nenhuma aqui: o lead já foi verificado lá em cima, e
+    # criar outro é exatamente o bug que o `leadId` existe para evitar. O passo é marcado
+    # do mesmo jeito para a faxina enxergar o mesmo desenho de estado nos dois fluxos.
+    if lead_externo:
+        await _marcar(db, ag, PASSO_LEAD_CRIADO)
+        print(f"👤 agendamento #{ag.id}: lead {lead_id} JÁ EXISTIA (veio no corpo) — "
+              f"LeadsAdd pulado, subSource {sub_source} não reaplicado")
+    else:
+        try:
+            lead_id = await client.criar_lead(
+                nome=nome, telefone=telefone, email=email,
+                source=SOURCE, sub_source=sub_source, funnel_id=FUNIL_POS_GRADUACAO,
+            )
+        except client.ExactErro as e:
+            await _compensar_box(db, ag, motivo="LeadsAdd falhou")
+            await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
+            print(f"❌ agendamento #{ag.id}: LeadsAdd falhou — {type(e).__name__}: {e}")
+            raise AgendamentoFalhou(str(e)) from e
 
-    ag.lead_id = lead_id
-    await _marcar(db, ag, PASSO_LEAD_CRIADO)
-    print(f"👤 agendamento #{ag.id}: lead {lead_id} criado "
-          f"(Entrada, funil {FUNIL_POS_GRADUACAO}, subSource {sub_source})")
+        ag.lead_id = lead_id
+        await _marcar(db, ag, PASSO_LEAD_CRIADO)
+        print(f"👤 agendamento #{ag.id}: lead {lead_id} criado "
+              f"(Entrada, funil {FUNIL_POS_GRADUACAO}, subSource {sub_source})")
 
     # ---- passo 3: ponto de não retorno ----------------------------------------------
     try:
@@ -197,10 +261,16 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
         )
     except client.ExactErro as e:
         # O box sai; o LEAD FICA em Entrada, com telefone e origem. Ver cabeçalho.
+        #
+        # Vale nos DOIS fluxos, por razões diferentes: no lead nosso é decisão de produto
+        # (o contato vale mais que o horário perdido); no lead externo é que ele não nos
+        # pertence — foi criado por outra requisição e não é nosso para desfazer. Em
+        # nenhum dos dois se chama LeadsDelete.
         await _compensar_box(db, ag, motivo="scheduleAdd falhou")
         await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
+        posse = "externo, não é nosso" if lead_externo else "nosso, mantido de propósito"
         print(f"❌ agendamento #{ag.id}: scheduleAdd falhou — {type(e).__name__}: {e}. "
-              f"Lead {lead_id} MANTIDO em Entrada de propósito.")
+              f"Lead {lead_id} PRESERVADO ({posse}).")
         raise AgendamentoFalhou(str(e), lead_id=lead_id) from e
 
     await _marcar(db, ag, PASSO_AGENDADO)

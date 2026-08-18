@@ -538,6 +538,12 @@ class Agendamento(Base):
     sub_source = Column(String(100), nullable=True)
     box_id = Column(BigInteger, nullable=True)
     lead_id = Column(BigInteger, nullable=True)
+    # True quando o `lead_id` veio PRONTO no corpo do POST (fluxo de duas etapas da LP:
+    # o form nativo cria o lead em /lead e o obrigado.html só agenda). Nesse caso o módulo
+    # NÃO chamou LeadsAdd — o lead é de outra requisição, e a compensação não pode presumir
+    # que ele é nosso. É a única forma de responder depois "este lead foi criado aqui ou já
+    # existia?", porque `lead_id` preenchido tem a mesma cara nos dois caminhos.
+    lead_externo = Column(Boolean, nullable=False, default=False, server_default="false")
     meeting_id = Column(BigInteger, nullable=True)
     passo = Column(String(20), nullable=False, default=PASSO_INICIADO)
     erro = Column(Text, nullable=True)           # mensagem crua da Exact, sem tradução

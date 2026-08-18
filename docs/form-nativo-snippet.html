@@ -1,0 +1,201 @@
+<!--
+  ==========================================================================================
+  FORMULÁRIO NATIVO — bloco para colar no index.html da landing page
+  ==========================================================================================
+
+  O QUE ELE SUBSTITUI
+    O formulário do RD Station. Este aqui fala direto com o nosso backend, cria o lead na
+    Exact (etapa `Entrada`) e manda o visitante para o `obrigado.html` já identificado.
+
+  O FLUXO COMPLETO, EM DUAS ETAPAS
+      index.html    -> POST /api/agendamento/lead   -> lead criado em Entrada
+                    -> redirect obrigado.html?lead=ID&nome=&email=&tel=
+      obrigado.html -> POST /api/agendamento/agendar com leadId -> agenda O MESMO lead
+
+    O `lead=` na query é o que impede a pessoa de virar DOIS leads no funil. Sem ele, o
+    obrigado.html criaria um segundo cadastro e um SDR ligaria duas vezes para o mesmo
+    telefone. Com ele, o backend pula o `LeadsAdd` e só agenda.
+
+  COMO USAR
+    0. Ajuste ORIGEM e OBRIGADO_URL logo abaixo.
+    1. Cole este bloco inteiro (style + form + script) dentro do <body> do index.html.
+    2. Confira que o domínio da LP casa com AGENDAMENTO_CORS_ORIGIN_SUFFIXES no .env do
+       backend (padrão: .cenatsaudemental.com e .netlify.app — qualquer subdomínio dos dois,
+       incluindo previews do Netlify).
+
+  A REGRA QUE MANDA AQUI: O VISITANTE NUNCA FICA PRESO
+    Se o POST falhar — CRM fora do ar, timeout, CORS mal configurado, qualquer coisa — a
+    página **redireciona mesmo assim**, só que sem `lead=` na URL. O obrigado.html percebe a
+    ausência e cai no fluxo de uma etapa, criando o lead na hora de agendar.
+
+    O pior desfecho possível de uma landing page é a pessoa preencher tudo, apertar o botão
+    e ficar olhando para uma mensagem de erro. Perder o lead ali é definitivo; criar um lead
+    duplicado, no pior caso, é um incômodo para o SDR. Entre os dois, escolhemos o incômodo.
+
+  NÃO DEPENDE DE NADA
+    Sem jQuery, sem framework, sem build, sem requisição externa. Só fetch e DOM.
+  ==========================================================================================
+-->
+
+<style>
+  .cenat-form { --cor: #0b7285; --erro: #c92a2a; --borda: #dee2e6;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 480px; margin: 32px auto; padding: 24px;
+    border: 1px solid var(--borda); border-radius: 12px; }
+  .cenat-form h2 { margin: 0 0 4px; font-size: 1.35rem; }
+  .cenat-form p.sub { margin: 0 0 20px; color: #666; font-size: .92rem; }
+  .cenat-form label { display: block; font-size: .85rem; font-weight: 600; margin: 12px 0 4px; }
+  .cenat-form input { width: 100%; padding: 10px 12px; font-size: 1rem; box-sizing: border-box;
+    border: 1px solid var(--borda); border-radius: 8px; }
+  .cenat-form input:focus { outline: 2px solid var(--cor); outline-offset: 1px; }
+  .cenat-form button { width: 100%; margin-top: 18px; padding: 14px; font-size: 1rem;
+    font-weight: 600; color: #fff; background: var(--cor); border: 0; border-radius: 8px;
+    cursor: pointer; }
+  .cenat-form button[disabled] { opacity: .5; cursor: not-allowed; }
+  .cenat-form .msg { margin-top: 14px; padding: 12px 14px; border-radius: 8px;
+    font-size: .92rem; }
+  .cenat-form .msg.erro { background: #fff5f5; color: var(--erro); }
+  .cenat-form .msg.ok { background: #e6fcf5; color: #087f5b; }
+</style>
+
+<form class="cenat-form" id="cenat-form" novalidate>
+  <h2>Fale com a nossa equipe</h2>
+  <p class="sub">Preencha seus dados e escolha o melhor horário na próxima tela.</p>
+
+  <label for="lp-nome">Nome completo</label>
+  <input id="lp-nome" name="nome" type="text" autocomplete="name" placeholder="Seu nome">
+
+  <label for="lp-email">E-mail</label>
+  <input id="lp-email" name="email" type="email" autocomplete="email"
+         placeholder="voce@email.com">
+
+  <label for="lp-tel">WhatsApp (com DDD)</label>
+  <input id="lp-tel" name="telefone" type="tel" autocomplete="tel"
+         placeholder="(11) 99999-8888" inputmode="tel">
+
+  <button type="submit" id="lp-enviar">Continuar</button>
+  <div id="lp-msg"></div>
+</form>
+
+<script>
+(function () {
+  "use strict";
+
+  // URL pública do backend, sem barra no fim.
+  var API_BASE = "https://hub.cenatdata.online";
+
+  // AJUSTE POR LP: de qual curso é esta página. Tem que ser um valor da allowlist do backend
+  // (AGENDAMENTO_SUBSOURCES) — qualquer outro é recusado com 400, de propósito: a Exact CRIA
+  // a origem quando o valor não existe, e o cadastro dela é global e usado em relatório.
+  // Valores válidos hoje: PosMulheridades, posgenerot2, PosPraticasDialogicasTurma1.
+  // Deixe "" para cair no padrão do backend.
+  var ORIGEM = "PosMulheridades";
+
+  // Para onde ir depois. Relativo ou absoluto, os dois funcionam.
+  var OBRIGADO_URL = "obrigado.html";
+
+  // Quanto esperar o backend antes de desistir e seguir sem `lead=`. O visitante já apertou
+  // o botão; deixá-lo olhando para um spinner por 30s é pior que criar o lead na tela
+  // seguinte. O backend tem timeout de 15s contra a Exact, então 20s cobre o caso normal.
+  var TIMEOUT_MS = 20000;
+
+  var $ = function (id) { return document.getElementById(id); };
+  var enviando = false;
+
+  function msg(texto, classe) {
+    $("lp-msg").innerHTML = texto
+      ? '<div class="msg ' + classe + '">' + texto + "</div>" : "";
+  }
+
+  // Mesma regra do backend: só dígitos, sem DDI. 10 = fixo com DDD, 11 = celular com DDD.
+  // Validar aqui evita um 422 que o visitante não saberia interpretar.
+  function digitos(bruto) {
+    var d = (bruto || "").replace(/\D/g, "");
+    if (d.length > 11 && d.indexOf("55") === 0) { d = d.slice(2); }
+    return d;
+  }
+
+  function irParaObrigado(leadId, dados) {
+    // nome/email/tel viajam na query para o obrigado.html não pedir tudo de novo. São dados
+    // que o próprio visitante acabou de digitar — não há nada aqui que ele já não saiba.
+    // O que NÃO viaja é qualquer identificador de sessão: `lead` é um id de CRM, e o
+    // backend confere que ele existe antes de agendar.
+    var q = "?nome=" + encodeURIComponent(dados.nome)
+          + "&email=" + encodeURIComponent(dados.email)
+          + "&tel=" + encodeURIComponent(dados.telefone);
+    if (leadId) { q += "&lead=" + encodeURIComponent(leadId); }
+    window.location.href = OBRIGADO_URL + q;
+  }
+
+  function enviar(ev) {
+    if (ev) { ev.preventDefault(); }
+    if (enviando) { return; }
+
+    var nome = $("lp-nome").value.trim();
+    var email = $("lp-email").value.trim();
+    var tel = $("lp-tel").value.trim();
+    var tel_d = digitos(tel);
+
+    if (nome.length < 2) { return msg("Escreva seu nome completo.", "erro"); }
+    if (tel_d.length !== 10 && tel_d.length !== 11) {
+      return msg("Confira o telefone: precisa do DDD.", "erro");
+    }
+    if (email && email.indexOf("@") < 1) {
+      return msg("Confira o e-mail.", "erro");
+    }
+
+    enviando = true;
+    $("lp-enviar").disabled = true;
+    msg("Enviando…", "ok");
+
+    var dados = { nome: nome, email: email, telefone: tel_d };
+    var corpo = { nome: nome, email: email, telefone: tel_d };
+    if (ORIGEM) { corpo.origem = ORIGEM; }
+
+    // AbortController dá o timeout que o fetch não tem por conta própria. Sem ele, uma
+    // conexão pendurada deixa o visitante travado até o navegador desistir sozinho.
+    var ctrl = null, expirou = null;
+    if (typeof AbortController !== "undefined") {
+      ctrl = new AbortController();
+      expirou = setTimeout(function () { ctrl.abort(); }, TIMEOUT_MS);
+    }
+
+    fetch(API_BASE + "/api/agendamento/lead", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(corpo),
+      signal: ctrl ? ctrl.signal : undefined
+    })
+      .then(function (r) {
+        return r.json().then(
+          function (d) { return { status: r.status, corpo: d }; },
+          // 502/503 podem vir sem corpo JSON (nginx respondendo por cima do backend).
+          function () { return { status: r.status, corpo: {} }; }
+        );
+      })
+      .then(function (res) {
+        if (expirou) { clearTimeout(expirou); }
+        if (res.status >= 200 && res.status < 300 && res.corpo.lead_id) {
+          return irParaObrigado(res.corpo.lead_id, dados);
+        }
+        // 400 (origem inválida) e 422 (corpo malformado) são erro NOSSO de configuração ou
+        // de validação, não do CRM. Vale registrar no console para quem for depurar a LP —
+        // mas o visitante segue adiante do mesmo jeito.
+        if (window.console && console.warn) {
+          console.warn("CENAT: POST /lead respondeu " + res.status, res.corpo);
+        }
+        irParaObrigado(null, dados);
+      })
+      .catch(function (e) {
+        if (expirou) { clearTimeout(expirou); }
+        // Rede, CORS, timeout. Segue sem `lead=` — o obrigado.html cria o lead ao agendar.
+        if (window.console && console.warn) {
+          console.warn("CENAT: POST /lead falhou", e && e.name);
+        }
+        irParaObrigado(null, dados);
+      });
+  }
+
+  $("cenat-form").addEventListener("submit", enviar);
+})();
+</script>

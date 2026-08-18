@@ -209,13 +209,47 @@ async def meeting_por_lead(lead_id: int) -> dict | None:
     return valores[0] if valores else None
 
 
-async def buscar_lead_por_telefone(telefone: str) -> dict | None:
+async def buscar_lead_por_id(lead_id: int) -> dict | None:
+    """O lead de um id, ou None se não existir. Usado para validar `leadId` vindo da LP.
+
+    POR QUE FILTRAR POR `id` E NÃO POR TEXTO. O índice de texto da Exact ATRASA: o E2E viu
+    `contains(lead,'TESTE API')` continuar devolvendo um lead que `id eq ...` já não
+    encontrava (FINDINGS §10). Filtro por id é consistente na hora; busca textual não é.
+
+    ARMADILHA MEDIDA (17/08/2026): id inexistente devolve **HTTP 200 com `value: []`** — e
+    ainda vem acompanhado de um `@odata.nextLink` apontando para `$skip=500`, que é mentira,
+    porque não há página nenhuma. Quem seguir o `nextLink` para "confirmar" entra em laço.
+    Lista vazia é a resposta final: não existe.
+
+    Não levanta para lead ausente — devolve None e quem chama decide. Levanta ExactErro só
+    quando a Exact recusou ou não respondeu, que é caso diferente de "não existe".
+    """
+    resp = await _req("GET", "/Leads", params={"$filter": f"id eq {int(lead_id)}", "$top": 1})
+    valores = resp.json().get("value", [])
+    return valores[0] if valores else None
+
+
+async def buscar_lead_por_telefone(telefone: str, ddi: str = "55") -> dict | None:
     """Lead existente com este telefone, se houver. Usado para não duplicar na LP.
 
     `duplicityValidation=False` não protege ninguém numa página pública: o mesmo visitante
     preenchendo duas vezes vira dois leads.
+
+    O DDI ENTRA NO FILTRO, E ESSA LINHA JÁ ESTEVE ERRADA. O `LeadsAdd` recebe `ddiPhone` e
+    `phone` SEPARADOS, mas o `GET /Leads` devolve `phone1` com os dois GRUDADOS —
+    `5583988046720`, não `83988046720`. Consultar sem o DDI não dá erro: dá **zero
+    resultados, sempre**. Medido em 18/08/2026:
+
+        phone1 eq '83988046720'    -> 0 leads
+        phone1 eq '5583988046720'  -> 4 leads
+
+    O módulo guarda o telefone sem DDI (é o que `_normalizar_telefone` produz, e é o que o
+    `LeadsAdd` quer), então a concatenação tem que acontecer aqui, na fronteira da consulta.
+
+    Curiosidade que confirma o desenho: `ddiPhone` volta **None** em todo lead lido — o campo
+    existe na escrita e não na leitura. Não dá para reconstruir o número pelos dois campos.
     """
-    filtro = f"phone1 eq '{telefone}'"
+    filtro = f"phone1 eq '{ddi}{telefone}'"
     resp = await _req("GET", "/Leads", params={"$filter": filtro, "$top": 1})
     valores = resp.json().get("value", [])
     return valores[0] if valores else None

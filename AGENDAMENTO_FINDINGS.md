@@ -704,6 +704,111 @@ lista de origens de quem for montar um relatório.
 
 ---
 
+## 12. `leadId` no `/agendar`: o fluxo de duas etapas (18/08/2026)
+
+A LP trocou o formulário do RD Station por form nativo, o que parte o fluxo em duas
+requisições — e cria o risco de a mesma pessoa virar dois leads. Três medições novas contra a
+API real saíram desta sprint.
+
+### `$filter=id eq {leadId}` é consistente, mas mente na paginação
+
+É o filtro certo para validar um `leadId`: responde na hora, sem o atraso de índice que a
+busca textual tem (§10). Id existente devolve o lead; id inexistente devolve **HTTP 200 com
+`value: []`**.
+
+A armadilha está no que vem junto:
+
+```json
+{"@odata.context":"...#Leads","value":[],
+ "@odata.nextLink":"https://api.exactspotter.com/v3/Leads?$filter=id%20eq%20999999999&$skip=500"}
+```
+
+**O `@odata.nextLink` aparece mesmo com zero resultados**, apontando para `$skip=500` de um
+conjunto vazio. Quem seguir o link para "confirmar que acabou" pagina para sempre. Lista
+vazia é resposta final.
+
+Vale também registrar que um `leadId` válido pode apontar para lead em qualquer etapa —
+o primeiro lead que peguei de amostra estava em `Descartado`. O módulo valida **existência**,
+não estado: um `scheduleAdd` sobre lead descartado o move para `Agendados`, o que é o
+comportamento desejado (alguém descartado que voltou a se interessar).
+
+### ⚠️ `phone1` volta com o DDI grudado — e o código estava errado por isso
+
+O `LeadsAdd` recebe `ddiPhone` e `phone` **separados**. O `GET /Leads` devolve `phone1` com
+os dois **grudados**. Não é simetria óbvia, e consultar do jeito errado não dá erro nenhum:
+
+| filtro | resultado |
+|---|---|
+| `phone1 eq '83988046720'` | **0 leads** |
+| `phone1 eq '5583988046720'` | **4 leads** |
+
+`client.buscar_lead_por_telefone()` montava o filtro **sem** o DDI desde que foi escrita.
+Ela nunca encontrou lead nenhum, e nunca falhou — devolvia `None`, que é indistinguível de
+"não existe". Não causou dano porque a trava de duplo clique usa a tabela local e não ela,
+mas era uma defesa antiduplicata que não defendia nada. Corrigida nesta sprint.
+
+Detalhe que fecha o diagnóstico: **`ddiPhone` volta `None` em todo lead lido**. O campo existe
+na escrita e não na leitura, então não dá para remontar o número a partir dos dois campos —
+a concatenação tem que ser feita na consulta.
+
+> Lição geral: na Exact, **filtro que não casa devolve lista vazia, não erro**. Toda consulta
+> nova merece uma verificação contra um registro que você sabe que existe, senão o silêncio
+> passa por resposta.
+
+### O fuso pegou o próprio teste
+
+O E2E falhou com `esperava 1 slot em 2027-03-18, achei 0`. A causa não tinha nada a ver com a
+Exact: `_preparar_grade` calculava o horizonte com `date.today()` (hora do sistema, UTC)
+enquanto a grade conta os dias a partir de `agora_sp()`. Rodando 00:0x UTC, `date.today()`
+dava `2026-08-18` e `agora_sp().date()` dava `2026-08-17` — horizonte um dia curto, alvo fora
+da grade. O mesmo defeito latente estava no E2E de uma etapa. Ambos passaram a usar
+`_horizonte_ate()`, que conta em SP.
+
+É a mesma classe de erro de §1, do lado do teste. Vale como aviso: **nada neste projeto deve
+chamar `date.today()` ou `datetime.now()` sem fuso** — inclusive teste.
+
+### E2E do fluxo de duas etapas
+
+`backend/test_agendamento_e2e_leadid.py --sim-eu-quero`, alvo **2027-03-18 14:00**, telefone
+exclusivo `11999995555` para a contagem ser conclusiva.
+
+| # | verificação | resultado |
+|---|---|---|
+| 1 | telefone sem lead, data sem box | limpo |
+| 2 | etapa 1 (`POST /lead`) | lead **51437955** em `Entrada`, subSource `PosMulheridades` |
+| 3 | etapa 2 (`POST /agendar` com `leadId`) | agendamento #5, box **43726884**, reunião **4725239** |
+| 4 | **exatamente 1 lead com o telefone** | **1** — nenhum `LeadsAdd` extra ✅ |
+| 5 | o lead andou de etapa | `Entrada` → `Agendados`, subSource intacto |
+| 6 | fuso | `start=2027-03-18T14:00:00Z` — hora de parede preservada |
+| 7 | estado local | `passo=agendado`, `lead_externo=True` |
+| 8-9 | limpeza | lead excluído (204), 0 leads, 0 boxes visíveis |
+
+O passo 4 é a razão de o arquivo existir. Se o `leadId` for ignorado em qualquer ponto do
+caminho, aparecem 2 leads e um SDR liga duas vezes para o mesmo número — falha que nenhum
+teste offline pega, porque o que quebra é a integração inteira.
+
+### Resíduo desta rodada
+
+| Artefato | Destino |
+|---|---|
+| Leads 51437948 e 51437955 | excluídos, 204 ✅ |
+| Linhas em `agendamentos` | removidas, tabela de volta a 0 ✅ |
+| **Box 43726883** | **órfão** — da execução que falhou na asserção do telefone ⚠️ |
+| **Box 43726884** | **órfão** — da execução boa ⚠️ |
+
+Os dois em 2027-03-18, invisíveis em todo `GET`, sem bloquear a agenda (§8).
+
+**Total de órfãos invisíveis acumulados: 5** (43722204, 43722368, 43722680, 43726883,
+43726884).
+
+O primeiro deles é o preço de uma asserção errada minha, não do código: o fluxo tinha
+funcionado, e foi a verificação por telefone — sem DDI — que reprovou um resultado correto.
+Cada reexecução do E2E custa um box permanente, então **vale conferir a asserção antes de
+rodar**, não depois.
+
+
+---
+
 ## Apêndice — inventário de endpoints (do `$metadata`)
 
 Agenda: `Boxes` · `BoxesAdd` · `BoxesUpdate` · `BoxesRemove` · `ScheduleAdd` · `Meetings` ·

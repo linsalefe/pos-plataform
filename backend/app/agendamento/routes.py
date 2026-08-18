@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import agendar as fluxo
-from app.agendamento import disponibilidade, origens
+from app.agendamento import client, disponibilidade, origens
 from app.agendamento.grade import grade
 from app.database import get_db
 
@@ -118,6 +118,18 @@ class DadosLead(BaseModel):
 
 class PedidoAgendamento(DadosLead):
     slot: str = Field(min_length=10, max_length=40)
+    # Lead que JÁ existe, criado antes pelo POST /lead. Presente = pula o LeadsAdd e agenda
+    # este lead; ausente = cria um novo, como sempre. É o que impede a pessoa de virar dois
+    # leads no fluxo de duas etapas da LP (form no index -> agendamento no obrigado).
+    #
+    # O nome é `leadId` porque é o que a query string do obrigado.html carrega (`?lead=`) e
+    # o que o front monta. `lead_id` também é aceito, para quem chamar de dentro do projeto.
+    #
+    # `gt=0` porque id da Exact é sempre positivo, e um `0` vindo de string vazia mal
+    # convertida no front viraria uma consulta inútil à Exact — melhor recusar como 422.
+    lead_id: int | None = Field(default=None, alias="leadId", gt=0)
+
+    model_config = {"populate_by_name": True}
 
 
 @router.get("/slots")
@@ -152,7 +164,8 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
     try:
         r = await fluxo.agendar(db, nome=pedido.nome, email=pedido.email,
                                 telefone=pedido.telefone, slot_id=pedido.slot,
-                                origem=pedido.origem, origem_ip=_ip(request))
+                                origem=pedido.origem, lead_id=pedido.lead_id,
+                                origem_ip=_ip(request))
     except origens.OrigemInvalida as e:
         # 400 e não 422: o corpo está bem formado, o valor é que não é aceito. E a mensagem
         # não lista as origens permitidas — é endpoint público, e a lista é dado interno.
@@ -160,6 +173,14 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
         raise HTTPException(status_code=400, detail="Origem inválida.") from e
     except fluxo.SlotInvalido as e:
         raise HTTPException(status_code=400, detail="Horário inválido ou expirado.") from e
+    except fluxo.LeadNaoEncontrado as e:
+        # 404 e não 400: o corpo está correto, o recurso é que não existe. O front trata
+        # reenviando SEM `leadId` — aí o /agendar cria o lead e o visitante não fica preso
+        # por causa de um `?lead=` velho na URL.
+        raise HTTPException(
+            status_code=404,
+            detail="O cadastro informado não foi encontrado. "
+                   "Recarregue a página e tente de novo.") from e
     except fluxo.SlotIndisponivel as e:
         raise HTTPException(
             status_code=409,
@@ -202,7 +223,20 @@ async def criar_lead_sem_agendar(pedido: DadosLead, request: Request,
         print(f"⚠️ /agendamento/lead: {e} (ip {_ip(request)})")
         raise HTTPException(status_code=400, detail="Origem inválida.") from e
     except fluxo.AgendamentoFalhou as e:
-        raise HTTPException(status_code=502,
-                            detail="Não consegui registrar seu contato. Tente de novo.") from e
+        # 503 quando a Exact não respondeu, 502 quando ela respondeu recusando. A diferença
+        # importa para o FRONT, não para o visitante: o form nativo segue para o obrigado.html
+        # de qualquer jeito (sem `lead=` na URL), e lá o POST /agendar cria o lead. Ninguém
+        # fica preso numa página porque o CRM piscou.
+        #
+        # Nenhum dos dois é 500: 500 quer dizer "quebrou aqui dentro", e não é o caso — a
+        # falha é de uma dependência externa, e o front tem o que fazer com essa informação.
+        indisponivel = isinstance(e.__cause__, client.ExactIndisponivel)
+        raise HTTPException(
+            status_code=503 if indisponivel else 502,
+            detail="Não consegui registrar seu contato agora. Tente de novo.") from e
+    # `lead_id` (snake) é a chave canônica de RESPOSTA em todo o módulo — igual ao /agendar,
+    # e igual ao resto do corpo (`agendamento_id`, `inicio`, `fim`). O `leadId` em camelCase é
+    # aceito só na ENTRADA do /agendar, porque é o formato que o front tem em mãos. Devolver
+    # as duas grafias aqui deixaria o contrato ambíguo sobre qual é a de verdade.
     return {"ok": True, "lead_id": lead_id,
             "aviso": "Recebemos seu contato. Nossa equipe fala com você em breve."}
