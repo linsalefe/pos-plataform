@@ -2,12 +2,9 @@
 
 Branch: `feat/agendamento-subsource` · Investigação: `AGENDAMENTO_FINDINGS.md` §14 (nova)
 
-**O serviço NÃO foi reiniciado.** Nenhuma migração foi necessária — a coluna
-`sales_rep_email` já existia e passou a guardar a consultora escolhida.
-
-> **Mecanismo pronto, mas INERTE.** Sem `AGENDAMENTO_CONSULTORAS` no env, o módulo se
-> comporta exatamente como hoje: uma consultora só, `comercial@`, grade atual. Ativar é
-> preencher o env — e para isso preciso das três respostas do fim deste documento.
+**ATIVO em produção desde 18/08/2026 01:19 UTC** com duas consultoras. Nenhuma migração
+foi necessária — a coluna `sales_rep_email` já existia e passou a guardar a escolhida.
+Ver "Ativação" no fim.
 
 ---
 
@@ -184,11 +181,15 @@ livre para a Bia.
 
 ---
 
-## Três decisões suas antes de ativar
+## As três decisões — respondidas em 18/08
 
-### 1. Quem são as consultoras?
+### 1. Quem são as consultoras? ✅ RESPONDIDO
 
-Só existem **3 sellers ativos**, e você disse que `comercial@` é a pré-venda. Sobram duas:
+**`comercial@` (Victória Amorim) e `processoseletivo@` (Victória Rodrigues).** Marina fica de
+fora; nada a criar na Exact. Note que isso reviu a premissa inicial da sprint, que colocava
+`comercial@` como pré-venda fora do destino — ela é consultora e recebe reunião.
+
+Contexto que levou à decisão:
 
 | candidata | e-mail | reuniões reais / 90d | agenda |
 |---|---|---|---|
@@ -199,37 +200,75 @@ Nota: quem trabalhou o funil de vendas historicamente foi a **Isabela** — 395 
 lidos em 18537 são dela — e ela está **inativa** em `/Sellers`, num domínio diferente
 (`@ceos.com.br`). Se as consultoras forem pessoas novas, precisam ser criadas na Exact antes.
 
-### 2. O funil fica em 18535?
+### 2. O funil fica em 18535? ✅ RESPONDIDO — SIM
 
-Dado que o 18537 é impossível pela API (acima), a reunião continua em 18535/Agendados. As
-opções são: aceitar assim, mover depois com `LeadsTransfer`, ou reordenar as etapas do 18537
-pela UI. **Não fiz nada disso** — todas são decisão sua.
+Reunião permanece em **18535 / Agendados (133409)**. Limitação estrutural aceita; mover para
+o funil de Vendas é trabalho do time via `LeadsTransfer` ou automação do CRM, fora do escopo
+deste módulo. Nada no código mudou por causa disso.
 
-### 3. A grade inicial
+### 3. A grade inicial ✅ RESPONDIDO — opção A
 
-Proposta, **idêntica para as duas** — validei programaticamente contra os blocos recorrentes
-reais de cada uma e deu **zero conflitos**:
+**A primeira proposta foi descartada.** Ela tinha sido validada contra Rodrigues + Marina, e
+com a entrada da **Amorim** deixou de servir: as janelas `09:00–12:00` + `13:30–15:00`
+batiam em **quatro** blocos recorrentes dela.
+
+| consultora | blocos recorrentes (90 dias) |
+|---|---|
+| **Amorim** | seg–qui **09:00–10:10** · **13:30–14:30** · **15:00–15:45** · ter **10:10–13:30** · sex 08:00–09:10 · 18:00–19:00 |
+| **Rodrigues** | seg 12:00–13:30 · seg 15:00–16:00 · seg–sex 18:20–18:50 |
+
+A grade nova foi montada sobre uma **rede comum** (09:00 + múltiplos de 45 min) para que os
+horários das duas coincidam — assim a união fica limpa na tela e o retry vale para o mesmo
+horário, em vez de gerar 12 opções em horários quebrados.
 
 ```
-seg–sex   09:00–12:00  e  13:30–15:00
-slots de 45 min:  09:00 · 09:45 · 10:30 · 11:15 · 13:30 · 14:15   (6/dia cada)
+seg–sex   10:30–12:00  +  15:45–18:00
+→ 10:30 · 11:15 · 15:45 · 16:30 · 17:15     (5 horários/dia)
 ```
 
-Por que idêntica: quando as duas oferecem os mesmos horários, a união fica limpa na tela (6
-opções, não 12 em horários quebrados) e **todo** slot ganha o retry da segunda consultora.
+| opção | união/sem | Amorim | Rodrigues | com retry | capacidade |
+|---|---|---|---|---|---|
+| **A — escolhida** | 25 | 23 | 24 | **22 (88%)** | 47/sem |
+| B (`09:45–12:00` + `15:00–18:00`) | 34 | 24 | 33 | 23 (67%) | 57/sem |
 
-Blocos que ela respeita:
-
-| consultora | blocos recorrentes | folga |
-|---|---|---|
-| `processoseletivo@` | seg 12:00–13:30 · seg 15:00–16:00 · seg–sex 18:20–18:50 | 11:15–12:00 e 14:15–15:00 encostam sem sobrepor |
-| `executivadecarreiras@` | seg 16:10–17:00 | nenhum slot depois das 15:00 |
-
-Atenção: `processoseletivo@` tem 80 reuniões reais em 90 dias, espalhadas das 09:00 às 18:00.
-A grade vai colidir com frequência na agenda dela — e é exatamente para isso que servem a
-subtração do `/slots` e o retry na outra consultora.
+Janelas **idênticas** para as duas: não é preciso grade por dia da semana, porque o `/slots`
+subtrai os blocos reais de cada uma ao vivo. Confirmado em produção — terça 18/08 mostra
+10:30 e 11:15 só para a Rodrigues (bloco 10:10–13:30 da Amorim), e segunda 24/08 mostra 15:45
+só para a Amorim (bloco 15:00–16:00 da Rodrigues).
 
 ---
+
+## Ativação — FEITA em 18/08/2026 01:19 UTC
+
+### Config por ARQUIVO, não JSON inline
+
+```
+AGENDAMENTO_CONSULTORAS_PATH=/home/ubuntu/pos-plataform/backend/consultoras.json
+```
+
+O `.env` é **`EnvironmentFile` do systemd** além de ser lido pelo python-dotenv, e o parser
+do systemd é mais restrito. Uma linha com JSON entre aspas pode impedir o serviço de subir —
+derrubando o Hub, o webhook da Meta e a NAT junto. Com o caminho, a linha é `CHAVE=/caminho`,
+sem nada para o parser errar. Trocar a grade passa a ser editar o `.json` e reiniciar.
+
+O `consultoras.json` está **versionado** de propósito: é a grade ativa, e vale ter histórico
+de quando mudou. Não contém segredo — e-mails internos, não credenciais.
+
+### Validação em produção
+
+| verificação | resultado |
+|---|---|
+| log de startup | `✅ 2 consultora(s) em rotação — Victória Amorim, Victória Rodrigues` |
+| `/health` | **200** |
+| `/slots` | **200**, `fallback:false`, 10 dias × 5 horários = **50** |
+| horários servidos | `10:30 11:15 15:45 16:30 17:15` — exatamente a opção A |
+| com as duas livres | **47/50 (94%)** — retry disponível |
+| slot fora da grade (09:00) | **400** |
+| `leadId` inexistente | **404** |
+| origem fora da allowlist | **400** |
+| `extras` com 11 chaves | **422** |
+| CORS da LP | **204** |
+| `agendamentos` | **2 linhas** — só as de produção, nada escrito pelo smoke |
 
 ## Fora de escopo
 
