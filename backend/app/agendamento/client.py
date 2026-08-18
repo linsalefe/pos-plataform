@@ -210,6 +210,36 @@ async def agendar_reuniao(*, box_id: int, lead_id: int, stage_name: str,
     return bool(resp.json().get("value"))
 
 
+async def mudar_funil(lead_id: int, stage_id: int) -> bool:
+    """`POST /ChangeFunnel` — move o lead para outro funil, pelo id da etapa de DESTINO.
+
+    Devolve booleano, como o `scheduleAdd`. HTTP 201 no sucesso.
+
+    NÃO CONFUNDA COM `LeadsTransfer`. Os dois existem no `$metadata` e fazem coisas
+    diferentes: `LeadsTransfer` é `{ids, sdrEmail, group}` e troca o SDR dono do lead, sem
+    tocar no funil. Quem muda de funil é este aqui, e a chave é o `stageId` — não existe
+    parâmetro de funil, o funil é inferido da etapa.
+
+    ⚠️ **EFEITO COLATERAL MEDIDO: a reunião vira `Concluido`.** O box continua `busy` e
+    vinculado, a reunião mantém o id, a data e o rep — mas o `type` passa de `Vigente` para
+    `Concluido`, mesmo com a data no futuro (FINDINGS §15). Uma reunião que ainda não
+    aconteceu passa a constar como realizada. Não use esta função sem ter lido aquele
+    parágrafo e decidido que o efeito é aceitável.
+    """
+    resp = await _req("POST", "/ChangeFunnel", json={"leadId": int(lead_id),
+                                                     "stageId": int(stage_id)})
+    return bool(resp.json().get("value"))
+
+
+async def listar_stages(funnel_id: int | None = None) -> list[dict]:
+    """`GET /Stages`, opcionalmente de um funil. Usado para validar o destino no startup."""
+    params = {}
+    if funnel_id is not None:
+        params["$filter"] = f"funnelId eq {int(funnel_id)}"
+    resp = await _req("GET", "/Stages", params=params or None)
+    return resp.json().get("value", [])
+
+
 async def meeting_por_lead(lead_id: int) -> dict | None:
     """A reunião do lead, para guardar o `meeting_id` que o `scheduleAdd` não devolve.
 

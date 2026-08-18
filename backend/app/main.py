@@ -268,8 +268,14 @@ async def lifespan(app: FastAPI):
     # Valida as consultoras contra GET /Sellers. Em TAREFA de fundo, não bloqueando o boot:
     # o backend serve o Hub, o webhook da Meta e a NAT, e nenhum deles pode esperar o CRM
     # responder para o processo subir. A função nunca levanta — ver consultoras.py.
+    from app.agendamento.agendar import validar_funil_destino
     from app.agendamento.consultoras import validar_contra_exact
-    consultoras_task = asyncio.create_task(validar_contra_exact())
+
+    async def _validar_agendamento():
+        await validar_contra_exact()
+        await validar_funil_destino()
+
+    consultoras_task = asyncio.create_task(_validar_agendamento())
     print("✅ Sync Exact Spotter agendado (a cada 10 min)")
     print("✅ Alertas de janela 24h agendados (a cada 5 min)")
     print("✅ Agendamento de templates ativo (checa a cada 60s)")

@@ -33,6 +33,8 @@ real, nenhum lead é cadastrado.
   25. ocupada na primeira -> tenta a segunda; todas ocupadas -> 409 (e só aí)
   26. validação de startup: inválida sai de rotação; Exact fora não tira ninguém
   27. capacidade: horário reservado com uma consultora continua livre para a outra
+  28. passo 4: desligado por padrão; ligado, move o lead DEPOIS de ler o meeting_id
+  29. passo 4 é não-fatal: transferência falha e o agendamento continua válido
 """
 import asyncio
 import json
@@ -48,6 +50,24 @@ from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_LE
                         Agendamento)
 
 TELEFONE = "11999998888"
+
+# ------------------------------------------------------------------------------------------
+# A SUÍTE TEM QUE SER HERMÉTICA AO .env DO SERVIDOR
+# ------------------------------------------------------------------------------------------
+# `app.database` chama `load_dotenv()` no import, então TODO o `.env` de produção entra em
+# `os.environ` antes do primeiro teste rodar. No dia em que `AGENDAMENTO_CONSULTORAS_PATH`
+# foi ativado em produção, esta suíte começou a testar contra a grade real das consultoras
+# em vez da grade padrão — e o caso 4 quebrou por um motivo que não tinha nada a ver com o
+# que ele verifica.
+#
+# Um teste offline que muda de resultado conforme o servidor onde roda não é teste. As
+# variáveis são limpas aqui, uma vez, logo depois dos imports; cada caso que precisa delas
+# as define explicitamente (`_com_duas`).
+for _v in ("AGENDAMENTO_CONSULTORAS", "AGENDAMENTO_CONSULTORAS_PATH",
+           "AGENDAMENTO_GRADE_JSON", "AGENDAMENTO_GRADE_PATH",
+           "AGENDAMENTO_FUNIL_DESTINO", "AGENDAMENTO_SUBSOURCES",
+           "AGENDAMENTO_SUBSOURCE_PADRAO"):
+    os.environ.pop(_v, None)
 
 
 class _DbFalso:
@@ -729,6 +749,7 @@ def _com_duas():
 
 def _sem_consultoras():
     os.environ.pop("AGENDAMENTO_CONSULTORAS", None)
+    os.environ.pop("AGENDAMENTO_CONSULTORAS_PATH", None)
     equipe_mod.recarregar()
 
 
@@ -1001,6 +1022,89 @@ async def caso_27_capacidade_nao_cai_pela_metade():
         disponibilidade.invalidar_cache()
 
 
+async def caso_28_passo4_transferencia():
+    """Desligado por padrão. Ligado, move o lead — e só depois de ler o meeting_id."""
+    try:
+        os.environ.pop("AGENDAMENTO_FUNIL_DESTINO", None)
+        assert fluxo.funil_destino() is None
+        for ruim in ("", "   ", "abc", "0"):
+            os.environ["AGENDAMENTO_FUNIL_DESTINO"] = ruim
+            assert fluxo.funil_destino() is None, f"{ruim!r} deveria desligar o passo 4"
+        os.environ["AGENDAMENTO_FUNIL_DESTINO"] = "133413"
+        assert fluxo.funil_destino() == 133413
+
+        # --- desligado: não chama ChangeFunnel ---
+        os.environ.pop("AGENDAMENTO_FUNIL_DESTINO", None)
+        slot = _slot_valido()
+        db = _DbFalso()
+        mudar = AsyncMock(return_value=True)
+        with patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+             patch.object(client, "criar_lead", AsyncMock(return_value=888)), \
+             patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+             patch.object(client, "meeting_por_lead", AsyncMock(return_value={"id": 555})), \
+             patch.object(client, "mudar_funil", mudar):
+            await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                slot_id=slot.id)
+        assert not mudar.called, "FALHOU: transferiu sem AGENDAMENTO_FUNIL_DESTINO"
+
+        # --- ligado: chama com o lead e a etapa certos ---
+        os.environ["AGENDAMENTO_FUNIL_DESTINO"] = "133413"
+        slot = _slot_valido()
+        db = _DbFalso()
+        ordem = []
+        meeting = AsyncMock(side_effect=lambda *a, **k: ordem.append("meeting") or {"id": 555})
+        mudar = AsyncMock(side_effect=lambda *a, **k: ordem.append("mudar") or True)
+        with patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+             patch.object(client, "criar_lead", AsyncMock(return_value=888)), \
+             patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+             patch.object(client, "meeting_por_lead", meeting), \
+             patch.object(client, "mudar_funil", mudar):
+            r = await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                    slot_id=slot.id)
+        assert mudar.await_args.args == (888, 133413), mudar.await_args
+        # O meeting_id é lido ANTES: depois da transferência a reunião muda de estado, e o
+        # id tem que ser capturado enquanto ela ainda está Vigente.
+        assert ordem == ["meeting", "mudar"], \
+            f"FALHOU: ordem errada {ordem} — o meeting_id tem que ser lido antes"
+        assert r.agendamento_id and db.agendamentos()[0].meeting_id == 555
+        print("  28. passo 4: 4 valores ruins desligam; ligado move (888, 133413) "
+              "depois de ler o meeting_id")
+    finally:
+        os.environ.pop("AGENDAMENTO_FUNIL_DESTINO", None)
+
+
+async def caso_29_passo4_nunca_desfaz():
+    """A garantia central: a transferência falha e o agendamento CONTINUA VÁLIDO."""
+    try:
+        os.environ["AGENDAMENTO_FUNIL_DESTINO"] = "133413"
+        for erro in (client.ExactIndisponivel("timeout"),
+                     client.ExactErro("HTTP 400: Stage not found"),
+                     client.ExactErro("HTTP 500: boom")):
+            slot = _slot_valido()
+            db = _DbFalso()
+            remover = AsyncMock()
+            with patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+                 patch.object(client, "criar_lead", AsyncMock(return_value=888)), \
+                 patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+                 patch.object(client, "meeting_por_lead", AsyncMock(return_value={"id": 555})), \
+                 patch.object(client, "remover_box", remover), \
+                 patch.object(client, "mudar_funil", AsyncMock(side_effect=erro)):
+                r = await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                        slot_id=slot.id)
+            # o agendamento sobrevive inteiro
+            assert r.lead_id == 888 and r.box_id == 777, r
+            linha = db.agendamentos()[0]
+            assert linha.passo == PASSO_AGENDADO, \
+                f"FALHOU com {type(erro).__name__}: passo virou {linha.passo} — a " \
+                "transferência não pode rebaixar um agendamento que deu certo"
+            assert linha.erro is None, f"FALHOU: gravou erro {linha.erro!r} num agendamento OK"
+            assert not remover.called, \
+                "FALHOU: removeu o box por causa da transferência — o horário estava vendido"
+        print("  29. 3 falhas de transferência: passo=agendado, box mantido, erro=None")
+    finally:
+        os.environ.pop("AGENDAMENTO_FUNIL_DESTINO", None)
+
+
 async def main():
     print("\nMódulo de agendamento — Exact mockada, banco dublê, nada real\n")
     await caso_1_grade()
@@ -1030,7 +1134,9 @@ async def main():
     await caso_25_ocupada_tenta_a_proxima()
     await caso_26_validacao_startup()
     await caso_27_capacidade_nao_cai_pela_metade()
-    print("\nOK: 27/27 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
+    await caso_28_passo4_transferencia()
+    await caso_29_passo4_nunca_desfaz()
+    print("\nOK: 29/29 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
 
 
 if __name__ == "__main__":

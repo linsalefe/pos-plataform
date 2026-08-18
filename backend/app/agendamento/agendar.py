@@ -71,12 +71,33 @@ O `BoxesAdd` continua sendo o lock. O que mudou é que agora existem N locks ind
 um por agenda, e perder um não é perder o horário.
 
 ------------------------------------------------------------------------------------------
+PASSO 4 OPCIONAL: MOVER PARA O FUNIL DE VENDAS
+------------------------------------------------------------------------------------------
+A reunião **precisa** nascer no funil 18535: o `scheduleAdd` exige que a etapa anterior do
+lead tenha "Scheduling" como ação de saída, e no funil de Vendas (18537) a etapa `Agendados`
+é a POSIÇÃO 1 — não há etapa anterior (FINDINGS §14). Não é escolha nossa, é estrutural.
+
+`POST /ChangeFunnel {leadId, stageId}` move o lead DEPOIS de agendado, e o agendamento
+sobrevive: box segue `busy` e vinculado, reunião mantém id, data e consultora.
+
+⚠️ **Mas a reunião vira `Concluido`.** Medido: uma reunião marcada para 2027 passou de
+`Vigente` para `Concluido` no instante da transferência — consta como realizada antes de
+acontecer (FINDINGS §15). Por isso o passo é OPCIONAL e vem DESLIGADO: sem
+`AGENDAMENTO_FUNIL_DESTINO` no env, nada disso roda e o lead fica no 18535, como hoje.
+
+E é **não-fatal por construção**. Quando roda e falha, o agendamento continua válido: o lead
+fica no 18535 em `Agendados`, com a reunião na agenda da consultora. Um erro de transferência
+não pode desfazer um horário que a pessoa já viu confirmado na tela — a transferência é
+arrumação interna de funil, não parte da promessa feita ao visitante.
+
+------------------------------------------------------------------------------------------
 O QUE NÃO TEM DESFAZER
 ------------------------------------------------------------------------------------------
 Depois do passo 3 não há compensação nenhuma: não existe `ScheduleRemove` na API. Remarcação
 e cancelamento saem pelo WhatsApp, por decisão de produto. A consequência aceita é que cada
 remarcação queima um slot da agenda para sempre.
 """
+import os
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 
@@ -104,6 +125,60 @@ STAGE_AGENDADOS = "Agendados"
 # intenções. Protege o que o `BoxesAdd` não protege: ele barra o mesmo HORÁRIO, não a mesma
 # PESSOA pegando dois horários diferentes em dois cliques.
 JANELA_DUPLO_CLIQUE = timedelta(seconds=90)
+
+
+def funil_destino() -> int | None:
+    """Id da etapa para onde mover o lead depois de agendado. None = passo 4 desligado.
+
+    É o id da ETAPA, não do funil: o `ChangeFunnel` não tem parâmetro de funil, ele infere
+    pelo destino. Para o funil de Vendas (18537), `Agendados` é 133413.
+
+    Valor ilegível vira None com aviso, em vez de derrubar o agendamento: um env mal digitado
+    não pode custar a reunião de ninguém.
+    """
+    bruto = (os.getenv("AGENDAMENTO_FUNIL_DESTINO") or "").strip()
+    if not bruto:
+        return None
+    try:
+        valor = int(bruto)
+    except ValueError:
+        print(f"⚠️ agendamento: AGENDAMENTO_FUNIL_DESTINO={bruto!r} não é um id de etapa. "
+              "Passo 4 desligado.")
+        return None
+    return valor or None
+
+
+async def validar_funil_destino() -> dict:
+    """Confere no startup que o id configurado é uma etapa real e ativa. NUNCA levanta.
+
+    Sem isto, um id errado faria toda transferência falhar — e como o passo é não-fatal, a
+    falha só apareceria como um warning por agendamento, que ninguém lê. Melhor uma linha no
+    boot dizendo exatamente qual etapa de qual funil vai receber os leads.
+    """
+    alvo = funil_destino()
+    if alvo is None:
+        print("ℹ️ agendamento: passo 4 (mover para funil de vendas) DESLIGADO — "
+              "os leads ficam no funil 18535 depois de agendados.")
+        return {"ativo": False}
+    try:
+        etapas = await client.listar_stages()
+    except client.ExactErro as e:
+        print(f"⚠️ agendamento: não consegui validar AGENDAMENTO_FUNIL_DESTINO={alvo} "
+              f"({type(e).__name__}: {e}). Passo 4 segue ligado, sem verificação.")
+        return {"ativo": True, "stage_id": alvo, "checagem_falhou": True}
+    achada = next((e for e in etapas if e.get("id") == alvo), None)
+    if achada is None:
+        print(f"❌ agendamento: AGENDAMENTO_FUNIL_DESTINO={alvo} não existe em /Stages. "
+              "Toda transferência vai falhar (sem desfazer agendamento). Corrija o env.")
+        return {"ativo": True, "stage_id": alvo, "invalida": True}
+    if not achada.get("active", True):
+        print(f"❌ agendamento: etapa {alvo} ({achada.get('value')!r}) está INATIVA na Exact.")
+        return {"ativo": True, "stage_id": alvo, "invalida": True}
+    print(f"✅ agendamento: passo 4 LIGADO — depois de agendado, o lead vai para "
+          f"{achada.get('value')!r} (etapa {alvo}, funil {achada.get('funnelId')}). "
+          "A reunião passa a constar como 'Concluido' — ver FINDINGS §15.")
+    return {"ativo": True, "stage_id": alvo, "etapa": achada.get("value"),
+            "funnel_id": achada.get("funnelId")}
 
 
 class SlotInvalido(Exception):
@@ -385,6 +460,23 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
             await db.commit()
     except (client.ExactErro, KeyError, TypeError, ValueError) as e:
         print(f"⚠️ agendamento #{ag.id}: agendado, mas não consegui o meeting_id — {e}")
+
+    # ---- passo 4: mover para o funil de vendas (OPCIONAL, NÃO-FATAL) ----------------
+    # Vem depois de `meeting_por_lead` de propósito: o id da reunião é lido enquanto ela
+    # ainda está `Vigente`, antes de a transferência mexer no estado dela.
+    #
+    # Qualquer falha aqui é warning e nada mais. O visitante já viu "agendado" na tela, a
+    # reunião está na agenda da consultora, e o lead está em `Agendados` no 18535 — que é um
+    # desfecho correto. Trocar isso por um erro seria desfazer o que deu certo.
+    destino = funil_destino()
+    if destino is not None:
+        try:
+            await client.mudar_funil(lead_id, destino)
+            print(f"➡️ agendamento #{ag.id}: lead {lead_id} movido para a etapa {destino}")
+        except client.ExactErro as e:
+            print(f"⚠️ agendamento #{ag.id}: lead {lead_id} AGENDADO, mas a transferência "
+                  f"para a etapa {destino} falhou ({type(e).__name__}: {e}). "
+                  "Ele fica no funil 18535 em Agendados — agendamento intacto.")
 
     return Resultado(agendamento_id=ag.id, lead_id=lead_id, box_id=box_id,
                      slot=slot, meeting_id=ag.meeting_id,

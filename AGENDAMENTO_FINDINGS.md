@@ -984,6 +984,100 @@ visitante toma 502 em vez de ser atendido pela outra consultora. Só teste real 
 
 ---
 
+## 15. `ChangeFunnel`: o caminho existe, e cobra um preço (18/08/2026)
+
+### `LeadsTransfer` não é o que o nome sugere
+
+O `$metadata` tem os dois, e eles fazem coisas diferentes:
+
+| EntitySet | corpo | o que faz |
+|---|---|---|
+| `LeadsTransfer` | `{ids: [int], sdrEmail, group}` | troca o **SDR** dono do lead. **Não** mexe no funil |
+| **`ChangeFunnel`** | `{leadId, stageId}` | **muda o funil**, pelo id da etapa de destino |
+| `SellerTransfer` | `{sellerEmail, ids}` | troca o vendedor |
+| `LeadStages` (leitura) | — | histórico com `originFunnelId` / `destinationFunnelId` |
+| `TransferHistory` (leitura) | — | auditoria de transferência |
+
+Não existe parâmetro de funil no `ChangeFunnel`: **o funil é inferido da etapa**. Para o
+funil de Vendas (18537), o destino é `Agendados` = **133413**.
+
+### O experimento
+
+Lead agendado normalmente no 18535 (box `busy`, reunião `Vigente`), depois
+`POST /ChangeFunnel {leadId, stageId: 133413}` → **HTTP 201, `value: true`**.
+
+| | antes | depois | |
+|---|---|---|---|
+| funil | 18535 | **18537** | ✅ mudou |
+| etapa | `Agendados` | `Agendados` | ✅ |
+| salesRep | `processoseletivo@` | `processoseletivo@` | ✅ preservado |
+| box | `busy`, `leadId` vinculado | **igual** | ✅ intacto |
+| reunião | id 4725248 | **id 4725248** | ✅ sobreviveu |
+| **`type` da reunião** | **`Vigente`** | **`Concluido`** | ⚠️ |
+
+### ⚠️ O preço: reunião futura vira "realizada"
+
+O agendamento sobrevive — nada some, nada desvincula. Mas o `type` da reunião passa de
+`Vigente` para `Concluido` **no instante da transferência**, com a data ainda no futuro
+(2027-05-12 e 2027-05-19 nos dois testes).
+
+Que isso é anormal, e não o estado natural de quem está no 18537, dá para afirmar com dado de
+produção. `GET /Meetings` com `$filter=meetingDate ge '2026-08-18'`:
+
+```
+13 reuniões de hoje em diante -> {'Cancelada': 8, 'Vigente': 4, 'Concluido': 1}
+```
+
+As 4 `Vigente` são as reuniões reais marcadas pela LP; as 8 `Cancelada` são resíduo de testes
+(lead excluído cascateia, §6). **`Vigente` é o estado normal de uma reunião que ainda vai
+acontecer.** Marcar `Concluido` antes da hora tem consequências que a API não mostra:
+
+- relatório de "reuniões realizadas" conta o que não aconteceu;
+- qualquer fluxo que dependa de `Vigente` (lembrete, formulário de qualidade) pula a reunião;
+- a lista de próximas reuniões da consultora pode não exibi-la — o box continua na agenda,
+  então o horário aparece, mas o vínculo com a reunião muda de estado.
+
+> **Por isso o passo 4 nasceu DESLIGADO.** `AGENDAMENTO_FUNIL_DESTINO` vazio = nada roda, o
+> lead fica no 18535 em `Agendados`, como sempre. Ligar é decisão de produto, não de código:
+> depende de a equipe preferir o lead no funil certo com a reunião mal rotulada, ou o
+> contrário.
+
+### Filtro de data em `/Meetings` é STRING
+
+`meetingDate` e `startTime` são `Edm.String` no schema, não data. Comparar com literal de data
+dá 400:
+
+```
+$filter=meetingDate ge 2026-08-18    -> 400 incompatible types 'Edm.String' and 'Edm.Date'
+$filter=meetingDate ge '2026-08-18'  -> 200
+```
+
+Funciona porque `YYYY-MM-DD` ordena igual como texto e como data. Para `startTime`, o mesmo
+com o ISO completo entre aspas.
+
+### O `.env` de produção vaza para a suíte offline
+
+Quando `AGENDAMENTO_CONSULTORAS_PATH` foi ativado, `test_agendamento.py` começou a falhar no
+caso 4 — por um motivo sem relação com o que ele testa. Causa: `app.database` chama
+`load_dotenv()` no import, então **todo o `.env` entra em `os.environ` antes do primeiro
+teste**, e a suíte passou a rodar contra a grade real das consultoras.
+
+Um teste offline que muda de resultado conforme o servidor não é teste. A suíte agora limpa
+as variáveis `AGENDAMENTO_*` logo após os imports, e cada caso define o que precisa.
+
+### Resíduo
+
+| Artefato | Destino |
+|---|---|
+| Leads 51438287, 51438298 | excluídos ✅ |
+| **Box 43727398** | órfão — experimento do `ChangeFunnel` ⚠️ |
+| **Box 43727399** | órfão — E2E do passo 4 ⚠️ |
+
+**Total de órfãos acumulados: 9.**
+
+
+---
+
 ## Apêndice — inventário de endpoints (do `$metadata`)
 
 Agenda: `Boxes` · `BoxesAdd` · `BoxesUpdate` · `BoxesRemove` · `ScheduleAdd` · `Meetings` ·
@@ -995,6 +1089,9 @@ Leads: `Leads` · `LeadsAdd` · `LeadsUpdate` · `LeadsDelete` · `LeadsRecover`
 `CustomFieldsLeads` · `CustomFieldsLeadsRemove`
 
 **Não existe `ScheduleRemove` nem `ScheduleUpdate`** — a base de §7.2.
+
+Transferência: `LeadsTransfer` (troca SDR) · **`ChangeFunnel`** (muda funil, §15) ·
+`SellerTransfer` · `TransferHistory` · `LeadStages` (ambos leitura).
 
 Funis (`GET /Funnels`): Intercambio 18285 · **Pos Graduacao 18535** · Pós Graduação - Vendas
 18537 · Reativação - SQL 20647 · CONGRESSO PRESENCIAL 20776 · Vagas Afirmativas 21007 ·
