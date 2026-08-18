@@ -118,7 +118,6 @@ from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_IN
 # valor não existe (medido — ver o cabeçalho de origens.py), e o cadastro é global e usado em
 # relatório. A allowlist é o que separa "configurável" de "qualquer um escreve lá dentro".
 FUNIL_POS_GRADUACAO = 18535
-SOURCE = "Rd Marketing"
 STAGE_AGENDADOS = "Agendados"
 
 # Janela em que dois POSTs do mesmo telefone são tratados como duplo clique, não como duas
@@ -411,7 +410,8 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
         try:
             lead_id = await client.criar_lead(
                 nome=nome, telefone=telefone,
-                source=SOURCE, sub_source=sub_source, funnel_id=FUNIL_POS_GRADUACAO,
+                source=origens.source_configurado(), sub_source=sub_source,
+                funnel_id=FUNIL_POS_GRADUACAO,
                 description=extras_mod.montar_descricao(email, extras),
             )
         except client.ExactErro as e:
@@ -531,7 +531,8 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
     try:
         lead_id = await client.criar_lead(
             nome=nome, telefone=telefone,
-            source=SOURCE, sub_source=sub_source, funnel_id=FUNIL_POS_GRADUACAO,
+            source=origens.source_configurado(), sub_source=sub_source,
+            funnel_id=FUNIL_POS_GRADUACAO,
             description=extras_mod.montar_descricao(email, extras),
         )
     except client.ExactErro as e:

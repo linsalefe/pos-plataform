@@ -35,6 +35,8 @@ real, nenhum lead é cadastrado.
   27. capacidade: horário reservado com uma consultora continua livre para a outra
   28. passo 4: desligado por padrão; ligado, move o lead DEPOIS de ler o meeting_id
   29. passo 4 é não-fatal: transferência falha e o agendamento continua válido
+  30. allowlist com espaço no CSV; source configurável chega ao LeadsAdd
+  31. validação de origens pega source inexistente e subSource fora do source
 """
 import asyncio
 import json
@@ -1105,6 +1107,104 @@ async def caso_29_passo4_nunca_desfaz():
         os.environ.pop("AGENDAMENTO_FUNIL_DESTINO", None)
 
 
+async def caso_30_allowlist_com_espaco_e_source():
+    """Nomes com espaço no CSV, e o `source` deixando de ser constante."""
+    from app.agendamento import origens
+    try:
+        os.environ["AGENDAMENTO_SUBSOURCES"] = (
+            "PosMulheridades,Pos Saude do Trabalhador,Pos TEA V3")
+        os.environ["AGENDAMENTO_SUBSOURCE_PADRAO"] = "PosMulheridades"
+        assert origens.permitidas() == ["PosMulheridades", "Pos Saude do Trabalhador",
+                                        "Pos TEA V3"], origens.permitidas()
+        # espaço interno preservado; espaço em volta do separador removido
+        os.environ["AGENDAMENTO_SUBSOURCES"] = " PosMulheridades , Pos TEA V3 "
+        assert origens.permitidas() == ["PosMulheridades", "Pos TEA V3"], origens.permitidas()
+        # case-insensitive na entrada, caixa da allowlist na saída
+        os.environ["AGENDAMENTO_SUBSOURCES"] = "Pos Saude do Trabalhador,PosMulheridades"
+        assert origens.resolver("pos saude do trabalhador") == "Pos Saude do Trabalhador"
+        assert origens.resolver("POS SAUDE DO TRABALHADOR") == "Pos Saude do Trabalhador"
+
+        # source: padrão e configurado
+        os.environ.pop("AGENDAMENTO_SOURCE", None)
+        assert origens.source_configurado() == "Rd Marketing"
+        os.environ["AGENDAMENTO_SOURCE"] = "Landing Page"
+        assert origens.source_configurado() == "Landing Page"
+
+        # e chega mesmo ao LeadsAdd, nos dois fluxos
+        slot = _slot_valido()
+        db = _DbFalso()
+        criar = AsyncMock(return_value=888)
+        with patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+             patch.object(client, "criar_lead", criar), \
+             patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+             patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+            await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                slot_id=slot.id, origem="Pos Saude do Trabalhador")
+        assert criar.await_args.kwargs["source"] == "Landing Page", criar.await_args.kwargs
+        assert criar.await_args.kwargs["sub_source"] == "Pos Saude do Trabalhador"
+        assert not hasattr(fluxo, "SOURCE"), \
+            "FALHOU: a constante SOURCE voltou — o valor tem que vir da config"
+
+        db2 = _DbFalso()
+        criar2 = AsyncMock(return_value=999)
+        with patch.object(client, "criar_lead", criar2):
+            await fluxo.cadastrar_lead_sem_agendar(db2, nome="TESTE", email=None,
+                                                   telefone=TELEFONE,
+                                                   origem="Pos Saude do Trabalhador")
+        assert criar2.await_args.kwargs["source"] == "Landing Page"
+        print("  30. CSV com espaço íntegro; source 'Landing Page' chega aos dois fluxos")
+    finally:
+        for v in ("AGENDAMENTO_SUBSOURCES", "AGENDAMENTO_SUBSOURCE_PADRAO",
+                  "AGENDAMENTO_SOURCE"):
+            os.environ.pop(v, None)
+
+
+async def caso_31_validacao_de_origens():
+    """A rede que teria pego o pedido de 18/08 antes de poluir o cadastro."""
+    from app.agendamento import origens
+    try:
+        os.environ["AGENDAMENTO_SUBSOURCES"] = "Pos Psicologia Escolar,PosMulheridades"
+        os.environ["AGENDAMENTO_SUBSOURCE_PADRAO"] = "PosMulheridades"
+
+        rd = {"value": "Rd Marketing", "id": 106847, "active": True,
+              "subSources": [{"value": "PosMulheridades", "id": 173358, "active": True},
+                             {"value": "PosPsicologiaEscolar", "id": 174649, "active": True}]}
+
+        # source inexistente -> denuncia e nem chega a olhar subSource
+        os.environ["AGENDAMENTO_SOURCE"] = "Landing Page"
+        with patch.object(client, "listar_sources", AsyncMock(return_value=[rd])):
+            r = await origens.validar_contra_exact()
+        assert r["source_ok"] is False and r["source"] == "Landing Page", r
+
+        # source existe, mas a grafia com espaço NÃO está dentro dele
+        os.environ["AGENDAMENTO_SOURCE"] = "Rd Marketing"
+        with patch.object(client, "listar_sources", AsyncMock(return_value=[rd])):
+            r = await origens.validar_contra_exact()
+        assert r["source_ok"] is True, r
+        assert r["faltando"] == ["Pos Psicologia Escolar"], \
+            f"FALHOU: não pegou a grafia divergente — {r['faltando']}"
+
+        # com a grafia certa, passa limpo
+        os.environ["AGENDAMENTO_SUBSOURCES"] = "PosPsicologiaEscolar,PosMulheridades"
+        with patch.object(client, "listar_sources", AsyncMock(return_value=[rd])):
+            r = await origens.validar_contra_exact()
+        assert not r["faltando"], r
+
+        # Exact fora -> não afirma nada
+        with patch.object(client, "listar_sources",
+                          AsyncMock(side_effect=client.ExactIndisponivel("timeout"))):
+            r = await origens.validar_contra_exact()
+        assert r["checagem_falhou"] is True and not r["faltando"], r
+
+        # a validação NUNCA muda a allowlist — só avisa
+        assert origens.permitidas() == ["PosPsicologiaEscolar", "PosMulheridades"]
+        print("  31. validação pega source inexistente e grafia divergente, sem desativar nada")
+    finally:
+        for v in ("AGENDAMENTO_SUBSOURCES", "AGENDAMENTO_SUBSOURCE_PADRAO",
+                  "AGENDAMENTO_SOURCE"):
+            os.environ.pop(v, None)
+
+
 async def main():
     print("\nMódulo de agendamento — Exact mockada, banco dublê, nada real\n")
     await caso_1_grade()
@@ -1136,7 +1236,9 @@ async def main():
     await caso_27_capacidade_nao_cai_pela_metade()
     await caso_28_passo4_transferencia()
     await caso_29_passo4_nunca_desfaz()
-    print("\nOK: 29/29 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
+    await caso_30_allowlist_com_espaco_e_source()
+    await caso_31_validacao_de_origens()
+    print("\nOK: 31/31 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
 
 
 if __name__ == "__main__":

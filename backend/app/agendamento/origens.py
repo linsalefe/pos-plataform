@@ -23,6 +23,16 @@ COMO CONFIGURAR
 ------------------------------------------------------------------------------------------
     AGENDAMENTO_SUBSOURCES=PosMulheridades,posgenerot2,PosPraticasDialogicasTurma1
     AGENDAMENTO_SUBSOURCE_PADRAO=PosPraticasDialogicasTurma1
+    AGENDAMENTO_SOURCE=Rd Marketing
+
+**Valor com espaço é seguro no CSV.** Testado nos dois parsers que leem este `.env`: o
+`EnvironmentFile` do systemd e o `python-dotenv`. Os dois preservam `Pos Saude do Trabalhador`
+inteiro, e o separador é a vírgula — só um valor que CONTENHA vírgula quebraria, e aí a saída
+é `AGENDAMENTO_SUBSOURCES_JSON`, que não existe porque nunca foi preciso.
+
+`AGENDAMENTO_SOURCE` é o `source` do lead, o nível acima do `subSource`. Muda junto com a
+allowlist: uma subSource pertence a UM source, e apontar para o par errado cria cadastro novo
+do mesmo jeito.
 
 O padrão é usado quando o corpo não manda `origem` — LP antiga que ainda não passa o campo
 continua funcionando. O padrão TAMBÉM precisa estar na allowlist; se não estiver, ele é
@@ -48,6 +58,10 @@ import os
 SUBSOURCES_PADRAO = "PosMulheridades,posgenerot2,PosPraticasDialogicasTurma1"
 SUBSOURCE_PADRAO = "PosPraticasDialogicasTurma1"
 
+# O `source` (nível acima do subSource). Sai daqui e não de `agendar.py` porque tem
+# exatamente o mesmo risco: `LeadsAdd` CRIA source que não existe, igual faz com subSource.
+SOURCE_PADRAO = "Rd Marketing"
+
 
 class OrigemInvalida(Exception):
     """`origem` fora da allowlist. -> 400, e nada é criado na Exact."""
@@ -71,6 +85,71 @@ def padrao_configurado() -> str:
 def permitidas() -> list[str]:
     """A allowlist, na caixa exata que vai para a Exact. Serve também ao GET /slots."""
     return _lista()
+
+
+def source_configurado() -> str:
+    """O `source` que vai no `LeadsAdd`. Vazio no env = `Rd Marketing`."""
+    return (os.getenv("AGENDAMENTO_SOURCE", SOURCE_PADRAO) or SOURCE_PADRAO).strip()
+
+
+async def validar_contra_exact() -> dict:
+    """Confere no startup que o source existe e que TODA a allowlist vive dentro dele.
+
+    Esta função existe por causa de um incidente evitado em 18/08/2026: chegou um pedido para
+    trocar a allowlist por 12 nomes legíveis (`Pos Psicologia Escolar`) e um source novo
+    (`Landing Page`). Onze dos doze não existiam na Exact, e o source nenhum. Aplicar aquilo
+    teria feito o primeiro lead de cada LP **criar** um cadastro paralelo ao que já existe
+    (`PosPsicologiaEscolar`, com 71 leads), partindo o histórico de 2222 leads em dois nomes
+    para os mesmos cursos — em silêncio, com 201 na resposta.
+
+    A checagem é barata (uma chamada) e roda uma vez por boot. NUNCA levanta: o backend serve
+    o Hub, o webhook da Meta e a NAT, e não pode cair porque o CRM respondeu estranho. O que
+    ela faz é gritar no log com o nome exato do que está errado.
+
+    Não desativa nada. Diferente das consultoras — onde um e-mail inválido faz todo agendamento
+    falhar de imediato e tirar de rotação é o certo — aqui o valor errado ainda "funciona":
+    cria o cadastro e segue. Bloquear automaticamente deixaria a LP fora do ar por um problema
+    de nomenclatura; avisar alto deixa a decisão com quem pode consertar.
+    """
+    from app.agendamento import client
+
+    source = source_configurado()
+    lista = permitidas()
+    resumo = {"source": source, "source_ok": False, "faltando": [], "checagem_falhou": False}
+    try:
+        sources = await client.listar_sources()
+    except client.ExactErro as e:
+        print(f"⚠️ agendamento: não consegui validar origens em /Sources "
+              f"({type(e).__name__}: {e}). Seguindo sem verificar.")
+        resumo["checagem_falhou"] = True
+        return resumo
+
+    achado = next((s for s in sources
+                   if str(s.get("value", "")).strip().lower() == source.lower()), None)
+    if achado is None:
+        print(f"❌ agendamento: source {source!r} NÃO EXISTE em /Sources. O primeiro lead vai "
+              f"CRIAR esse cadastro na Exact, e não há endpoint para desfazer.")
+        return resumo
+    if not achado.get("active", True):
+        print(f"❌ agendamento: source {source!r} existe mas está INATIVO na Exact.")
+    resumo["source_ok"] = True
+    resumo["source_id"] = achado.get("id")
+
+    dentro = {str(x.get("value", "")).strip().lower()
+              for x in (achado.get("subSources") or [])}
+    for valor in lista:
+        if valor.strip().lower() not in dentro:
+            resumo["faltando"].append(valor)
+
+    if resumo["faltando"]:
+        print(f"❌ agendamento: {len(resumo['faltando'])} de {len(lista)} origens da allowlist "
+              f"NÃO existem sob o source {source!r}: {resumo['faltando']}. "
+              "Cada uma vai ser CRIADA no primeiro lead da LP correspondente — cadastro "
+              "duplicado e histórico partido. Confira a grafia contra GET /Sources.")
+    else:
+        print(f"✅ agendamento: source {source!r} (id {achado.get('id')}) com as "
+              f"{len(lista)} origens da allowlist confirmadas.")
+    return resumo
 
 
 def resolver(origem: str | None) -> str:

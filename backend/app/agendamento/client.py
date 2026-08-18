@@ -250,6 +250,17 @@ async def meeting_por_lead(lead_id: int) -> dict | None:
     return valores[0] if valores else None
 
 
+async def listar_sources() -> list[dict]:
+    """`GET /Sources` com os `subSources` aninhados. Valida a allowlist no startup.
+
+    Cada source traz `value`, `id`, `active` e a lista `subSources`, cada um com o mesmo
+    formato. Em 18/08/2026 eram 23 sources, e só `Rd Marketing` (106847) tinha subSources —
+    62 deles.
+    """
+    resp = await _req("GET", "/Sources")
+    return resp.json().get("value", [])
+
+
 async def listar_sellers() -> list[dict]:
     """`GET /Sellers`. Usado no startup para validar as consultoras configuradas.
 
