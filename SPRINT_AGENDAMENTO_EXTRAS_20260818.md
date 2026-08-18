@@ -2,8 +2,8 @@
 
 Branch: `feat/agendamento-subsource` · Investigação: `AGENDAMENTO_FINDINGS.md` §13 (nova)
 
-**O serviço NÃO foi reiniciado.** Código no repositório e testado; `cenat-backend` segue na
-versão anterior. A migração já foi aplicada — é aditiva e invisível para o código antigo.
+**Está no ar.** Migração aplicada e `cenat-backend` reiniciado em 18/08/2026 00:24 UTC,
+validado em produção — ver "Deploy" no fim.
 
 ---
 
@@ -159,21 +159,36 @@ na hora.**
 
 ---
 
-## Para subir
+## Deploy — FEITO em 18/08/2026 00:24 UTC
 
 ```bash
+venv/bin/python migrate_agendamentos_extras.py   # antes, aditiva
 sudo systemctl restart cenat-backend.service
 ```
 
-Fumaça depois (não escreve nada — o 422 é recusado antes do limitador e antes da Exact):
+### Validação em produção
 
-```bash
-# 11 chaves -> 422
-curl -s -X POST https://hub.cenatdata.online/api/agendamento/lead \
-  -H 'Content-Type: application/json' \
-  -d '{"nome":"Fumaca Teste","telefone":"11999990000",
-       "extras":{"a":"1","b":"2","c":"3","d":"4","e":"5","f":"6","g":"7","h":"8","i":"9","j":"10","k":"11"}}'
-```
+| verificação | resultado |
+|---|---|
+| `cenat-backend` ativo, `/health` | **200** |
+| log de inicialização | limpo |
+| `GET /slots` | **200**, `fallback:false`, 10 dias com vaga |
+| CORS de `lp.cenatsaudemental.com` | **204** |
+| `extras` com 11 chaves | **422** |
+| `extras` com valor de 201 chars | **422** |
+| `extras` com valor não-texto | **422** |
+| `extras` que não é objeto | **422** |
+| `/agendar` com `extras` válido + `leadId` inexistente | **404** (extras passaram, parou no lead) |
+| `agendamentos` depois de tudo | **0 linhas** — nenhuma escrita |
+
+O 404 do último caso é a confirmação que interessa: os `extras` atravessaram a validação e o
+fluxo só parou na verificação do lead, que é onde deveria parar.
+
+Os 422 não consomem rate limit — a validação do corpo acontece antes do limitador.
+
+O caminho de escrita bem-sucedido já tinha sido provado contra a Exact de produção pelo
+`test_agendamento_e2e_extras.py` (8/8, resíduo zero), então não repeti aqui para não criar
+lead de teste à toa.
 
 ---
 
