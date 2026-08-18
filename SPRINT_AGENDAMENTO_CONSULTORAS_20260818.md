@@ -169,6 +169,21 @@ lead, e extras no formato certo. **Linhas preservadas** — há uma reunião rea
 
 ---
 
+## Correção de capacidade encontrada ao revalidar
+
+`_ocupados_por_nos` subtraía nossos agendamentos em voo de **todas** as consultoras. Escrito
+quando havia uma só, ficou errado com duas: um horário reservado com a Amorim sumia também
+da grade da Rodrigues, e a equipe inteira renderia o mesmo que uma pessoa.
+
+Perda silenciosa — nenhum erro, nenhum log, só metade da capacidade. Agora a subtração é
+**por consultora** (`sales_rep_email == c.email`), e a proteção original continua de pé por
+agenda: o que precisa ser bloqueado é o par horário+consultora, não o horário inteiro.
+
+Travado pelo **caso 27** da suíte, que reserva 10:45 com a Ana e exige que o horário continue
+livre para a Bia.
+
+---
+
 ## Três decisões suas antes de ativar
 
 ### 1. Quem são as consultoras?

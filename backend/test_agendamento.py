@@ -32,6 +32,7 @@ real, nenhum lead é cadastrado.
   24. escolha pela menor carga do dia, empate mantém a ordem da config
   25. ocupada na primeira -> tenta a segunda; todas ocupadas -> 409 (e só aí)
   26. validação de startup: inválida sai de rotação; Exact fora não tira ninguém
+  27. capacidade: horário reservado com uma consultora continua livre para a outra
 """
 import asyncio
 import json
@@ -939,6 +940,67 @@ async def caso_26_validacao_startup():
           "Exact fora não tira ninguém")
 
 
+async def caso_27_capacidade_nao_cai_pela_metade():
+    """Duas consultoras existem para que 10:45 possa receber DUAS pessoas.
+
+    A subtração dos nossos agendamentos em voo tem que ser por consultora. Global, ela faz
+    a reserva com a Ana esconder o horário da Bia, e a equipe inteira rende o mesmo que uma
+    pessoa só — perda de capacidade silenciosa, que nenhum erro denuncia.
+    """
+    try:
+        _com_duas()
+        disponibilidade.invalidar_cache()
+
+        # A Ana já tem 10:45 reservado por nós; a agenda da Exact está limpa para as duas.
+        alvo = None
+        for c in equipe_mod.consultoras():
+            for s_ in c.grade.slots_candidatos():
+                if s_.inicio.strftime("%H:%M") == "10:45":
+                    alvo = s_
+                    break
+            if alvo:
+                break
+        assert alvo is not None
+
+        reservado = Agendamento(
+            nome="JÁ AGENDADO", telefone="11888887777",
+            slot_inicio=alvo.inicio, slot_fim=alvo.fim,
+            sales_rep_email="ana@cenatcursos.com.br",
+            passo=PASSO_AGENDADO, created_at=alvo.inicio, updated_at=alvo.inicio)
+
+        class _DbPorRep:
+            """Responde ao SELECT filtrando pelo e-mail, como o banco faria."""
+            def __init__(self, linhas):
+                self.linhas = linhas
+            async def execute(self, stmt, *a, **k):
+                alvo_email = None
+                for par in stmt.compile().params.values():
+                    if isinstance(par, str) and "@" in par:
+                        alvo_email = par
+                res = MagicMock()
+                res.all.return_value = [
+                    (l.slot_inicio, l.slot_fim) for l in self.linhas
+                    if alvo_email is None or l.sales_rep_email == alvo_email]
+                return res
+
+        db = _DbPorRep([reservado])
+        with patch.object(client, "listar_boxes", AsyncMock(return_value=[])):
+            livres = await disponibilidade.slots_livres(db, usar_cache=False)
+
+        em1045 = [d for d in livres if d.slot.inicio == alvo.inicio]
+        assert em1045, \
+            "FALHOU: 10:45 sumiu inteiro — a reserva da Ana escondeu o horário da Bia e a " \
+            "capacidade da equipe caiu para a de uma pessoa"
+        nomes = {c.nome_exibicao for c in em1045[0].consultoras}
+        assert nomes == {"Bia"}, \
+            f"FALHOU: 10:45 deveria sobrar só para a Bia, veio {nomes}"
+        print("  27. 10:45 reservado com a Ana continua livre para a Bia "
+              "(capacidade preservada)")
+    finally:
+        _sem_consultoras()
+        disponibilidade.invalidar_cache()
+
+
 async def main():
     print("\nMódulo de agendamento — Exact mockada, banco dublê, nada real\n")
     await caso_1_grade()
@@ -967,7 +1029,8 @@ async def main():
     await caso_24_escolha_por_carga()
     await caso_25_ocupada_tenta_a_proxima()
     await caso_26_validacao_startup()
-    print("\nOK: 26/26 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
+    await caso_27_capacidade_nao_cai_pela_metade()
+    print("\nOK: 27/27 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
 
 
 if __name__ == "__main__":

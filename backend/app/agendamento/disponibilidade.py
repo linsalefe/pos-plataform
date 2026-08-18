@@ -17,10 +17,11 @@ DUAS SUBTRAÇÕES, E POR QUE AS DUAS
 1. **Boxes da Exact** (`$filter` por período e consultor) — os blocos da agenda dela, mais os
    boxes que nós já criamos. É a fonte autoritativa.
 
-2. **Nossos agendamentos em voo** (`passo` em box_criado/lead_criado/agendado) — redundante
-   com (1) na maior parte do tempo, e não é: o `GET /Boxes` responde a partir de um cache do
-   lado da Exact que já vi atrasar alguns segundos, e é exatamente nesses segundos que dois
-   visitantes simultâneos brigam pelo mesmo slot. Custa um SELECT indexado.
+2. **Nossos agendamentos em voo** (`passo` em box_criado/lead_criado/agendado), **da
+   consultora em questão** — redundante com (1) na maior parte do tempo, e não é: o
+   `GET /Boxes` responde a partir de um cache do lado da Exact que já vi atrasar alguns
+   segundos, e é exatamente nesses segundos que dois visitantes simultâneos brigam pelo
+   mesmo par horário+consultora. Custa um SELECT indexado por consultora.
 
 ------------------------------------------------------------------------------------------
 COM VÁRIAS CONSULTORAS, UM HORÁRIO NÃO É "LIVRE" — É "LIVRE PARA QUEM"
@@ -94,12 +95,24 @@ async def _ocupados_na_exact(inicio: datetime, fim: datetime,
     return faixas
 
 
-async def _ocupados_por_nos(db: AsyncSession, inicio: datetime,
-                            fim: datetime) -> list[tuple[datetime, datetime]]:
+async def _ocupados_por_nos(db: AsyncSession, inicio: datetime, fim: datetime,
+                            sales_rep_email: str) -> list[tuple[datetime, datetime]]:
+    """Nossos agendamentos em voo **desta** consultora.
+
+    O filtro por e-mail não é detalhe: sem ele, um horário reservado com a Amorim sumiria
+    também da grade da Rodrigues, e a capacidade da equipe cairia para a de uma pessoa só.
+    Duas consultoras existem justamente para que 10:30 possa receber duas pessoas.
+
+    A proteção original continua de pé, só que por agenda: o `GET /Boxes` responde de um
+    cache do lado da Exact que atrasa alguns segundos, e é nesses segundos que dois
+    visitantes simultâneos brigam pelo MESMO horário da MESMA consultora. É esse par que
+    precisa ser bloqueado, não o horário inteiro.
+    """
     res = await db.execute(
         select(Agendamento.slot_inicio, Agendamento.slot_fim).where(
             Agendamento.slot_inicio >= inicio,
             Agendamento.slot_inicio <= fim,
+            Agendamento.sales_rep_email == sales_rep_email,
             Agendamento.passo.notin_([PASSO_FALHOU, PASSO_INICIADO]),
         )
     )
@@ -119,15 +132,9 @@ async def slots_livres(db: AsyncSession, *,
         return _cache[1]
 
     equipe = consultoras()
-    # Nossos agendamentos em voo valem para TODAS: a linha guarda o slot, e o mesmo horário
-    # não deve ser oferecido duas vezes enquanto uma tentativa está no ar. Uma consulta só.
-    horizonte = [s for c in equipe for s in c.grade.slots_candidatos()]
-    if not horizonte:
+    if not any(c.grade.slots_candidatos() for c in equipe):
         _cache = (agora, [])
         return []
-    janela_ini = min(s.inicio for s in horizonte).replace(hour=0, minute=0, second=0)
-    janela_fim = max(s.inicio for s in horizonte) + timedelta(days=1)
-    nossos = await _ocupados_por_nos(db, janela_ini, janela_fim)
 
     # slot_inicio -> (Slot, [consultoras livres]). dict preserva a ordem de inserção, e a
     # ordenação final é por horário de qualquer forma.
@@ -147,7 +154,8 @@ async def slots_livres(db: AsyncSession, *,
             print(f"⚠️ disponibilidade: não consegui ler a agenda de {c.email} "
                   f"({type(e).__name__}: {e}). Fora desta rodada.")
             continue
-        ocupados = ocupados + nossos
+        # Por consultora, não global — ver `_ocupados_por_nos`.
+        ocupados = ocupados + await _ocupados_por_nos(db, ini, fim, c.email)
         for slot in candidatos:
             if any(_sobrepoe(slot.inicio, slot.fim, oi, of) for oi, of in ocupados):
                 continue
