@@ -64,7 +64,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agendamento import client, disponibilidade, origens
+from app.agendamento import client, disponibilidade, extras as extras_mod, origens
 from app.agendamento.grade import Slot, grade
 from app.agendamento.horarios import agora_sp
 from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_INICIADO,
@@ -149,6 +149,7 @@ async def _marcar(db: AsyncSession, ag: Agendamento, passo: str, *, erro: str | 
 
 async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: str,
                   slot_id: str, origem: str | None = None, lead_id: int | None = None,
+                  extras: dict[str, str] | None = None,
                   origem_ip: str | None = None) -> Resultado:
     """Caminho completo da LP.
 
@@ -200,6 +201,9 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
         slot_inicio=slot.inicio, slot_fim=slot.fim,
         sales_rep_email=g.sales_rep_email, sub_source=sub_source,
         lead_id=lead_id, lead_externo=lead_externo,
+        # Guardado mesmo quando o lead é externo e o LeadsAdd não vai rodar: o que a pessoa
+        # respondeu NESTA submissão é dado nosso, e some se depender só do CRM.
+        extras=extras or None,
         passo=PASSO_INICIADO, origem_ip=origem_ip,
         created_at=agora, updated_at=agora,
     )
@@ -234,13 +238,19 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     # do mesmo jeito para a faxina enxergar o mesmo desenho de estado nos dois fluxos.
     if lead_externo:
         await _marcar(db, ag, PASSO_LEAD_CRIADO)
+        # Os extras desta submissão ficam só na NOSSA tabela. O `description` do lead foi
+        # escrito no POST /lead e não há LeadsUpdate neste fluxo — reescrevê-lo exigiria
+        # outra chamada, e sobrescrever o que o formulário do index já gravou seria pior
+        # que não escrever. Na prática o index é quem pergunta, então o dado já está lá.
+        aviso = " (extras só na tabela local)" if extras else ""
         print(f"👤 agendamento #{ag.id}: lead {lead_id} JÁ EXISTIA (veio no corpo) — "
-              f"LeadsAdd pulado, subSource {sub_source} não reaplicado")
+              f"LeadsAdd pulado, subSource {sub_source} não reaplicado{aviso}")
     else:
         try:
             lead_id = await client.criar_lead(
-                nome=nome, telefone=telefone, email=email,
+                nome=nome, telefone=telefone,
                 source=SOURCE, sub_source=sub_source, funnel_id=FUNIL_POS_GRADUACAO,
+                description=extras_mod.montar_descricao(email, extras),
             )
         except client.ExactErro as e:
             await _compensar_box(db, ag, motivo="LeadsAdd falhou")
@@ -311,6 +321,7 @@ async def _compensar_box(db: AsyncSession, ag: Agendamento, *, motivo: str) -> N
 
 async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str | None,
                                      telefone: str, origem: str | None = None,
+                                     extras: dict[str, str] | None = None,
                                      origem_ip: str | None = None) -> int:
     """Fallback do POST /lead: cadastra e pronto. O lead cai em `Entrada`.
 
@@ -326,6 +337,7 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
         nome=nome, email=email, telefone=telefone,
         slot_inicio=agora, slot_fim=agora,  # sem slot; as colunas são NOT NULL
         sales_rep_email=grade().sales_rep_email, sub_source=sub_source,
+        extras=extras or None,
         passo=PASSO_INICIADO, origem_ip=origem_ip,
         created_at=agora, updated_at=agora,
     )
@@ -334,8 +346,9 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
 
     try:
         lead_id = await client.criar_lead(
-            nome=nome, telefone=telefone, email=email,
+            nome=nome, telefone=telefone,
             source=SOURCE, sub_source=sub_source, funnel_id=FUNIL_POS_GRADUACAO,
+            description=extras_mod.montar_descricao(email, extras),
         )
     except client.ExactErro as e:
         await _marcar(db, ag, PASSO_FALHOU, erro=str(e))

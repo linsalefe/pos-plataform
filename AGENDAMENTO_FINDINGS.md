@@ -809,6 +809,65 @@ rodar**, não depois.
 
 ---
 
+## 13. `description`: teto de 8000 e truncamento silencioso (18/08/2026)
+
+Medido criando e apagando leads reais. Sem `BoxesAdd` e sem `scheduleAdd`, o `LeadsDelete`
+limpa 100% — **esta sondagem não deixou órfão nenhum**.
+
+| enviado | guardado | veredito |
+|---|---|---|
+| 200 | 200 | intacto |
+| 4000 | 4000 | intacto |
+| 7999 | 7999 | intacto |
+| **8000** | **8000** | intacto — é o teto exato |
+| **8001** | **7999** | **TRUNCADO** |
+| 10000 | 7999 | TRUNCADO |
+
+**Nenhuma das tentativas devolveu erro.** O `LeadsAdd` responde 201 e corta o texto em
+silêncio: nada no corpo da resposta, nada em log, nada que distinga "guardei tudo" de
+"joguei metade fora". Só relendo o lead dá para saber.
+
+Repare que estourar por 1 caractere custa 2: 8001 vira 7999, não 8000. Não investiguei a
+causa (provavelmente `NVARCHAR(8000)` com algum marcador), mas o número medido é 7999.
+
+> **Consequência prática:** qualquer texto de tamanho variável indo para `description`
+> precisa de orçamento próprio, abaixo de 8000, com corte visível do nosso lado. O módulo
+> usa 4000 e marca o corte com `…` (`app/agendamento/extras.py`). O pior caso real do
+> formulário — e-mail mais 10 extras cheios — dá 2868 caracteres, então o orçamento nunca
+> deveria ser atingido; ele existe para o dia em que alguém afrouxar um limite de campo sem
+> lembrar que há um teto do outro lado.
+
+### O `description` demora a aparecer na leitura
+
+Na primeira sondagem, três dos cinco leads voltaram com `description: null` logo após o
+`LeadsAdd` — e os mesmos leads, relidos alguns segundos depois, tinham o campo preenchido.
+Não é o mesmo atraso do índice de texto (§10): aqui o filtro era `id eq`, que é consistente
+para *encontrar* o lead. É o **campo** que demora a materializar.
+
+Quem for conferir um `description` recém-escrito precisa insistir na leitura, senão conclui
+que o dado não foi gravado quando ele foi.
+
+### O atraso de índice também afeta `phone1 eq`, não só `contains()`
+
+§10 registrou que `contains(lead, ...)` continua devolvendo lead já excluído. Esta rodada
+mostrou que **`phone1 eq '55...'` faz o mesmo** — o E2E dos extras falhou na verificação
+final com o lead 51438000, que o `DELETE` já tinha removido com 204.
+
+Ou seja: não é uma peculiaridade da busca textual. **`id eq` é o único filtro consistente na
+hora.** Qualquer confirmação de exclusão por outro campo precisa insistir.
+
+### E2E sem resíduo
+
+`backend/test_agendamento_e2e_extras.py --sim-eu-quero` — 8/8, e é o **único E2E do módulo
+que não deixa órfão**, porque exercita só o `LeadsAdd`. Prova que o `description` chega
+íntegro (134 chars idênticos), que a acentuação sobrevive (`Profissão`, `Até R$100,00`) e
+que o JSONB volta como `dict` consultável por `extras->>'Como conheceu'`.
+
+**Órfãos acumulados continuam 5** — nada nesta sprint acrescentou resíduo.
+
+
+---
+
 ## Apêndice — inventário de endpoints (do `$metadata`)
 
 Agenda: `Boxes` · `BoxesAdd` · `BoxesUpdate` · `BoxesRemove` · `ScheduleAdd` · `Meetings` ·

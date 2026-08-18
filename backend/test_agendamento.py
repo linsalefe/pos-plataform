@@ -23,6 +23,10 @@ real, nenhum lead é cadastrado.
       LeadNaoEncontrado antes de qualquer escrita — nem box é criado
   16. leadId + falha no scheduleAdd: box removido, lead externo intocado
   17. regressão: sem leadId o fluxo cria o lead como sempre fez
+  18. extras: sanitização (pipe, quebra de linha, vazio) e contrato (10 chaves, 200 chars)
+  19. description montado na ordem certa, e o orçamento corta com marca visível
+  20. extras chegam ao LeadsAdd e à nossa tabela, nos dois fluxos
+  21. regressão: sem extras, o description é só o e-mail — e sem e-mail, não existe
 """
 import asyncio
 from datetime import datetime, timedelta
@@ -521,6 +525,170 @@ async def caso_17_sem_lead_id_nao_regrediu():
     print("  17. sem leadId: LeadsAdd chamado, lead 888 criado, lead_externo=False")
 
 
+# ==========================================================================================
+# extras — campos livres do formulário da LP
+# ==========================================================================================
+
+async def caso_18_extras_sanitiza_e_recusa():
+    """Sujeira é limpa em silêncio; violação de contrato é recusada."""
+    from app.agendamento import extras as ex
+
+    # O separador do formato não pode vir do conteúdo, senão o SDR lê pares falsos.
+    assert ex.sanitizar({"A|B": "Insta|gram"}) == {"A/B": "Insta/gram"}
+    # Quebra de linha e tabulação desmontam o layout do CRM.
+    assert ex.sanitizar({"k": "linha1\nlinha2\tfim"}) == {"k": "linha1 linha2 fim"}
+    # Caractere de controle invisível some.
+    assert ex.sanitizar({"k": "a\x00b"}) == {"k": "a b"}
+    # Par que virou vazio não vai para lugar nenhum.
+    assert ex.sanitizar({"k": "   ", "  ": "v", "ok": "sim"}) == {"ok": "sim"}
+    # None no valor é omissão, não erro — formulário com campo não preenchido.
+    assert ex.sanitizar({"k": None, "ok": "sim"}) == {"ok": "sim"}
+    assert ex.sanitizar(None) == {} and ex.sanitizar({}) == {}
+    # A ordem é a das perguntas do formulário, e o SDR lê nessa ordem.
+    assert list(ex.sanitizar({"z": "1", "a": "2", "m": "3"})) == ["z", "a", "m"]
+
+    for ruim, porque in (
+        ({str(i): "v" for i in range(11)}, "11 chaves"),
+        ({"k": "x" * 201}, "valor 201 chars"),
+        ({"x" * 61: "v"}, "chave 61 chars"),
+        ({"k": 123}, "valor não-texto"),
+        ("nem é dict", "tipo errado"),
+    ):
+        try:
+            ex.sanitizar(ruim)
+        except ex.ExtrasInvalidos:
+            pass
+        else:
+            raise AssertionError(f"FALHOU: {porque} deveria ser recusado")
+
+    # Exatamente no limite passa — 10 chaves não é 11.
+    assert len(ex.sanitizar({str(i): "v" for i in range(10)})) == 10
+    assert ex.sanitizar({"k": "x" * 200}) == {"k": "x" * 200}
+    print("  18. extras: pipe/quebra/controle limpos, vazios somem, 5 violações recusadas")
+
+
+async def caso_19_descricao_formato_e_orcamento():
+    """O texto que o SDR lê, e o corte que a Exact NÃO faria com aviso."""
+    from app.agendamento import extras as ex
+
+    d = ex.montar_descricao("x@y.com", {"Profissão": "Psicologia",
+                                        "Ensino Superior": "Sim",
+                                        "Como conheceu": "Instagram",
+                                        "Faixa": "Até R$100,00"})
+    assert d == ("E-mail: x@y.com | Profissão: Psicologia | Ensino Superior: Sim | "
+                 "Como conheceu: Instagram | Faixa: Até R$100,00"), d
+    # O e-mail vem primeiro: é o dado que o SDR mais usa.
+    assert d.startswith("E-mail: "), d
+
+    # Sem nada a dizer, NÃO existe description — o LeadsAdd sai sem a chave, como antes.
+    assert ex.montar_descricao(None, None) is None
+    assert ex.montar_descricao(None, {}) is None
+    assert ex.montar_descricao("", {}) is None
+    assert ex.montar_descricao("x@y.com", None) == "E-mail: x@y.com"
+    assert ex.montar_descricao(None, {"k": "v"}) == "k: v"
+
+    # O pior caso REAL cabe folgado: 10 chaves cheias mais e-mail.
+    pior = ex.montar_descricao("x" * 200, {("c" * 60) + str(i): "v" * 200 for i in range(10)})
+    assert len(pior) < ex.ORCAMENTO_DESCRICAO, len(pior)
+    assert len(pior) < ex.LIMITE_EXACT, len(pior)
+
+    # E se alguém afrouxar um limite, o corte é NOSSO e deixa marca visível. A Exact
+    # cortaria em 8000 sem avisar ninguém (FINDINGS §13).
+    #
+    # `montar_descricao` não aplica o contrato de propósito — quem aplica é `sanitizar`. Dá
+    # para chamá-la com um valor gigante justamente para exercitar o orçamento, que pelo
+    # caminho normal é inalcançável.
+    cortado = ex.montar_descricao(None, {"k": "v" * 9000})
+    assert len(cortado) == ex.ORCAMENTO_DESCRICAO, len(cortado)
+    assert cortado.endswith("…"), cortado[-20:]
+    assert len(cortado) < ex.LIMITE_EXACT, "o corte tem que ficar abaixo do teto da Exact"
+    assert ex.ORCAMENTO_DESCRICAO < ex.LIMITE_EXACT, "o orçamento tem que ficar ABAIXO do teto"
+
+    # Exatamente no orçamento não é cortado — o `>` da comparação não pode virar `>=`.
+    no_limite = ex.montar_descricao(None, {"k": "v" * (ex.ORCAMENTO_DESCRICAO - 3)})
+    assert len(no_limite) == ex.ORCAMENTO_DESCRICAO and not no_limite.endswith("…"), \
+        (len(no_limite), no_limite[-5:])
+    print(f"  19. description no formato pedido; pior caso real {len(pior)} chars "
+          f"(orçamento {ex.ORCAMENTO_DESCRICAO}, teto da Exact {ex.LIMITE_EXACT})")
+
+
+async def caso_20_extras_chegam_ao_lead_e_a_tabela():
+    """Os dois destinos: o description da Exact e a coluna JSONB nossa."""
+    recarregar()
+    slot = _slot_valido()
+    extras = {"Profissão": "Psicologia", "Como conheceu": "Instagram"}
+
+    # --- fluxo com agendamento ---
+    db = _DbFalso()
+    criar = AsyncMock(return_value=888)
+    with patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+         patch.object(client, "criar_lead", criar), \
+         patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+         patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+        await fluxo.agendar(db, nome="TESTE", email="a@b.com", telefone=TELEFONE,
+                            slot_id=slot.id, extras=extras)
+    desc = criar.await_args.kwargs["description"]
+    assert desc == "E-mail: a@b.com | Profissão: Psicologia | Como conheceu: Instagram", desc
+    assert db.agendamentos()[0].extras == extras, db.agendamentos()[0].extras
+    # O e-mail NÃO vai mais como kwarg solto: ele vive dentro do description.
+    assert "email" not in criar.await_args.kwargs, criar.await_args.kwargs
+
+    # --- fluxo /lead, sem agendar ---
+    db2 = _DbFalso()
+    criar2 = AsyncMock(return_value=999)
+    with patch.object(client, "criar_lead", criar2):
+        await fluxo.cadastrar_lead_sem_agendar(db2, nome="TESTE", email="a@b.com",
+                                               telefone=TELEFONE, extras=extras)
+    assert criar2.await_args.kwargs["description"] == desc, criar2.await_args.kwargs
+    assert db2.agendamentos()[0].extras == extras
+
+    # --- lead externo: extras ficam na tabela, LeadsAdd nem é chamado ---
+    db3 = _DbFalso()
+    criar3 = AsyncMock(return_value=111)
+    with patch.object(client, "buscar_lead_por_id", AsyncMock(return_value={"id": 42})), \
+         patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+         patch.object(client, "criar_lead", criar3), \
+         patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+         patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+        await fluxo.agendar(db3, nome="TESTE", email="a@b.com", telefone=TELEFONE,
+                            slot_id=slot.id, lead_id=42, extras=extras)
+    assert not criar3.called, "FALHOU: LeadsAdd chamado com lead externo"
+    assert db3.agendamentos()[0].extras == extras, "extras têm que ficar na tabela mesmo assim"
+    print("  20. extras -> description da Exact + coluna JSONB, nos 3 caminhos")
+
+
+async def caso_21_sem_extras_nada_muda():
+    """Retrocompatibilidade: as LPs que não mandam o campo não podem sentir diferença."""
+    recarregar()
+    slot = _slot_valido()
+
+    db = _DbFalso()
+    criar = AsyncMock(return_value=888)
+    with patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+         patch.object(client, "criar_lead", criar), \
+         patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+         patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+        await fluxo.agendar(db, nome="TESTE", email="a@b.com", telefone=TELEFONE,
+                            slot_id=slot.id)
+    assert criar.await_args.kwargs["description"] == "E-mail: a@b.com", \
+        criar.await_args.kwargs["description"]
+    assert db.agendamentos()[0].extras is None, db.agendamentos()[0].extras
+
+    # Sem e-mail e sem extras não existe description nenhum — o payload sai sem a chave,
+    # exatamente como saía antes destes campos existirem.
+    db2 = _DbFalso()
+    criar2 = AsyncMock(return_value=888)
+    with patch.object(client, "criar_box", AsyncMock(return_value=777)), \
+         patch.object(client, "criar_lead", criar2), \
+         patch.object(client, "agendar_reuniao", AsyncMock(return_value=True)), \
+         patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+        await fluxo.agendar(db2, nome="TESTE", email=None, telefone=TELEFONE,
+                            slot_id=slot.id)
+    assert criar2.await_args.kwargs["description"] is None, criar2.await_args.kwargs
+    assert db2.agendamentos()[0].extras is None
+    print("  21. sem extras: description = só o e-mail; sem e-mail = sem description")
+
+
 async def main():
     print("\nMódulo de agendamento — Exact mockada, banco dublê, nada real\n")
     await caso_1_grade()
@@ -540,7 +708,11 @@ async def main():
     await caso_15_lead_id_inexistente()
     await caso_16_lead_externo_sobrevive_a_falha()
     await caso_17_sem_lead_id_nao_regrediu()
-    print("\nOK: 17/17 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
+    await caso_18_extras_sanitiza_e_recusa()
+    await caso_19_descricao_formato_e_orcamento()
+    await caso_20_extras_chegam_ao_lead_e_a_tabela()
+    await caso_21_sem_extras_nada_muda()
+    print("\nOK: 21/21 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
 
 
 if __name__ == "__main__":

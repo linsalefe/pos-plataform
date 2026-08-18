@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import agendar as fluxo
-from app.agendamento import client, disponibilidade, origens
+from app.agendamento import client, disponibilidade, extras as extras_mod, origens
 from app.agendamento.grade import grade
 from app.database import get_db
 
@@ -97,6 +97,30 @@ class DadosLead(BaseModel):
     # De qual curso veio. Conferido contra a allowlist em `origens.py`, NUNCA repassado como
     # texto livre: `LeadsAdd` cria o subSource quando o valor não existe. Ausente = padrão.
     origem: str | None = Field(default=None, max_length=100)
+    # Respostas livres do formulário: profissão, como conheceu, faixa de investimento. Vão
+    # para `agendamentos.extras` (JSONB) e para o `description` do lead, que é o que o SDR
+    # lê antes de ligar. Declarado aqui no DadosLead de propósito: assim vale para /lead e
+    # para /agendar sem duplicar nada, e as duas rotas têm o mesmo contrato.
+    #
+    # Os limites (10 chaves, 200 chars) são RECUSA, não corte — ver o validador abaixo.
+    extras: dict[str, str] | None = Field(default=None)
+
+    @field_validator("extras")
+    @classmethod
+    def _extras_limpos(cls, v):
+        """Aplica contrato e sanitização de uma vez só.
+
+        `ExtrasInvalidos` herda de `ValueError`, então o Pydantic já o transforma em 422 com
+        a mensagem dentro — sem `except` aqui e sem tratamento no endpoint.
+
+        Recusar em vez de truncar é decisão consciente, e vai contra o "visitante nunca fica
+        preso" que rege o resto do módulo. A razão: extras alimentam relatório de marketing,
+        e um valor cortado pela metade é pior que uma submissão recusada, porque ninguém
+        descobre. Quem controla o formulário somos nós — 10 perguntas é uma LP longa, e uma
+        11ª significa que alguém mexeu no form sem olhar o backend. O 422 aparece no console
+        de quem publicou a página, que é exatamente quem pode consertar.
+        """
+        return extras_mod.sanitizar(v) or None
 
     @field_validator("nome")
     @classmethod
@@ -165,7 +189,7 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
         r = await fluxo.agendar(db, nome=pedido.nome, email=pedido.email,
                                 telefone=pedido.telefone, slot_id=pedido.slot,
                                 origem=pedido.origem, lead_id=pedido.lead_id,
-                                origem_ip=_ip(request))
+                                extras=pedido.extras, origem_ip=_ip(request))
     except origens.OrigemInvalida as e:
         # 400 e não 422: o corpo está bem formado, o valor é que não é aceito. E a mensagem
         # não lista as origens permitidas — é endpoint público, e a lista é dado interno.
@@ -218,7 +242,7 @@ async def criar_lead_sem_agendar(pedido: DadosLead, request: Request,
     try:
         lead_id = await fluxo.cadastrar_lead_sem_agendar(
             db, nome=pedido.nome, email=pedido.email, telefone=pedido.telefone,
-            origem=pedido.origem, origem_ip=_ip(request))
+            origem=pedido.origem, extras=pedido.extras, origem_ip=_ip(request))
     except origens.OrigemInvalida as e:
         print(f"⚠️ /agendamento/lead: {e} (ip {_ip(request)})")
         raise HTTPException(status_code=400, detail="Origem inválida.") from e

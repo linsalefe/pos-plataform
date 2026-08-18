@@ -149,8 +149,9 @@ async def remover_box(box_id: int) -> None:
     await _req("DELETE", f"/BoxesRemove/{box_id}")
 
 
-async def criar_lead(*, nome: str, telefone: str, email: str | None, source: str,
-                     sub_source: str, funnel_id: int, ddi: str = "55") -> int:
+async def criar_lead(*, nome: str, telefone: str, source: str, sub_source: str,
+                     funnel_id: int, description: str | None = None,
+                     ddi: str = "55") -> int:
     """`POST /LeadsAdd`. Devolve o `leadId`. O lead nasce em `Entrada` do funil.
 
     `duplicityValidation=False` porque a LP é pública e um bloqueio por duplicidade viraria
@@ -158,12 +159,22 @@ async def criar_lead(*, nome: str, telefone: str, email: str | None, source: str
 
     O payload é ANINHADO sob `lead` — diferente do `BoxesAdd`, que é flat.
 
-    O E-MAIL VAI EM `description`, NÃO EM CAMPO PRÓPRIO. O `LeadsAdd` não tem campo de e-mail:
-    não está no payload documentado, e `GET /Leads` não devolve nenhuma chave de e-mail (as de
-    contato são `phone1`, `phone2` e `telephones`). Na Exact o e-mail pertence à *pessoa*, não
-    ao lead — outra entidade (`LeadsAndPersons`), fora do escopo deste módulo. Mandar
-    `"email"` no payload seria descartado em silêncio e a LP perderia o dado que pediu ao
-    visitante. Em `description` o SDR enxerga, e o nosso banco guarda em coluna própria.
+    O E-MAIL E OS EXTRAS VÃO EM `description`, NÃO EM CAMPO PRÓPRIO. O `LeadsAdd` não tem
+    campo de e-mail: não está no payload documentado, e `GET /Leads` não devolve nenhuma
+    chave de e-mail (as de contato são `phone1`, `phone2` e `telephones`). Na Exact o e-mail
+    pertence à *pessoa*, não ao lead — outra entidade (`LeadsAndPersons`), fora do escopo
+    deste módulo. Mandar `"email"` no payload seria descartado em silêncio e a LP perderia o
+    dado que pediu ao visitante. Em `description` o SDR enxerga, e o nosso banco guarda em
+    coluna própria.
+
+    QUEM MONTA O TEXTO É `extras.montar_descricao`, não esta função. Aqui é só transporte
+    HTTP: a formatação depende de sanitização, de ordem de campos e de um orçamento de
+    tamanho, e nada disso é assunto de cliente HTTP.
+
+    ⚠️ **O `description` tem teto de 8000 caracteres e a Exact TRUNCA EM SILÊNCIO** — 201 na
+    resposta, texto cortado no banco, nada em log (medido: FINDINGS §13). Não passe texto
+    cru de formulário aqui sem passar por `extras.montar_descricao`, que respeita um
+    orçamento de 4000 e corta com marca visível quando precisa.
     """
     lead = {
         "name": nome,
@@ -173,8 +184,8 @@ async def criar_lead(*, nome: str, telefone: str, email: str | None, source: str
         "ddiPhone": ddi,
         "phone": telefone,
     }
-    if email:
-        lead["description"] = f"E-mail informado na LP: {email}"
+    if description:
+        lead["description"] = description
     resp = await _req("POST", "/LeadsAdd", json={"duplicityValidation": False, "lead": lead})
     return int(resp.json()["value"])
 

@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, Text, DateTime, BigInteger, Integer, Boolean, ForeignKey, func, Table, CheckConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -544,6 +545,16 @@ class Agendamento(Base):
     # que ele é nosso. É a única forma de responder depois "este lead foi criado aqui ou já
     # existia?", porque `lead_id` preenchido tem a mesma cara nos dois caminhos.
     lead_externo = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Respostas livres do formulário da LP: profissão, como conheceu, faixa de investimento.
+    # Variam por página e por campanha — viram JSON e não coluna, senão cada pergunta nova
+    # da equipe de marketing viraria uma migração.
+    #
+    # JSONB, e não Text com json.dumps como `templates.components` e
+    # `nat_scheduled_actions.payload`. Aqueles dois são payloads OPACOS, guardados para
+    # auditoria e nunca consultados por dentro. Este aqui existe justamente para ser
+    # consultado — `extras->>'Como conheceu'` é a pergunta que o marketing vai fazer — e
+    # JSONB dá isso sem parse na aplicação, além de recusar JSON inválido na escrita.
+    extras = Column(JSONB, nullable=True)
     meeting_id = Column(BigInteger, nullable=True)
     passo = Column(String(20), nullable=False, default=PASSO_INICIADO)
     erro = Column(Text, nullable=True)           # mensagem crua da Exact, sem tradução
