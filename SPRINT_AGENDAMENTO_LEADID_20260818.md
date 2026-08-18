@@ -3,9 +3,8 @@
 Branch: `feat/agendamento-subsource` · Investigação de referência: `AGENDAMENTO_FINDINGS.md`
 (§12 é nova desta sprint)
 
-**O serviço NÃO foi reiniciado.** O código está no repositório e testado; o `cenat-backend`
-segue rodando a versão anterior. A migração de banco, essa sim, já foi aplicada — é aditiva
-e invisível para o código antigo (ver "Ordem de deploy").
+**Está no ar.** Migração aplicada e `cenat-backend` reiniciado em 18/08/2026 00:08 UTC,
+validado em produção — ver "Deploy" no fim.
 
 ---
 
@@ -212,30 +211,61 @@ Leads de teste excluídos, tabela `agendamentos` de volta a **0 linhas**.
 
 ---
 
-## Ordem de deploy
+## Deploy — FEITO em 18/08/2026 00:08 UTC
 
-A migração **já foi aplicada** e é segura para o serviço rodando: a coluna é aditiva, tem
-default e o código antigo simplesmente a ignora. O que falta:
+Migração aplicada antes (aditiva, com default; o código antigo ignorava a coluna), depois:
 
 ```bash
-cd /home/ubuntu/pos-plataform/backend
 sudo systemctl restart cenat-backend.service
-curl -s -o /dev/null -w "%{http_code}\n" https://hub.cenatdata.online/health
 ```
 
-Fumaça depois do restart (não escreve nada — `leadId` inexistente para antes de qualquer
-escrita, por desenho):
+### Validação em produção
+
+| verificação | resultado |
+|---|---|
+| `cenat-backend` ativo, `/health` | **200** `{"status":"online"}` |
+| log de inicialização | sem erro, sem traceback |
+| `GET /slots` | **200**, `fallback:false`, 10 dias com vaga |
+| `POST /agendar` com `leadId` inexistente | **404** com a mensagem certa |
+| `leadId: 0` | **422** (recusado no corpo) |
+| slot fora da grade | **400** |
+| origem fora da allowlist | **400** |
+| nome curto / telefone sem DDD | **422** |
+| `POST /lead` alcançável | **400** por origem inválida (sem criar lead) |
+| preflight CORS de `lp.cenatsaudemental.com` | **204** com `allow-origin` |
+| preflight CORS de domínio estranho | **sem `allow-origin`** — navegador bloqueia |
+| `agendamentos` depois de tudo | **0 linhas** — nenhuma escrita |
+
+### Correção do comando de fumaça
+
+A primeira versão deste documento mandava usar `"slot":"2027-03-18T14:00:00"`. **Está
+errado** e daria 400, não 404: a validação do slot vem **antes** da do lead em `agendar()`, e
+2027 está fora do horizonte de 14 dias da grade de produção. O comando certo pega um slot
+real de `GET /slots`:
 
 ```bash
+SLOT=$(curl -s https://hub.cenatdata.online/api/agendamento/slots \
+  | python3 -c "import json,sys;d=json.load(sys.stdin)['dias'];print(d[sorted(d)[0]][0]['id'])")
+
 curl -s -X POST https://hub.cenatdata.online/api/agendamento/agendar \
   -H 'Content-Type: application/json' \
-  -d '{"nome":"Fumaca Teste","telefone":"11999990000",
-       "slot":"2027-03-18T14:00:00","leadId":999999999}'
+  -d "{\"nome\":\"Fumaca Teste\",\"telefone\":\"11999990000\",
+       \"slot\":\"$SLOT\",\"leadId\":999999999}"
 # esperado: 404 "O cadastro informado não foi encontrado."
 ```
 
-Depois: ajustar `ORIGEM` nos dois snippets para o curso da LP e publicar no repositório da
-landing page.
+Continua **sem escrever nada**: a verificação do lead acontece antes do `BoxesAdd`, então um
+`leadId` inventado não chega a criar box nem consumir o slot. Confirmado — a tabela seguiu
+em 0 linhas depois de todos os testes acima.
+
+> Note que o rate limit de escrita é 5 requisições / 300s por IP, e os 422 não contam (a
+> validação do corpo acontece antes do limitador). Uma bateria de fumaça maior que isso
+> começa a receber 429.
+
+### O que falta
+
+Ajustar `var ORIGEM` nos dois snippets para o curso da LP e publicar no repositório da
+landing page. O backend está pronto para os dois fluxos.
 
 ---
 
