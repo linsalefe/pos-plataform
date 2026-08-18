@@ -265,6 +265,11 @@ async def lifespan(app: FastAPI):
     # minuto, e sem ela um fluxo que morra no meio deixa horário fantasma na agenda real.
     from app.agendamento.faxina import faxina_job, IDADE_MINIMA as FAXINA_IDADE
     faxina_task = asyncio.create_task(faxina_job())
+    # Valida as consultoras contra GET /Sellers. Em TAREFA de fundo, não bloqueando o boot:
+    # o backend serve o Hub, o webhook da Meta e a NAT, e nenhum deles pode esperar o CRM
+    # responder para o processo subir. A função nunca levanta — ver consultoras.py.
+    from app.agendamento.consultoras import validar_contra_exact
+    consultoras_task = asyncio.create_task(validar_contra_exact())
     print("✅ Sync Exact Spotter agendado (a cada 10 min)")
     print("✅ Alertas de janela 24h agendados (a cada 5 min)")
     print("✅ Agendamento de templates ativo (checa a cada 60s)")
@@ -280,6 +285,7 @@ async def lifespan(app: FastAPI):
     nat_scheduler_task.cancel()
     delivery_health_task.cancel()
     faxina_task.cancel()
+    consultoras_task.cancel()
 
 
 app = FastAPI(title="Cenat WhatsApp API", lifespan=lifespan)

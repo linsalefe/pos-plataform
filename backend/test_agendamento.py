@@ -27,14 +27,21 @@ real, nenhum lead é cadastrado.
   19. description montado na ordem certa, e o orçamento corta com marca visível
   20. extras chegam ao LeadsAdd e à nossa tabela, nos dois fluxos
   21. regressão: sem extras, o description é só o e-mail — e sem e-mail, não existe
+  22. consultoras: config, herança de grade, e-mail que sobrescreve, fallback de uma só
+  23. /slots é a UNIÃO das grades, com quem está livre em cada horário
+  24. escolha pela menor carga do dia, empate mantém a ordem da config
+  25. ocupada na primeira -> tenta a segunda; todas ocupadas -> 409 (e só aí)
+  26. validação de startup: inválida sai de rotação; Exact fora não tira ninguém
 """
 import asyncio
+import json
+import os
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agendamento import agendar as fluxo
-from app.agendamento import client, disponibilidade, faxina
-from app.agendamento.grade import recarregar
+from app.agendamento import client, consultoras as equipe_mod, disponibilidade, faxina
+from app.agendamento.grade import grade, recarregar
 from app.agendamento.horarios import de_exact, para_exact
 from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_LEAD_CRIADO,
                         Agendamento)
@@ -77,8 +84,16 @@ class _DbFalso:
 
 
 def _slot_valido():
-    """Primeiro slot livre da grade real — o que a LP ofereceria agora."""
-    return recarregar().slots_candidatos()[0]
+    """Primeiro slot livre da grade real — o que a LP ofereceria agora.
+
+    Recarrega os DOIS caches. `consultoras()` monta a consultora única a partir de `grade()`
+    e guarda o objeto; recarregar só a grade deixaria os dois apontando para grades
+    diferentes, e o `slot_por_id` do fluxo passaria a não achar o slot que este helper
+    devolveu — falha confusa e sem relação com o que o teste queria verificar.
+    """
+    g = recarregar()
+    equipe_mod.recarregar()
+    return g.slots_candidatos()[0]
 
 
 # ==========================================================================================
@@ -689,6 +704,241 @@ async def caso_21_sem_extras_nada_muda():
     print("  21. sem extras: description = só o e-mail; sem e-mail = sem description")
 
 
+# ==========================================================================================
+# múltiplas consultoras
+# ==========================================================================================
+
+DUAS = json.dumps([
+    {"email": "ana@cenatcursos.com.br", "nome_exibicao": "Ana",
+     "grade": {"janelas": {"0": [["10:00", "11:30"]], "1": [["10:00", "11:30"]],
+                           "2": [["10:00", "11:30"]], "3": [["10:00", "11:30"]],
+                           "4": [["10:00", "11:30"]]}}},
+    {"email": "bia@cenatcursos.com.br", "nome_exibicao": "Bia",
+     "grade": {"janelas": {"0": [["10:45", "12:15"]], "1": [["10:45", "12:15"]],
+                           "2": [["10:45", "12:15"]], "3": [["10:45", "12:15"]],
+                           "4": [["10:45", "12:15"]]}}},
+])
+
+
+def _com_duas():
+    """Ativa as duas consultoras e devolve a lista recarregada."""
+    os.environ["AGENDAMENTO_CONSULTORAS"] = DUAS
+    return equipe_mod.recarregar()
+
+
+def _sem_consultoras():
+    os.environ.pop("AGENDAMENTO_CONSULTORAS", None)
+    equipe_mod.recarregar()
+
+
+async def caso_22_config_consultoras():
+    try:
+        equipe = _com_duas()
+        assert [c.nome_exibicao for c in equipe] == ["Ana", "Bia"], equipe
+        # A grade herda o que não veio: duração e antecedência são política do produto.
+        assert equipe[0].grade.duracao == equipe[1].grade.duracao
+        assert int(equipe[0].grade.duracao.total_seconds() // 60) == 45
+        # O e-mail da consultora sobrescreve o sales_rep_email de dentro da grade.
+        assert equipe[0].grade.sales_rep_email == "ana@cenatcursos.com.br"
+        assert equipe_mod.nome_de("BIA@cenatcursos.com.br") == "Bia", "busca é case-insensitive"
+        assert equipe_mod.nome_de("sumiu@x.com") == "sumiu", "e-mail desconhecido vira rótulo"
+
+        # JSON inválido NÃO derruba: cai na consultora única, como a grade faz.
+        os.environ["AGENDAMENTO_CONSULTORAS"] = "{isto não é json"
+        assert len(equipe_mod.recarregar()) == 1
+        os.environ["AGENDAMENTO_CONSULTORAS"] = "[]"
+        assert len(equipe_mod.recarregar()) == 1, "lista vazia = fallback"
+        # Item sem e-mail é ignorado, os outros sobrevivem.
+        os.environ["AGENDAMENTO_CONSULTORAS"] = json.dumps(
+            [{"nome_exibicao": "Sem email"}, {"email": "ok@x.com", "nome_exibicao": "Ok"}])
+        assert [c.email for c in equipe_mod.recarregar()] == ["ok@x.com"]
+
+        # Sem env nenhum: exatamente o comportamento de antes desta sprint.
+        _sem_consultoras()
+        uma = equipe_mod.consultoras()
+        assert len(uma) == 1 and uma[0].email == grade().sales_rep_email
+    finally:
+        _sem_consultoras()
+    print("  22. consultoras: herança, e-mail soberano, 3 configs ruins caem no fallback")
+
+
+async def caso_23_slots_uniao():
+    """A LP vê a união. Ana 10:00–11:30 e Bia 10:45–12:15 dão 10:00, 10:45, 11:30."""
+    try:
+        _com_duas()
+        disponibilidade.invalidar_cache()
+        db = _DbFalso()
+        with patch.object(client, "listar_boxes", AsyncMock(return_value=[])):
+            livres = await disponibilidade.slots_livres(db, usar_cache=False)
+        horas = sorted({d.slot.inicio.strftime("%H:%M") for d in livres})
+        assert horas == ["10:00", "10:45", "11:30"], horas
+
+        porhora = {}
+        for d in livres:
+            porhora.setdefault(d.slot.inicio.strftime("%H:%M"), set()).update(
+                c.nome_exibicao for c in d.consultoras)
+        # 10:45 é o único que as duas oferecem; os outros são de uma só.
+        assert porhora["10:00"] == {"Ana"}, porhora["10:00"]
+        assert porhora["10:45"] == {"Ana", "Bia"}, porhora["10:45"]
+        assert porhora["11:30"] == {"Bia"}, porhora["11:30"]
+
+        # Uma agenda ilegível não pode apagar a grade da outra.
+        disponibilidade.invalidar_cache()
+        async def so_ana_falha(inicio, fim, email):
+            if email.startswith("ana"):
+                raise client.ExactIndisponivel("timeout")
+            return []
+        with patch.object(client, "listar_boxes", AsyncMock(side_effect=so_ana_falha)):
+            livres2 = await disponibilidade.slots_livres(db, usar_cache=False)
+        nomes = {c.nome_exibicao for d in livres2 for c in d.consultoras}
+        assert nomes == {"Bia"}, nomes
+        assert livres2, "a Bia tinha que sobrar"
+    finally:
+        _sem_consultoras()
+        disponibilidade.invalidar_cache()
+    print("  23. união: 10:00(Ana) 10:45(Ana+Bia) 11:30(Bia); Ana ilegível não apaga a Bia")
+
+
+async def caso_24_escolha_por_carga():
+    try:
+        equipe = _com_duas()
+        hoje = fluxo.agora_sp().date()
+
+        # Empate (ninguém agendado): mantém a ordem da config.
+        db = _DbFalso(ocupados=[])
+        ordem = await fluxo.escolher_consultora(db, equipe, hoje)
+        assert [c.nome_exibicao for c in ordem] == ["Ana", "Bia"], ordem
+
+        # Ana com 3 no dia, Bia com 1 -> Bia primeiro.
+        db = _DbFalso(ocupados=[("ana@cenatcursos.com.br", 3), ("bia@cenatcursos.com.br", 1)])
+        ordem = await fluxo.escolher_consultora(db, equipe, hoje)
+        assert [c.nome_exibicao for c in ordem] == ["Bia", "Ana"], ordem
+
+        # Consultora sem nenhuma linha conta como zero, não some da lista.
+        db = _DbFalso(ocupados=[("ana@cenatcursos.com.br", 5)])
+        ordem = await fluxo.escolher_consultora(db, equipe, hoje)
+        assert [c.nome_exibicao for c in ordem] == ["Bia", "Ana"], ordem
+
+        # Uma só candidata nem consulta o banco.
+        db = _DbFalso(ocupados=[("x", 99)])
+        assert await fluxo.escolher_consultora(db, equipe[:1], hoje) == equipe[:1]
+    finally:
+        _sem_consultoras()
+    print("  24. carga: empate mantém config, 3x1 inverte, ausente conta zero")
+
+
+async def caso_25_ocupada_tenta_a_proxima():
+    """O achado que motiva isto: ocupado numa consultora não é o horário morrer."""
+    try:
+        equipe = _com_duas()
+        # 10:45 é o horário que as DUAS oferecem.
+        slot = None
+        for c in equipe:
+            for s_ in c.grade.slots_candidatos():
+                if s_.inicio.strftime("%H:%M") == "10:45":
+                    slot = s_
+                    break
+            if slot:
+                break
+        assert slot is not None
+
+        # --- Ana ocupada, Bia livre: tem que agendar com a Bia, sem 409 ---
+        db = _DbFalso()
+        chamadas = []
+        async def box(**kw):
+            chamadas.append(kw["sales_rep_email"])
+            if kw["sales_rep_email"].startswith("ana"):
+                raise client.SlotOcupado("Boxes are occupied at the desired time.")
+            return 777
+        sched = AsyncMock(return_value=True)
+        with patch.object(client, "criar_box", AsyncMock(side_effect=box)), \
+             patch.object(client, "criar_lead", AsyncMock(return_value=888)), \
+             patch.object(client, "agendar_reuniao", sched), \
+             patch.object(client, "meeting_por_lead", AsyncMock(return_value=None)):
+            r = await fluxo.agendar(db, nome="TESTE", email=None, telefone=TELEFONE,
+                                    slot_id=slot.id)
+        assert chamadas == ["ana@cenatcursos.com.br", "bia@cenatcursos.com.br"], chamadas
+        assert r.consultora_nome == "Bia", r.consultora_nome
+        # O scheduleAdd tem que ir com a MESMA consultora do box, senão a reunião nasce órfã.
+        assert sched.await_args.kwargs["sales_rep_email"] == "bia@cenatcursos.com.br"
+        linha = db.agendamentos()[0]
+        assert linha.sales_rep_email == "bia@cenatcursos.com.br", linha.sales_rep_email
+
+        # --- as duas ocupadas: aí sim 409, e só aí ---
+        db2 = _DbFalso()
+        tentou = []
+        async def box2(**kw):
+            tentou.append(kw["sales_rep_email"])
+            raise client.SlotOcupado("Boxes are occupied at the desired time.")
+        lead = AsyncMock()
+        with patch.object(client, "criar_box", AsyncMock(side_effect=box2)), \
+             patch.object(client, "criar_lead", lead):
+            try:
+                await fluxo.agendar(db2, nome="TESTE", email=None, telefone=TELEFONE,
+                                    slot_id=slot.id)
+            except fluxo.SlotIndisponivel:
+                pass
+            else:
+                raise AssertionError("FALHOU: as duas ocupadas tinham que dar SlotIndisponivel")
+        assert len(tentou) == 2, tentou
+        assert not lead.called, "FALHOU: criou lead com o horário perdido"
+        assert db2.agendamentos()[0].passo == PASSO_FALHOU
+
+        # --- erro que NÃO é disputa não passa para a próxima ---
+        db3 = _DbFalso()
+        tentou3 = []
+        async def box3(**kw):
+            tentou3.append(kw["sales_rep_email"])
+            raise client.SdrNaoEncontrado("SDR not found.")
+        with patch.object(client, "criar_box", AsyncMock(side_effect=box3)):
+            try:
+                await fluxo.agendar(db3, nome="TESTE", email=None, telefone=TELEFONE,
+                                    slot_id=slot.id)
+            except fluxo.AgendamentoFalhou:
+                pass
+            else:
+                raise AssertionError("FALHOU: SDR not found deveria parar o fluxo")
+        assert len(tentou3) == 1, \
+            f"FALHOU: erro de configuração tentou {len(tentou3)} consultoras — insistir " \
+            "só transformaria um env errado em vários boxes"
+    finally:
+        _sem_consultoras()
+    print("  25. Ana ocupada -> agenda com a Bia; as duas -> 409; SDR not found para na 1ª")
+
+
+async def caso_26_validacao_startup():
+    try:
+        _com_duas()
+        # Bia inativa na Exact -> sai de rotação. Ana ativa fica.
+        sellers = [{"email": "ana@cenatcursos.com.br", "active": True},
+                   {"email": "bia@cenatcursos.com.br", "active": False}]
+        with patch.object(client, "listar_sellers", AsyncMock(return_value=sellers)):
+            r = await equipe_mod.validar_contra_exact()
+        assert r["verificadas"] == ["ana@cenatcursos.com.br"], r
+        assert r["invalidas"][0]["motivo"] == "inativa na Exact", r
+        assert [c.nome_exibicao for c in equipe_mod.consultoras()] == ["Ana"]
+
+        # E-mail que não existe em /Sellers -> motivo diferente, e também sai.
+        _com_duas()
+        with patch.object(client, "listar_sellers",
+                          AsyncMock(return_value=[{"email": "ana@cenatcursos.com.br",
+                                                   "active": True}])):
+            r = await equipe_mod.validar_contra_exact()
+        assert r["invalidas"][0]["motivo"] == "não existe em /Sellers", r
+
+        # Exact inacessível -> NINGUÉM sai. Não dá para distinguir inválida de não-verificada.
+        _com_duas()
+        with patch.object(client, "listar_sellers",
+                          AsyncMock(side_effect=client.ExactIndisponivel("timeout"))):
+            r = await equipe_mod.validar_contra_exact()
+        assert r["checagem_falhou"] is True and not r["invalidas"], r
+        assert len(equipe_mod.consultoras()) == 2, "a checagem falhou; ninguém pode sair"
+    finally:
+        _sem_consultoras()
+    print("  26. startup: inativa e inexistente saem com motivos distintos; "
+          "Exact fora não tira ninguém")
+
+
 async def main():
     print("\nMódulo de agendamento — Exact mockada, banco dublê, nada real\n")
     await caso_1_grade()
@@ -712,7 +962,12 @@ async def main():
     await caso_19_descricao_formato_e_orcamento()
     await caso_20_extras_chegam_ao_lead_e_a_tabela()
     await caso_21_sem_extras_nada_muda()
-    print("\nOK: 21/21 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
+    await caso_22_config_consultoras()
+    await caso_23_slots_uniao()
+    await caso_24_escolha_por_carga()
+    await caso_25_ocupada_tenta_a_proxima()
+    await caso_26_validacao_startup()
+    print("\nOK: 26/26 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
 
 
 if __name__ == "__main__":

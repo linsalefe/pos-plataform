@@ -868,6 +868,122 @@ que o JSONB volta como `dict` consultável por `extras->>'Como conheceu'`.
 
 ---
 
+## 14. Consultoras e funil de vendas (18/08/2026)
+
+### `GET /Sellers` — só existem 4, e 3 ativos
+
+| ativo | id | nome | e-mail |
+|---|---|---|---|
+| ✅ | 415967 | Victória | `comercial@cenatcursos.com.br` |
+| ✅ | 430634 | Victória | `processoseletivo@cenatcursos.com.br` |
+| ✅ | 448892 | Marina | `executivadecarreiras@cenatcursos.com.br` |
+| ❌ | 430631 | Isabela | `isabelaoliveira+vd@cenatcursos.com.br` |
+
+Um `salesRepEmail` que não esteja ATIVO aqui faz o `BoxesAdd` responder `SDR not found.` —
+a **mesma** mensagem de um e-mail que nunca existiu. Só `GET /Sellers` separa os dois casos,
+e é por isso que a validação de startup existe.
+
+Nota que incomoda: quem trabalhou o funil de vendas historicamente foi a **Isabela**, hoje
+**inativa** — 395 dos 500 leads lidos em 18537 têm `salesRep` dela, e ainda por cima num
+domínio diferente (`@ceos.com.br`, não `@cenatcursos.com.br`).
+
+### ⛔ O `scheduleAdd` NÃO consegue colocar a reunião no funil 18537
+
+Duas tentativas, as duas recusadas, por razões diferentes e complementares.
+
+**Tentativa 1 — criar o lead direto no funil de vendas.** `LeadsAdd` com `funnelId: 18537`
+funciona, e o lead nasce em **`Agendados`**. Aí o `scheduleAdd` recusa:
+
+```
+HTTP 400: Previous stage is not exit action Scheduling
+```
+
+**Tentativa 2 — lead em 18535, pedindo etapa do 18537.** `scheduleAdd` com
+`stageName: "Em Negociação"` (que só existe no 18537):
+
+```
+HTTP 400: Stage not found
+```
+
+O `stageName` é resolvido **dentro do funil do lead**. Não é um ponteiro global.
+
+### Por que é estrutural, e não um detalhe de configuração
+
+A posição da etapa explica tudo:
+
+| funil | etapa `Agendados` | **posição** | primeira etapa |
+|---|---|---|---|
+| 18535 `Pos Graduacao` | id 133409, gate 2 | **14** (última) | `Entrada` (1) |
+| 18537 `Pós Graduação - Vendas` | id 133413, gate 2 | **1** (primeira) | — é ela mesma |
+
+O `scheduleAdd` exige que a etapa **anterior** do lead tenha "Scheduling" como ação de saída.
+No 18537 não existe etapa anterior: o portão de agendamento É a porta de entrada. Nenhum lead
+daquele funil pode ser agendado pela API, hoje ou nunca, com essa configuração.
+
+> **Conclusão:** a reunião precisa nascer no **18535**, em `Agendados` (id 133409) — que é
+> exatamente o que o módulo já faz. Levar o lead ao 18537 depois é outro mecanismo:
+> `LeadsTransfer` (existe no `$metadata`, não testado) ou automação interna do CRM. Mudar a
+> posição de `Agendados` no 18537 pela UI também resolveria, mas mexe num funil com 385 leads
+> vendidos — não é decisão de código.
+
+### ✅ `BoxesAdd` e `scheduleAdd` funcionam com qualquer seller ativo
+
+Testado com `executivadecarreiras@` (Marina), que **não** é o `comercial@` do módulo original:
+`BoxesAdd` 201, `scheduleAdd` `true`, e o lead saiu de `Entrada` para `Agendados` com
+`salesRep: executivadecarreiras@`. Não há nada de especial no `comercial@` — a troca é só
+configuração.
+
+### `$top` máximo é 500
+
+`$top=1000` devolve erro, não lista truncada:
+
+```
+The limit of '500' for Top query has been exceeded.
+```
+
+Perigoso porque o corpo do erro não tem a chave `value`: um `resp.json().get("value", [])`
+transforma o erro em **lista vazia**, e a agenda parece livre quando a consulta é que falhou.
+Foi o que aconteceu na primeira análise de agendas desta sprint — três consultoras
+"sem nenhum box" que na verdade tinham 358. `client.listar_boxes` já usa 500.
+
+### Agendas reais — janela de 90 dias (−45/+45)
+
+Separando **bloco recorrente** (`leadId: 0`, aparece 3× ou mais) de **reunião real**:
+
+| rep | boxes | reuniões reais | blocos recorrentes |
+|---|---|---|---|
+| `comercial@` (SDR) | 196 | 50 | seg–qui 09:00–10:10 · 13:30–14:30 · 15:00–15:45 · sex 08:00–09:10 · 18:00–19:00 |
+| `processoseletivo@` | 143 | **80** | seg 12:00–13:30 · seg 15:00–16:00 · **seg–sex 18:20–18:50** |
+| `executivadecarreiras@` | 19 | **0** | **seg 16:10–17:00** |
+
+`executivadecarreiras@` não tem nenhuma reunião com lead nos 90 dias — agenda praticamente
+vazia. `processoseletivo@` é quem de fato atende hoje.
+
+### E2E do retry, com recusa real da Exact
+
+`backend/test_agendamento_e2e_consultoras.py --sim-eu-quero` — 10/10. Cria um box
+**bloqueador** na agenda da primeira consultora e deixa o `BoxesAdd` bater nele de verdade,
+sem mock. O fluxo pulou para a segunda e agendou.
+
+Isso protege um acoplamento invisível: `client._ERROS` casa `Boxes are occupied` por prefixo.
+Se a Exact mudar o texto, o erro deixa de virar `SlotOcupado`, o retry nunca acontece, e o
+visitante toma 502 em vez de ser atendido pela outra consultora. Só teste real pega.
+
+### Resíduo desta rodada
+
+| Artefato | Destino |
+|---|---|
+| Leads 51438054/56/57/58/61/62, 51438172 | excluídos ✅ |
+| Boxes 43727108, 43727110, bloqueador 43727120 | removidos limpos ✅ |
+| **Box 43727109** | órfão — experimento do `scheduleAdd` com consultora ⚠️ |
+| **Box 43727121** | órfão — E2E do retry ⚠️ |
+
+**Total de órfãos acumulados: 7.** As duas tentativas recusadas (§ acima) **não** custaram
+órfão: sem reunião criada, o box sai com 204.
+
+
+---
+
 ## Apêndice — inventário de endpoints (do `$metadata`)
 
 Agenda: `Boxes` · `BoxesAdd` · `BoxesUpdate` · `BoxesRemove` · `ScheduleAdd` · `Meetings` ·

@@ -220,6 +220,20 @@ async def meeting_por_lead(lead_id: int) -> dict | None:
     return valores[0] if valores else None
 
 
+async def listar_sellers() -> list[dict]:
+    """`GET /Sellers`. Usado no startup para validar as consultoras configuradas.
+
+    Cada item tem `id`, `name`, `lastName`, `email`, `phone`, `phone2`, `active`. A base é
+    pequena (4 registros em 18/08/2026), então não pagina.
+
+    `active: false` importa: um seller desativado ainda aparece na lista, e um `BoxesAdd`
+    com o e-mail dele falha com `SDR not found` — mesma mensagem de um e-mail que nunca
+    existiu. Só esta consulta distingue os dois casos.
+    """
+    resp = await _req("GET", "/Sellers")
+    return resp.json().get("value", [])
+
+
 async def buscar_lead_por_id(lead_id: int) -> dict | None:
     """O lead de um id, ou None se não existir. Usado para validar `leadId` vindo da LP.
 

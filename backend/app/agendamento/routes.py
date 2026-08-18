@@ -33,8 +33,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import agendar as fluxo
-from app.agendamento import client, disponibilidade, extras as extras_mod, origens
-from app.agendamento.grade import grade
+from app.agendamento import client, consultoras as equipe_mod, disponibilidade
+from app.agendamento import extras as extras_mod, origens
 from app.database import get_db
 
 router = APIRouter(prefix="/api/agendamento", tags=["agendamento"])
@@ -171,11 +171,18 @@ async def listar_slots(request: Request, db: AsyncSession = Depends(get_db)):
         print(f"❌ /agendamento/slots: {type(e).__name__}: {e}")
         return {"dias": {}, "fallback": True,
                 "mensagem": "Não consegui carregar os horários agora."}
-    g = grade()
+    equipe = equipe_mod.consultoras()
+    if not dias:
+        # Sem horário nenhum a LP não tem o que mostrar. Pode ser feriado, agenda lotada, ou
+        # todas as consultoras fora de rotação pela validação de startup. `fallback:true` é o
+        # que faz o front cair no "deixe seu contato" em vez de exibir grade vazia.
+        return {"dias": {}, "fallback": True,
+                "mensagem": "Não há horários abertos no momento."}
+    # A duração é política do produto e igual para todas; leio da primeira em rotação.
     return {
         "dias": dias,
         "fallback": False,
-        "duracao_min": int(g.duracao.total_seconds() // 60),
+        "duracao_min": int(equipe[0].grade.duracao.total_seconds() // 60),
         "fuso": "America/Sao_Paulo",
     }
 
@@ -227,6 +234,9 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
         "inicio": r.slot.inicio.strftime("%Y-%m-%dT%H:%M:%S"),
         "fim": r.slot.fim.strftime("%Y-%m-%dT%H:%M:%S"),
         "fuso": "America/Sao_Paulo",
+        # Quem vai atender. O e-mail NÃO vai junto de propósito: é endpoint público, e o
+        # endereço interno da consultora não é dado do visitante.
+        "consultora_nome": r.consultora_nome,
         "aviso": "Para remarcar ou cancelar, fale com a gente pelo WhatsApp.",
     }
 

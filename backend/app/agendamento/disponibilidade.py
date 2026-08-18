@@ -21,15 +21,32 @@ DUAS SUBTRAÇÕES, E POR QUE AS DUAS
    com (1) na maior parte do tempo, e não é: o `GET /Boxes` responde a partir de um cache do
    lado da Exact que já vi atrasar alguns segundos, e é exatamente nesses segundos que dois
    visitantes simultâneos brigam pelo mesmo slot. Custa um SELECT indexado.
+
+------------------------------------------------------------------------------------------
+COM VÁRIAS CONSULTORAS, UM HORÁRIO NÃO É "LIVRE" — É "LIVRE PARA QUEM"
+------------------------------------------------------------------------------------------
+A subtração passou a ser **por consultora**: cada uma tem a própria grade e a própria agenda
+na Exact, e o `$filter` de `/Boxes` vai por `salesRepEmail`. O que a LP vê é a UNIÃO — um
+horário aparece se ao menos uma pode atendê-lo.
+
+Por isso `slots_livres` devolve `SlotDisponivel`, que carrega a lista de quem está livre
+naquele horário. Sem isso, o `/agendar` teria que refazer toda a consulta para descobrir a
+quem oferecer o slot, e faria isso com dados de até 60s atrás.
+
+Uma consulta a `/Boxes` por consultora, por chamada não-cacheada. Com duas, são 2 de 30
+req/20s — folgado. Se um dia forem dez, o cache de 60s deixa de ser conforto e vira
+necessidade.
 """
 import time as _time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import client
-from app.agendamento.grade import Slot, grade
+from app.agendamento.consultoras import Consultora, consultoras
+from app.agendamento.grade import Slot
 from app.agendamento.horarios import agora_sp, de_exact
 from app.models import PASSO_FALHOU, PASSO_INICIADO, Agendamento
 
@@ -37,7 +54,23 @@ from app.models import PASSO_FALHOU, PASSO_INICIADO, Agendamento
 # visitante que abre o obrigado.html dispara um GET /Boxes, e o rate limit da Exact
 # (30 req/20s) é do TOKEN INTEIRO — dividido com o sync_job que roda a cada 10 min.
 CACHE_SEGUNDOS = 60
-_cache: tuple[float, list[Slot]] | None = None
+_cache: "tuple[float, list[SlotDisponivel]] | None" = None
+
+
+@dataclass(frozen=True)
+class SlotDisponivel:
+    """Um horário e quem pode atendê-lo. `consultoras` nunca vem vazia.
+
+    A ordem da lista é a da configuração, NÃO a preferência de atendimento. Quem escolhe é
+    `agendar.escolher_consultora`, pela carga do dia — decidir aqui misturaria exibição com
+    distribuição, e a exibição é cacheada por 60s enquanto a carga muda a cada agendamento.
+    """
+    slot: Slot
+    consultoras: tuple[Consultora, ...]
+
+    @property
+    def id(self) -> str:
+        return self.slot.id
 
 
 def _sobrepoe(a_ini: datetime, a_fim: datetime, b_ini: datetime, b_fim: datetime) -> bool:
@@ -73,8 +106,9 @@ async def _ocupados_por_nos(db: AsyncSession, inicio: datetime,
     return [(linha[0], linha[1]) for linha in res.all()]
 
 
-async def slots_livres(db: AsyncSession, *, usar_cache: bool = True) -> list[Slot]:
-    """A grade menos o que já está ocupado. Ordenado por horário.
+async def slots_livres(db: AsyncSession, *,
+                       usar_cache: bool = True) -> list[SlotDisponivel]:
+    """União das grades menos o que está ocupado, com quem está livre em cada horário.
 
     `usar_cache=False` no caminho do POST /agendar: ali a resposta vai virar decisão, e servir
     uma leitura de até 60s atrás só aumentaria a chance de oferecer um slot morto.
@@ -84,23 +118,47 @@ async def slots_livres(db: AsyncSession, *, usar_cache: bool = True) -> list[Slo
     if usar_cache and _cache is not None and (agora - _cache[0]) < CACHE_SEGUNDOS:
         return _cache[1]
 
-    g = grade()
-    candidatos = g.slots_candidatos()
-    if not candidatos:
+    equipe = consultoras()
+    # Nossos agendamentos em voo valem para TODAS: a linha guarda o slot, e o mesmo horário
+    # não deve ser oferecido duas vezes enquanto uma tentativa está no ar. Uma consulta só.
+    horizonte = [s for c in equipe for s in c.grade.slots_candidatos()]
+    if not horizonte:
         _cache = (agora, [])
         return []
+    janela_ini = min(s.inicio for s in horizonte).replace(hour=0, minute=0, second=0)
+    janela_fim = max(s.inicio for s in horizonte) + timedelta(days=1)
+    nossos = await _ocupados_por_nos(db, janela_ini, janela_fim)
 
-    janela_ini = min(s.inicio for s in candidatos).replace(hour=0, minute=0, second=0)
-    janela_fim = max(s.inicio for s in candidatos) + timedelta(days=1)
+    # slot_inicio -> (Slot, [consultoras livres]). dict preserva a ordem de inserção, e a
+    # ordenação final é por horário de qualquer forma.
+    por_horario: dict[datetime, tuple[Slot, list[Consultora]]] = {}
 
-    ocupados = await _ocupados_na_exact(janela_ini, janela_fim, g.sales_rep_email)
-    ocupados += await _ocupados_por_nos(db, janela_ini, janela_fim)
+    for c in equipe:
+        candidatos = c.grade.slots_candidatos()
+        if not candidatos:
+            continue
+        ini = min(s.inicio for s in candidatos).replace(hour=0, minute=0, second=0)
+        fim = max(s.inicio for s in candidatos) + timedelta(days=1)
+        try:
+            ocupados = await _ocupados_na_exact(ini, fim, c.email)
+        except client.ExactErro as e:
+            # Uma consultora ilegível não pode apagar a grade das outras. Ela sai desta
+            # rodada e o log conta; o pior caso é oferecer menos horários por 60s.
+            print(f"⚠️ disponibilidade: não consegui ler a agenda de {c.email} "
+                  f"({type(e).__name__}: {e}). Fora desta rodada.")
+            continue
+        ocupados = ocupados + nossos
+        for slot in candidatos:
+            if any(_sobrepoe(slot.inicio, slot.fim, oi, of) for oi, of in ocupados):
+                continue
+            entrada = por_horario.get(slot.inicio)
+            if entrada is None:
+                por_horario[slot.inicio] = (slot, [c])
+            else:
+                entrada[1].append(c)
 
-    livres = [
-        slot for slot in candidatos
-        if not any(_sobrepoe(slot.inicio, slot.fim, oi, of) for oi, of in ocupados)
-    ]
-    livres.sort(key=lambda s: s.inicio)
+    livres = [SlotDisponivel(slot=s, consultoras=tuple(cs))
+              for s, cs in sorted(por_horario.values(), key=lambda x: x[0].inicio)]
     _cache = (agora, livres)
     return livres
 
@@ -124,7 +182,8 @@ async def resumo_por_dia(db: AsyncSession) -> dict[str, list[dict]]:
     fuso do que São Paulo com frequência maior do que se imagina.
     """
     saida: dict[str, list[dict]] = {}
-    for slot in await slots_livres(db):
+    for disp in await slots_livres(db):
+        slot = disp.slot
         dia = slot.inicio.strftime("%Y-%m-%d")
         saida.setdefault(dia, []).append({
             "id": slot.id,

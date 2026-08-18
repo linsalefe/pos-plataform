@@ -52,6 +52,25 @@ distinção, porque `lead_id` preenchido tem a mesma cara nos dois caminhos.
 O caminho SEM `lead_id` continua idêntico ao que sempre foi — a LP de Mulheridades usa ele.
 
 ------------------------------------------------------------------------------------------
+QUAL CONSULTORA ATENDE, E POR QUE O 409 FICOU MAIS RARO
+------------------------------------------------------------------------------------------
+Com mais de uma consultora, o mesmo horário pode estar livre para várias. A escolha é por
+**menor carga do dia** (`escolher_consultora`), contada na NOSSA tabela — não na Exact, que
+não distingue reunião nossa de compromisso pessoal dela.
+
+E o `Boxes are occupied` deixou de ser 409 imediato. Antes ele significava "o horário
+morreu"; agora significa "morreu PARA ESTA consultora", e o fluxo tenta a próxima da lista
+antes de desistir. Só quando todas recusam é que o visitante vê 409.
+
+Isso importa mais do que parece: `disponibilidade` é cacheada por 60s, então duas pessoas
+que abrem a página juntas veem a mesma oferta. Sem o retry, a segunda tomaria 409 mesmo
+havendo consultora livre no mesmo horário — e a LP mandaria ela escolher outro horário sem
+necessidade.
+
+O `BoxesAdd` continua sendo o lock. O que mudou é que agora existem N locks independentes,
+um por agenda, e perder um não é perder o horário.
+
+------------------------------------------------------------------------------------------
 O QUE NÃO TEM DESFAZER
 ------------------------------------------------------------------------------------------
 Depois do passo 3 não há compensação nenhuma: não existe `ScheduleRemove` na API. Remarcação
@@ -59,13 +78,14 @@ e cancelamento saem pelo WhatsApp, por decisão de produto. A consequência acei
 remarcação queima um slot da agenda para sempre.
 """
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agendamento import client, disponibilidade, extras as extras_mod, origens
-from app.agendamento.grade import Slot, grade
+from app.agendamento import client, consultoras as equipe_mod, disponibilidade
+from app.agendamento import extras as extras_mod, origens
+from app.agendamento.grade import Slot
 from app.agendamento.horarios import agora_sp
 from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_INICIADO,
                         PASSO_LEAD_CRIADO, Agendamento)
@@ -118,6 +138,8 @@ class Resultado:
     box_id: int
     slot: Slot
     meeting_id: int | None
+    consultora_email: str = ""
+    consultora_nome: str = ""
 
 
 async def _duplo_clique(db: AsyncSession, telefone: str) -> Agendamento | None:
@@ -147,6 +169,35 @@ async def _marcar(db: AsyncSession, ag: Agendamento, passo: str, *, erro: str | 
     await db.commit()
 
 
+async def escolher_consultora(db: AsyncSession, candidatas, dia) -> list:
+    """Ordena as candidatas por carga do dia, da mais livre para a mais cheia.
+
+    Devolve LISTA, não uma só: quem chama percorre na ordem quando a primeira perde a
+    corrida do `BoxesAdd`. Empate mantém a ordem da configuração, que é estável entre
+    processos — sortear aqui tornaria o comportamento irreprodutível no log.
+
+    A carga é contada na NOSSA tabela e não na Exact de propósito. A agenda da consultora tem
+    compromisso pessoal, bloco de equipe e reunião de outro funil; distribuir por ela faria a
+    LP evitar quem tem a agenda cheia por motivos que não têm nada com a landing page. O que
+    queremos equilibrar é o que NÓS mandamos.
+    """
+    if len(candidatas) <= 1:
+        return list(candidatas)
+    inicio = datetime.combine(dia, time.min)
+    fim = inicio + timedelta(days=1)
+    res = await db.execute(
+        select(Agendamento.sales_rep_email, func.count())
+        .where(Agendamento.slot_inicio >= inicio,
+               Agendamento.slot_inicio < fim,
+               Agendamento.passo.notin_([PASSO_FALHOU, PASSO_INICIADO]))
+        .group_by(Agendamento.sales_rep_email)
+    )
+    carga = {(linha[0] or "").lower(): linha[1] for linha in res.all()}
+    ordenadas = sorted(enumerate(candidatas),
+                       key=lambda par: (carga.get(par[1].email.lower(), 0), par[0]))
+    return [c for _, c in ordenadas]
+
+
 async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: str,
                   slot_id: str, origem: str | None = None, lead_id: int | None = None,
                   extras: dict[str, str] | None = None,
@@ -159,9 +210,17 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     Levanta SlotInvalido / SlotIndisponivel / LeadNaoEncontrado / AgendamentoFalhou /
     origens.OrigemInvalida.
     """
-    g = grade()
-    slot = g.slot_por_id(slot_id)
-    if slot is None:
+    # O slot é resolvido contra a UNIÃO das grades: com várias consultoras, um horário é
+    # válido se ao menos uma o oferece. Continua sendo validação de entrada — um id que não
+    # esteja em grade nenhuma é recusado antes de qualquer escrita.
+    slot = None
+    candidatas = []
+    for c in equipe_mod.consultoras():
+        achado = c.grade.slot_por_id(slot_id)
+        if achado is not None:
+            slot = achado
+            candidatas.append(c)
+    if slot is None or not candidatas:
         raise SlotInvalido(f"slot fora da grade ou vencido: {slot_id!r}")
 
     # Resolvido ANTES de qualquer escrita: uma origem inválida não pode chegar a criar box e
@@ -193,13 +252,18 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
         # clicou duas vezes vê a mesma confirmação, que é o que ele espera.
         print(f"🔁 agendamento: duplo clique de {telefone}, devolvendo #{anterior.id}")
         return Resultado(agendamento_id=anterior.id, lead_id=anterior.lead_id,
-                         box_id=anterior.box_id, slot=slot, meeting_id=anterior.meeting_id)
+                         box_id=anterior.box_id, slot=slot, meeting_id=anterior.meeting_id,
+                         consultora_email=anterior.sales_rep_email or "",
+                         consultora_nome=equipe_mod.nome_de(anterior.sales_rep_email or ""))
 
     agora = agora_sp()
     ag = Agendamento(
         nome=nome, email=email, telefone=telefone,
         slot_inicio=slot.inicio, slot_fim=slot.fim,
-        sales_rep_email=g.sales_rep_email, sub_source=sub_source,
+        # Fica com a primeira candidata e é REESCRITO quando o BoxesAdd define a
+        # vencedora. A coluna nunca é NULL, então uma tentativa que morra no passo 1 ainda
+        # diz a quem ela era destinada.
+        sales_rep_email=candidatas[0].email, sub_source=sub_source,
         lead_id=lead_id, lead_externo=lead_externo,
         # Guardado mesmo quando o lead é externo e o LeadsAdd não vai rodar: o que a pessoa
         # respondeu NESTA submissão é dado nosso, e some se depender só do CRM.
@@ -210,27 +274,50 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     db.add(ag)
     await db.commit()
 
-    # ---- passo 1: o lock ------------------------------------------------------------
-    try:
-        box_id = await client.criar_box(
-            inicio=slot.inicio, fim=slot.fim,
-            sales_rep_email=g.sales_rep_email,
-            type_meeting=g.type_meeting,
-            description=f"Agendamento LP — {nome}",
-        )
-    except client.SlotOcupado as e:
-        await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
+    # ---- passo 1: o lock, tentando cada consultora ----------------------------------
+    # `Boxes are occupied` numa consultora NÃO significa que o horário morreu — significa
+    # que morreu para ela. Só depois que todas recusarem é que o visitante vê 409.
+    ordem = await escolher_consultora(db, candidatas, slot.inicio.date())
+    box_id = None
+    consultora = None
+    ultimo_ocupado = None
+    for tentativa in ordem:
+        try:
+            box_id = await client.criar_box(
+                inicio=slot.inicio, fim=slot.fim,
+                sales_rep_email=tentativa.email,
+                type_meeting=tentativa.grade.type_meeting,
+                description=f"Agendamento LP — {nome}",
+            )
+            consultora = tentativa
+            break
+        except client.SlotOcupado as e:
+            ultimo_ocupado = e
+            print(f"↪️ agendamento #{ag.id}: {tentativa.nome_exibicao} ocupada em "
+                  f"{slot.id} — tentando a próxima")
+            continue
+        except client.ExactErro as e:
+            # Erro que não é disputa de horário (SDR not found, rede, 5xx) para o fluxo:
+            # insistir na próxima consultora só transformaria um erro de configuração em
+            # vários boxes criados por engano.
+            await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
+            print(f"❌ agendamento #{ag.id}: BoxesAdd falhou em {tentativa.email} — "
+                  f"{type(e).__name__}: {e}")
+            raise AgendamentoFalhou(str(e)) from e
+
+    if consultora is None:
+        msg = str(ultimo_ocupado) if ultimo_ocupado else "nenhuma consultora disponível"
+        await _marcar(db, ag, PASSO_FALHOU, erro=msg)
         disponibilidade.invalidar_cache()
-        print(f"⚠️ agendamento #{ag.id}: slot {slot.id} já ocupado — {e}")
-        raise SlotIndisponivel(str(e)) from e
-    except client.ExactErro as e:
-        await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
-        print(f"❌ agendamento #{ag.id}: BoxesAdd falhou — {type(e).__name__}: {e}")
-        raise AgendamentoFalhou(str(e)) from e
+        print(f"⚠️ agendamento #{ag.id}: slot {slot.id} ocupado nas "
+              f"{len(ordem)} consultora(s) — {msg}")
+        raise SlotIndisponivel(msg) from ultimo_ocupado
 
     ag.box_id = box_id
+    ag.sales_rep_email = consultora.email
     await _marcar(db, ag, PASSO_BOX_CRIADO)
-    print(f"📦 agendamento #{ag.id}: box {box_id} criado para {slot.id}")
+    print(f"📦 agendamento #{ag.id}: box {box_id} criado para {slot.id} "
+          f"com {consultora.nome_exibicao} <{consultora.email}>")
 
     # ---- passo 2: o lead ------------------------------------------------------------
     # Com lead externo não há chamada nenhuma aqui: o lead já foi verificado lá em cima, e
@@ -267,7 +354,7 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     try:
         await client.agendar_reuniao(
             box_id=box_id, lead_id=lead_id,
-            stage_name=STAGE_AGENDADOS, sales_rep_email=g.sales_rep_email,
+            stage_name=STAGE_AGENDADOS, sales_rep_email=consultora.email,
         )
     except client.ExactErro as e:
         # O box sai; o LEAD FICA em Entrada, com telefone e origem. Ver cabeçalho.
@@ -286,7 +373,7 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     await _marcar(db, ag, PASSO_AGENDADO)
     disponibilidade.invalidar_cache()
     print(f"✅ agendamento #{ag.id}: lead {lead_id} agendado em {slot.id} "
-          f"(box {box_id}, {g.sales_rep_email})")
+          f"(box {box_id}, {consultora.nome_exibicao} <{consultora.email}>)")
 
     # O id da reunião é best-effort: o scheduleAdd devolve booleano (FINDINGS §4) e falhar
     # aqui não desfaz nada — a reunião existe.
@@ -300,7 +387,9 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
         print(f"⚠️ agendamento #{ag.id}: agendado, mas não consegui o meeting_id — {e}")
 
     return Resultado(agendamento_id=ag.id, lead_id=lead_id, box_id=box_id,
-                     slot=slot, meeting_id=ag.meeting_id)
+                     slot=slot, meeting_id=ag.meeting_id,
+                     consultora_email=consultora.email,
+                     consultora_nome=consultora.nome_exibicao)
 
 
 async def _compensar_box(db: AsyncSession, ag: Agendamento, *, motivo: str) -> None:
@@ -336,7 +425,10 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
     ag = Agendamento(
         nome=nome, email=email, telefone=telefone,
         slot_inicio=agora, slot_fim=agora,  # sem slot; as colunas são NOT NULL
-        sales_rep_email=grade().sales_rep_email, sub_source=sub_source,
+        # Não há consultora escolhida: este caminho não cria box nem reunião. A coluna é
+        # NOT NULL, então fica a primeira em rotação, e `passo` nunca chega a `agendado` —
+        # é o que distingue esta linha de um agendamento de verdade num relatório.
+        sales_rep_email=equipe_mod.consultoras()[0].email, sub_source=sub_source,
         extras=extras or None,
         passo=PASSO_INICIADO, origem_ip=origem_ip,
         created_at=agora, updated_at=agora,
