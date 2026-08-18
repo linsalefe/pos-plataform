@@ -33,6 +33,13 @@ Permite que a equipe comercial gerencie leads, responda conversas em tempo real,
 23. [Solução de Problemas](#-solução-de-problemas)
 24. [Licença](#-licença)
 
+### Documentação por módulo
+
+| doc | o que cobre |
+|---|---|
+| **[docs/AGENDAMENTO.md](docs/AGENDAMENTO.md)** | **Agendamento pela landing page → Exact Spotter**: visão geral, decisões de arquitetura e porquês, runbook (adicionar LP, mudar grade, faxina, troubleshooting), referência de endpoints/envs/tabela e estado atual |
+| [AGENDAMENTO_FINDINGS.md](AGENDAMENTO_FINDINGS.md) | as medições contra a API real da Exact que sustentam o módulo acima (§1–17) |
+
 ---
 
 ## 🔍 Visão Geral
