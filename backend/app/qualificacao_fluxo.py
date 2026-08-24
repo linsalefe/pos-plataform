@@ -50,9 +50,11 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         ETAPA_Q_AGUARDANDO_FORMACAO, ETAPA_Q_AGUARDANDO_MOTIVACAO,
                         ETAPA_Q_CONCLUIDO, ETAPA_Q_ESCOLHENDO_SLOT, ETAPA_Q_OFERTANDO_AGENDA,
                         ETAPA_Q_TRANSFERIDO, ETAPAS_QUALIFICACAO_ATIVAS,
-                        KIND_LEMBRETE_REUNIAO, Agendamento, Contact, Message, Notification,
-                        NatQualificacaoState, PASSO_AGENDADO)
-from app.nat_guard import GESTOR_USER_ID, _agora_sp
+                        ETAPA_Q_ENCERRADO, KIND_ENCERRAR_INATIVO, KIND_LEMBRETE_REUNIAO,
+                        Agendamento, Contact, Message, Notification, NatQualificacaoState,
+                        PASSO_AGENDADO)
+from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
+                           proximo_horario_util)
 from app.nat_scheduler import registrar_handler
 from app.nat_sender import send_nat_message
 from app.nomes import primeiro_nome
@@ -63,6 +65,19 @@ MAX_HISTORICO = 10
 
 # Quanto antes da reunião o lembrete sai.
 ANTECEDENCIA_LEMBRETE = timedelta(minutes=30)
+
+# Silêncio do lead que encerra a qualificação. Constante nomeada porque é número de produto,
+# não de engenharia: mudar a régua é mudar esta linha.
+#
+# 72h e não 24h: o lead é abordado logo depois de se candidatar, e "não respondeu no mesmo
+# dia" é rotina — muita gente aplica de madrugada e volta no fim de semana. Encerrar cedo
+# demais joga fora quem só demorou a ver o WhatsApp.
+INATIVIDADE_ENCERRA = timedelta(hours=72)
+MOTIVO_INATIVIDADE = "inatividade"
+
+# O mesmo valor do decorator abaixo. Nomeado porque o handler reagenda a si mesmo quando
+# acorda fora do horário comercial, e uma string solta em dois lugares diverge.
+KIND_INICIAR_QUALIFICACAO_STR = "iniciar_qualificacao"
 
 TIPO_NOTIF_AGENTE = "agente_transferiu"
 
@@ -350,6 +365,22 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
     lead_id = payload.get("lead_id")
     origem = payload.get("origem") or ORIGEM_LP
 
+    # HORÁRIO COMERCIAL (09h00–18h30, seg-sex). Só a ABERTURA respeita — ela é
+    # business-initiated, e é a única mensagem que a pessoa não pediu.
+    #
+    # Fora da janela EMPURRA, não recusa: recusar deixaria sem abertura para sempre o lead
+    # que se candidatou às 22h — e 22h é uma das horas de maior movimento da LP (8 dos 81
+    # formulários medidos). Reagendar não consome tentativa: a ação atual termina
+    # `executado` e uma nova nasce pendente, pelo mesmo `agendar` que o sla_check usa.
+    agora = acao.get("agora") or _agora_sp()
+    if not dentro_horario_comercial(agora):
+        from app.nat_scheduler import agendar as agendar_acao
+        quando = proximo_horario_util(agora)
+        await agendar_acao(KIND_INICIAR_QUALIFICACAO_STR, wa_id, quando, payload, db)
+        print(f"🌙 Agente: abertura de {wa_id} fora do horário ({agora:%H:%M}) — "
+              f"empurrada para {quando:%d/%m %H:%M}")
+        return
+
     if await estado_de(wa_id, db) is not None:
         print(f"↩️  Agente: {wa_id} já tem estado — abertura ignorada")
         return
@@ -415,6 +446,9 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
         await db.delete(estado)
         return
 
+    # Arma o relógio da inatividade já na abertura. Sem isto, quem NUNCA responde nunca
+    # encerraria — e é justamente esse lead que a régua de follow-up quer receber.
+    await _agendar_encerramento(estado, db)
     print(f"🚀 Agente abriu com {wa_id}: {etapa_msg} → {estado.etapa}")
 
 
@@ -460,6 +494,11 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
 
     estado.ultimo_wa_message_id = wa_message_id
     await db.flush()
+
+    # O relógio da inatividade reinicia a cada mensagem DELA. `agendar` cancela o pendente
+    # anterior antes de inserir, então isto reagenda em vez de acumular — e o índice único
+    # parcial do banco é a rede da mesma regra.
+    await _agendar_encerramento(estado, db)
 
     etapa = estado.etapa
     com_slots = etapa in (ETAPA_Q_OFERTANDO_AGENDA, ETAPA_Q_ESCOLHENDO_SLOT)
@@ -674,3 +713,61 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     await send_nat_message(wa_id, guard.ETAPA_LEMBRETE_REUNIAO, db,
                            guard=guard.guard_de_abertura,
                            parametros=parametros, corpo_livre=corpo)
+
+
+# ==========================================================================================
+# ITEM 3 — ENCERRAMENTO POR INATIVIDADE
+# ==========================================================================================
+#
+# `ETAPA_Q_ENCERRADO` existia no CHECK e nas constantes e NENHUM código a atribuía — o mesmo
+# defeito que o ESTADO_NAT_20260809 apontou no fluxo velho, onde `sem_contato` e `encerrado`
+# eram constantes mortas. Aqui ela ganha um caminho.
+#
+# O QUE MUDA QUANDO UM LEAD É ENCERRADO
+#   * `encerrado` está FORA de ETAPAS_QUALIFICACAO_ATIVAS: o agente deixa de ser dono do
+#     inbound (precedência do webhook) e deixa de poder enviar (qualificacao_pode_atuar);
+#   * se o lead responder DEPOIS, `processar_texto` devolve False e a mensagem segue para o
+#     caminho de sempre — o fluxo humano. O agente NÃO reabre a conversa sozinho: ele já
+#     desistiu uma vez, e reabrir com base numa resposta tardia faria a pessoa receber uma
+#     pergunta de três dias atrás como se nada tivesse acontecido;
+#   * o lead vira candidato limpo à régua de follow-up, quando ela existir.
+
+
+async def _agendar_encerramento(estado: NatQualificacaoState, db: AsyncSession) -> None:
+    """(Re)agenda o encerramento por inatividade. Nunca levanta — é higiene, não fluxo."""
+    try:
+        from app.nat_scheduler import agendar as agendar_acao
+        await agendar_acao(KIND_ENCERRAR_INATIVO, estado.contact_wa_id,
+                           _agora_sp() + INATIVIDADE_ENCERRA, {}, db)
+    except Exception as e:
+        print(f"⚠️  Agente: encerramento não agendado para {estado.contact_wa_id} "
+              f"({type(e).__name__}: {e})")
+
+
+@registrar_handler("encerrar_inativo")
+async def encerrar_inativo(acao: dict, db: AsyncSession) -> None:
+    """72h de silêncio numa etapa ativa → `encerrado`.
+
+    RELÊ o estado, nunca confia no payload: entre agendar e executar passam três dias, e
+    nesse intervalo o lead pode ter respondido (o que reagenda esta ação), sido transferido,
+    ou concluído com reunião marcada.
+
+    Saída silenciosa e bem-sucedida quando não há o que fazer — mesmo espírito das três
+    saídas de `nat_recuperacao`. NÃO envia mensagem nenhuma ao lead: quem parou de responder
+    não precisa de um aviso de que parou.
+    """
+    wa_id = acao["contact_wa_id"]
+    estado = await estado_de(wa_id, db)
+    if estado is None:
+        print(f"↩️  Encerramento: {wa_id} não tem estado — nada a fazer")
+        return
+    if estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
+        print(f"↩️  Encerramento: {wa_id} já está em '{estado.etapa}' — nada a fazer")
+        return
+
+    estado.etapa = ETAPA_Q_ENCERRADO
+    estado.encerrado_em = _agora_sp()
+    estado.encerrado_motivo = MOTIVO_INATIVIDADE
+    await db.flush()
+    print(f"🌑 Agente encerrou {wa_id} por inatividade "
+          f"({INATIVIDADE_ENCERRA.total_seconds() / 3600:.0f}h sem resposta)")

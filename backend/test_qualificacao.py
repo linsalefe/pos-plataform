@@ -420,6 +420,100 @@ checa("guard do agente NÃO olha nat_enabled (fluxos independentes)",
 
 
 # ==========================================================================================
+print("\n9) Horário comercial (09h00–18h30) — só a ABERTURA respeita")
+
+from datetime import datetime as _dt  # noqa: E402
+from app.nat_guard import dentro_horario_comercial, proximo_horario_util  # noqa: E402
+
+SEG, SEX, SAB = (2026, 8, 24), (2026, 8, 28), (2026, 8, 29)
+for rot, quando, esperado in [
+    ("seg 08:59 fora", _dt(*SEG, 8, 59), False),
+    ("seg 09:00 dentro", _dt(*SEG, 9, 0), True),
+    ("seg 18:29 dentro", _dt(*SEG, 18, 29), True),
+    ("seg 18:30 FORA (exclusive)", _dt(*SEG, 18, 30), False),
+    ("seg 22:00 fora — hora de pico da LP", _dt(*SEG, 22, 0), False),
+    ("sáb 14:00 fora", _dt(*SAB, 14, 0), False),
+]:
+    checa(rot, dentro_horario_comercial(quando), esperado)
+
+for rot, quando, esperado in [
+    ("madrugada de terça -> 09h do MESMO dia", _dt(2026, 8, 25, 2, 0), _dt(2026, 8, 25, 9, 0)),
+    ("seg 22h -> terça 09h", _dt(*SEG, 22, 0), _dt(2026, 8, 25, 9, 0)),
+    ("sexta 19h -> SEGUNDA 09h", _dt(*SEX, 19, 0), _dt(2026, 8, 31, 9, 0)),
+    ("sábado -> segunda 09h", _dt(*SAB, 14, 0), _dt(2026, 8, 31, 9, 0)),
+    ("dentro da janela devolve o próprio instante", _dt(*SEG, 10, 0), _dt(*SEG, 10, 0)),
+]:
+    checa(rot, proximo_horario_util(quando), esperado)
+
+
+async def abre_em(agora):
+    """iniciar_qualificacao com o relógio do ciclo controlado."""
+    with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=None)), \
+         patch("app.nat_scheduler.agendar", new=AsyncMock()) as reagenda, \
+         patch.object(fluxo.guard, "qualificacao_pode_iniciar",
+                      new=AsyncMock(return_value=(True, "ok"))) as admissao:
+        await fluxo.iniciar_qualificacao(
+            {"contact_wa_id": "5583999998888", "agora": agora,
+             "payload": json.dumps({"lead_id": 1, "origem": ORIGEM_LP})}, _db())
+    return reagenda, admissao
+
+
+r, adm = asyncio.run(abre_em(_dt(*SEG, 2, 0)))
+checa("abertura às 02h NÃO chega à admissão", adm.await_count, 0)
+checa("  e é empurrada para as 09h", r.await_args.args[2], _dt(*SEG, 9, 0))
+checa("  pelo mesmo kind", r.await_args.args[0], "iniciar_qualificacao")
+
+r, adm = asyncio.run(abre_em(_dt(*SEX, 19, 0)))
+checa("sexta 19h -> segunda 09h", r.await_args.args[2], _dt(2026, 8, 31, 9, 0))
+
+r, adm = asyncio.run(abre_em(_dt(*SEG, 10, 0)))
+checa("dentro da janela NÃO reagenda", r.await_count, 0)
+checa("  e segue para a admissão", adm.await_count, 1)
+
+
+# ==========================================================================================
+print("\n10) Encerramento por inatividade — ETAPA_Q_ENCERRADO deixa de ser constante morta")
+
+from app.models import ETAPA_Q_ENCERRADO  # noqa: E402
+
+checa("72h é a régua", fluxo.INATIVIDADE_ENCERRA, timedelta(hours=72))
+checa("encerrado NÃO é etapa ativa", ETAPA_Q_ENCERRADO in ETAPAS_QUALIFICACAO_ATIVAS, False)
+
+
+async def encerra(estado):
+    with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=estado)):
+        await fluxo.encerrar_inativo({"contact_wa_id": "5583999998888"}, _db())
+    return estado
+
+
+e = asyncio.run(encerra(_estado(ETAPA_Q_AGUARDANDO_ANO)))
+checa("etapa ativa + 72h -> encerrado", e.etapa, ETAPA_Q_ENCERRADO)
+checa("  com motivo", e.encerrado_motivo, fluxo.MOTIVO_INATIVIDADE)
+checa("  e carimbo de quando", e.encerrado_em is not None, True)
+
+e = asyncio.run(encerra(_estado(ETAPA_Q_CONCLUIDO)))
+checa("já concluído NÃO é encerrado", e.etapa, ETAPA_Q_CONCLUIDO)
+
+e = asyncio.run(encerra(_estado(ETAPA_Q_TRANSFERIDO)))
+checa("já transferido NÃO é encerrado", e.etapa, ETAPA_Q_TRANSFERIDO)
+
+with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=None)):
+    asyncio.run(fluxo.encerrar_inativo({"contact_wa_id": "5583999998888"}, _db()))
+checa("sem estado: sai em silêncio, sem levantar", True, True)
+
+# resposta do lead REAGENDA o encerramento
+e = asyncio.run(encerra(_estado(ETAPA_Q_AGUARDANDO_ANO)))  # já encerrado
+_, envio, ia, _ = asyncio.run(roda(e, _resp(), wa_id="wamid.POS"))
+checa("resposta DEPOIS de encerrado não reabre (LLM não é chamado)", ia.await_count, 0)
+checa("  e nada é enviado", envio.await_count, 0)
+
+e2 = _estado(ETAPA_Q_AGUARDANDO_ANO)
+with patch.object(fluxo, "_agendar_encerramento", new=AsyncMock()) as rearma:
+    asyncio.run(roda(e2, _resp(extraido={"ano_conclusao": "2019"}), wa_id="wamid.VIVO"))
+checa("resposta em etapa ativa REARMA o relógio", rearma.await_count, 1)
+
+
+# ==========================================================================================
 print("\n" + "=" * 78)
 if falhas:
     print(f"❌ {len(falhas)} teste(s) falharam:")

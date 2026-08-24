@@ -25,7 +25,7 @@ As 5 verificações, nesta ordem:
   4. assigned_to do contato está em (4, 5)?
   5. Teto de max_envios_hora não estourado na última hora?
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as _time, timedelta, timezone
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,12 +99,27 @@ def _agora_sp() -> datetime:
 # agora vs. enfileira em aguardando_horario), enquanto nat_pode_atuar decide se pode ou não
 # haver ação. Fundi-las faria "fora do horário" virar bloqueio, e o lead que chega 20h seria
 # descartado em vez de enfileirado para as 09h.
-HORA_ABERTURA = 9    # 09:00 inclusive
-HORA_FECHAMENTO = 19  # 19:00 exclusive — às 19:00 em ponto já está fechado
+# Janela ÚNICA para os dois fluxos, decidida pelo coordenador em 24/08: 09h00–18h30.
+#
+# Era 09h–19h. Mudou junto com a decisão de aplicar horário comercial ao AGENTE, que até
+# então não olhava relógio nenhum — e 22h é uma das horas de maior movimento da LP (8 dos 81
+# formulários), então sem esta trava o lead recebia WhatsApp à noite.
+#
+# Um relógio só, de propósito: dois fluxos com janelas diferentes no mesmo número seriam
+# indistinguíveis para quem recebe.
+#
+# São `time` e não inteiros porque 18h30 não cabe numa comparação de `.hour`.
+ABERTURA = _time(9, 0)     # inclusive
+FECHAMENTO = _time(18, 30)  # EXCLUSIVE — às 18:30 em ponto já está fechado
+
+# Mantidos por compatibilidade com quem importa os nomes antigos. Não usar em código novo:
+# eles perdem os minutos, que é justamente o que a janela nova tem.
+HORA_ABERTURA = ABERTURA.hour
+HORA_FECHAMENTO = FECHAMENTO.hour
 
 
 def dentro_horario_comercial(quando: datetime | None = None) -> bool:
-    """09h–19h no fuso de São Paulo, segunda a sexta. Sem `quando`, usa agora.
+    """09h00–18h30 no fuso de São Paulo, segunda a sexta. Sem `quando`, usa agora.
 
     `quando` explícito é o que torna a função testável sem mock de relógio.
 
@@ -127,7 +142,40 @@ def dentro_horario_comercial(quando: datetime | None = None) -> bool:
     if momento.weekday() >= 5:
         return False
 
-    return HORA_ABERTURA <= momento.hour < HORA_FECHAMENTO
+    return ABERTURA <= momento.time() < FECHAMENTO
+
+
+def proximo_horario_util(quando: datetime | None = None) -> datetime:
+    """O próximo instante DENTRO da janela, naive em SP. Dentro da janela, devolve `quando`.
+
+    É o que um handler chama quando acorda fora do horário: em vez de recusar (e o lead
+    ficar sem abertura para sempre) ou enviar (e o lead receber WhatsApp às 2h), ele empurra
+    a ação para as 09h00 do próximo dia útil.
+
+    Sexta 19h → segunda 09h. Sábado → segunda. 02h de terça → 09h da MESMA terça: madrugada
+    é fora da janela mas o dia ainda serve.
+
+    Naive em SP porque é isso que `nat_scheduled_actions.run_at` guarda.
+
+    LIMITAÇÃO HERDADA: feriado não é tratado, igual a `dentro_horario_comercial`. Em feriado
+    nacional a ação dispara como se fosse dia útil.
+    """
+    momento = quando if quando is not None else _agora_sp()
+    if momento.tzinfo is not None:
+        momento = momento.astimezone(SP_TZ).replace(tzinfo=None)
+    if dentro_horario_comercial(momento):
+        return momento
+    # Ainda hoje, antes de abrir, e num dia útil? Basta esperar a abertura.
+    if momento.weekday() < 5 and momento.time() < ABERTURA:
+        return momento.replace(hour=ABERTURA.hour, minute=ABERTURA.minute,
+                               second=0, microsecond=0)
+    # Senão, o próximo dia útil às 09h00.
+    dia = momento
+    while True:
+        dia = dia + timedelta(days=1)
+        if dia.weekday() < 5:
+            return dia.replace(hour=ABERTURA.hour, minute=ABERTURA.minute,
+                               second=0, microsecond=0)
 
 
 async def contar_envios_nat_ultima_hora(db: AsyncSession) -> int:

@@ -105,7 +105,10 @@ def _evento(payload, wa_message_id="wamid.CLIQUE", texto="Sim, posso agora"):
 async def caso_1_horario_bordas():
     assert dentro_horario_comercial(_sp(SEGUNDA, 8, 59)) is False, "08h59 devia estar FORA"
     assert dentro_horario_comercial(_sp(SEGUNDA, 9, 0)) is True, "09h00 devia estar DENTRO"
-    assert dentro_horario_comercial(_sp(SEGUNDA, 18, 59)) is True, "18h59 devia estar DENTRO"
+    # Janela mudou para 09h00-18h30 em 24/08, por decisão do coordenador, junto com a
+    # aplicação de horário comercial ao AGENTE. Um relógio só para os dois fluxos.
+    assert dentro_horario_comercial(_sp(SEGUNDA, 18, 29)) is True, "18h29 devia estar DENTRO"
+    assert dentro_horario_comercial(_sp(SEGUNDA, 18, 30)) is False, "18h30 devia estar FORA"
     assert dentro_horario_comercial(_sp(SEGUNDA, 19, 0)) is False, "19h00 devia estar FORA"
     print("  1. 08h59 fora | 09h00 dentro | 18h59 dentro | 19h00 fora")
 
@@ -126,7 +129,7 @@ async def caso_2_fim_de_semana():
         "as datas fixas do teste sairam do lugar"
     assert dentro_horario_comercial(_sp(SABADO, 14, 0)) is False, "sabado 14h devia estar FORA"
     assert dentro_horario_comercial(_sp(DOMINGO, 10, 0)) is False, "domingo 10h devia estar FORA"
-    assert dentro_horario_comercial(_sp(SEXTA, 18, 59)) is True, "sexta 18h59 devia estar DENTRO"
+    assert dentro_horario_comercial(_sp(SEXTA, 18, 29)) is True, "sexta 18h29 devia estar DENTRO"
     assert dentro_horario_comercial(_sp(SEGUNDA, 9, 0)) is True, "segunda 09h devia estar DENTRO"
     print("  2. sab 14h fora | dom 10h fora | sex 18h59 dentro | seg 09h00 dentro")
 
