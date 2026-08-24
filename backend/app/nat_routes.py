@@ -403,7 +403,10 @@ async def marcar_sem_contato(wa_id: str, db: AsyncSession = Depends(get_db),
 # Uma string ISO sem fuso é recusada com 400, porque não há resposta certa para ela.
 # ---------------------------------------------------------------------------------------
 
-CAMPOS_CONFIG = {"nat_enabled", "nat_start_at", "max_envios_hora"}
+CAMPOS_CONFIG = {"nat_enabled", "nat_start_at", "max_envios_hora",
+                 # Eixos do AGENTE de pré-qualificação. Mesmo endpoint, mesma
+                 # auditoria — travas SEPARADAS: ligar um não liga o outro.
+                 "qualificacao_enabled", "qualificacao_start_at"}
 
 
 async def _config_singleton(db: AsyncSession) -> NatConfig:
@@ -453,11 +456,22 @@ def _serializar_config(cfg: NatConfig) -> dict:
     corte = cfg.nat_start_at
     corte_sp = (corte.replace(tzinfo=timezone.utc).astimezone(SP_TZ).replace(tzinfo=None)
                 if corte else None)
+    corte_q = cfg.qualificacao_start_at
+    corte_q_sp = (corte_q.replace(tzinfo=timezone.utc).astimezone(SP_TZ).replace(tzinfo=None)
+                  if corte_q else None)
     return {
         "nat_enabled": cfg.nat_enabled,
         "nat_start_at": corte.isoformat() if corte else None,
         "nat_start_at_sp": corte_sp.isoformat() if corte_sp else None,
         "max_envios_hora": cfg.max_envios_hora,
+        # --- agente de pré-qualificação, com o mesmo par corte-UTC/corte-SP ---
+        "qualificacao_enabled": cfg.qualificacao_enabled,
+        "qualificacao_start_at": (cfg.qualificacao_start_at.isoformat()
+                                  if cfg.qualificacao_start_at else None),
+        "qualificacao_start_at_sp": (corte_q_sp.isoformat() if corte_q_sp else None),
+        # Mesma regra do `atuando` de baixo, para o outro fluxo.
+        "qualificacao_atuando": bool(cfg.qualificacao_enabled
+                                     and cfg.qualificacao_start_at is not None),
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
         # A NAT só atua com os DOIS eixos ligados. Um `nat_enabled=true` com corte nulo
         # parece ligado na tela e não envia nada — a resposta diz o que vale de fato.
@@ -510,8 +524,13 @@ async def patch_nat_config(req: dict, db: AsyncSession = Depends(get_db),
         if isinstance(teto, bool) or not isinstance(teto, int) or teto < 0:
             raise HTTPException(422, "max_envios_hora deve ser um inteiro >= 0.")
 
+    if "qualificacao_enabled" in req and not isinstance(req["qualificacao_enabled"], bool):
+        raise HTTPException(422, "qualificacao_enabled deve ser true ou false.")
+
     novo_corte = (_para_utc_naive(req["nat_start_at"], "nat_start_at")
                   if "nat_start_at" in req else cfg.nat_start_at)
+    novo_corte_q = (_para_utc_naive(req["qualificacao_start_at"], "qualificacao_start_at")
+                    if "qualificacao_start_at" in req else cfg.qualificacao_start_at)
 
     vai_ligar = req.get("nat_enabled", cfg.nat_enabled)
     if vai_ligar and novo_corte is None:
@@ -521,6 +540,17 @@ async def patch_nat_config(req: dict, db: AsyncSession = Depends(get_db),
             "todos os leads e a NAT fica ligada sem atuar. Mande os dois juntos: "
             '{"nat_enabled": true, "nat_start_at": "agora"}.')
 
+    # Mesma regra do eixo de cima, para o agente: ligar sem corte é o pior desfecho —
+    # painel diz LIGADO e a admissão recusa 100% dos leads em "corte de data ausente".
+    vai_ligar_q = req.get("qualificacao_enabled", cfg.qualificacao_enabled)
+    if vai_ligar_q and novo_corte_q is None:
+        raise HTTPException(
+            422,
+            "Para LIGAR o agente de pré-qualificação é preciso um qualificacao_start_at. "
+            "Sem corte de data a admissão bloqueia todos os leads e o agente fica ligado sem "
+            'atuar. Mande os dois juntos: {"qualificacao_enabled": true, '
+            '"qualificacao_start_at": "agora"}.')
+
     # --- escrita ---
     if "nat_enabled" in req:
         cfg.nat_enabled = req["nat_enabled"]
@@ -528,6 +558,10 @@ async def patch_nat_config(req: dict, db: AsyncSession = Depends(get_db),
         cfg.nat_start_at = novo_corte
     if "max_envios_hora" in req:
         cfg.max_envios_hora = req["max_envios_hora"]
+    if "qualificacao_enabled" in req:
+        cfg.qualificacao_enabled = req["qualificacao_enabled"]
+    if "qualificacao_start_at" in req:
+        cfg.qualificacao_start_at = novo_corte_q
 
     await db.commit()
     await db.refresh(cfg)
@@ -542,6 +576,7 @@ async def patch_nat_config(req: dict, db: AsyncSession = Depends(get_db),
           f"{_agora_sp():%d/%m/%Y %H:%M:%S} (SP): "
           + (", ".join(f"{k}: {v[0]!r} → {v[1]!r}" for k, v in mudancas.items())
              or "nenhum valor mudou")
-          + f" | atuando={depois['atuando']}")
+          + f" | atuando={depois['atuando']}"
+          + f" | qualificacao_atuando={depois['qualificacao_atuando']}")
 
     return depois

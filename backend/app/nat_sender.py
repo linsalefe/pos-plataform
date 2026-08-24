@@ -67,7 +67,9 @@ async def _resolver_canal(contact: Contact, db: AsyncSession):
     return ch.scalar_one_or_none()
 
 
-async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, **vars) -> bool:
+async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, *,
+                           guard=None, corpo_livre: str | None = None,
+                           parametros: list | None = None, **vars) -> bool:
     """Envia a mensagem da NAT correspondente a `etapa`. True se saiu, False se não.
 
     `etapa` é a chave da mensagem em nat_copy (= nome do template que a respalda):
@@ -79,7 +81,31 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, **v
       janela ABERTA  -> texto livre (com botões interactive, se a etapa tiver botões)
       janela FECHADA -> template aprovado (com button_payloads, se tiver botões)
 
-    Nunca envia sem nat_pode_atuar liberar. Falha fechada: qualquer erro devolve False.
+    Falha fechada: qualquer erro devolve False.
+
+    --------------------------------------------------------------------------------------
+    OS TRÊS PARÂMETROS DO AGENTE DE PRÉ-QUALIFICAÇÃO
+    --------------------------------------------------------------------------------------
+    Os três são keyword-only e nascem em None: sem eles, esta função se comporta EXATAMENTE
+    como antes, e os chamadores do fluxo de botões não mudaram uma linha.
+
+    `guard` — a trava a consultar, no lugar de nat_pode_atuar. Mesmo ponto de injeção que
+    nat_pode_atuar já oferece para `contar_envios` (nat_guard.py:194). Existe porque
+    nat_pode_atuar checa `nat_enabled`, funil 18535 e assigned_to ∈ {4,5}: reusá-la no agente
+    faria ligar o agente exigir ligar o fluxo de botões junto, e barraria os leads da LP que
+    já migraram de funil. Cada fluxo traz a sua trava; nenhum envia sem uma.
+
+    `corpo_livre` — o texto EXATO a enviar quando a janela está aberta. É como a fala gerada
+    pelo LLM entra aqui sem passar por nat_copy, que só conhece os corpos fixos do fluxo
+    velho. Com a janela FECHADA ele não é enviado (só template aprovado passa) e serve
+    apenas de conteúdo da Message local.
+
+    `parametros` — as variáveis do template, quando a janela está fechada, para templates que
+    nat_copy não conhece (nat_abertura_*, nat_lembrete_reuniao).
+
+    O que NÃO muda com eles: o marcador `messages.nat_etapa` continua sendo gravado aqui, e
+    continua sendo o único lugar. É o que permite ao teto por hora de cada fluxo contar os
+    SEUS envios filtrando por nome de etapa.
     """
     def recusa(motivo: str) -> bool:
         print(f"🔒 NAT não enviou ({etapa} → {contact_wa_id}): {motivo}")
@@ -91,8 +117,9 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, **v
         if contact is None:
             return recusa("contato não existe no banco")
 
-        # TRAVA CENTRAL — antes de qualquer coisa que custe rede.
-        pode, motivo = await nat_pode_atuar(contact, db)
+        # TRAVA CENTRAL — antes de qualquer coisa que custe rede. Injetável, mas NUNCA
+        # ausente: `guard or nat_pode_atuar` garante que não existe caminho sem trava.
+        pode, motivo = await (guard or nat_pode_atuar)(contact, db)
         if not pode:
             return recusa(motivo)
 
@@ -111,7 +138,8 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, **v
         aberta = await janela_aberta(contact_wa_id, db)
 
         if aberta:
-            corpo = nat_copy.texto_livre(etapa, nome=nome, curso=curso, formacao=formacao)
+            corpo = corpo_livre or nat_copy.texto_livre(
+                etapa, nome=nome, curso=curso, formacao=formacao)
             if not corpo:
                 return recusa(f"sem texto para a etapa '{etapa}'")
             if botoes:
@@ -125,15 +153,20 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, **v
                     phone_number_id=canal.phone_number_id, token=canal.whatsapp_token)
                 tipo_msg = "text"
         else:
-            parametros = nat_copy.parametros_template(
-                etapa, nome=nome, curso=curso, formacao=formacao)
+            if parametros is None:
+                parametros = nat_copy.parametros_template(
+                    etapa, nome=nome, curso=curso, formacao=formacao)
             if parametros is None:
                 # Hoje só nat_sim sem formação cai aqui. Ver nat_copy.parametros_template:
                 # preferimos não enviar a afirmar algo sobre a formação do lead sem saber.
                 return recusa(
                     f"template '{etapa}' não pode ser montado sem inventar dado do lead "
                     "(formação ausente e janela de 24h fechada)")
-            corpo = nat_copy.texto_livre(etapa, nome=nome, curso=curso, formacao=formacao)
+            # Só para a Message local — o que SAI é o template aprovado. Um template
+            # que nat_copy não conhece (os do agente) vem com o texto já renderizado em
+            # `corpo_livre`; sem ele a conversa ficaria com um balão vazio na tela do SDR.
+            corpo = corpo_livre or nat_copy.texto_livre(
+                etapa, nome=nome, curso=curso, formacao=formacao) or f"[{etapa}]"
             resultado = await send_template_message(
                 to=contact_wa_id, template_name=etapa, language=nat_copy.IDIOMA,
                 phone_number_id=canal.phone_number_id, token=canal.whatsapp_token,
