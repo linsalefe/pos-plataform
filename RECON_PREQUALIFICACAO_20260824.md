@@ -435,7 +435,7 @@ Ambas precisam de equivalente explícito no agente novo. **Nenhuma delas nasce d
 |---|---|---|
 | `failed` bloqueia reenvio para sempre | `exact_spotter.py:186` | **128 leads** `failed` hoje, mais 195 presos em `sent`. Só saem pelo `POST /reenviar` com `force=True`, um a um |
 | `delivery_health` com `MAX_FALHAS_PARA_VOLTAR = 0` | `delivery_health.py:139` | Uma falha na janela de 60 min e o alerta nunca anuncia recuperação |
-| Docstring de `nat_guard.py:6-7` afirma o oposto do código | — | Continua mentindo: diz que `nat_pode_atuar` não está plugada; está, em `nat_flow.py:306` e `nat_sender.py:94` |
+| Docstring de `nat_guard.py` com referências de linha erradas | `nat_guard.py:6-8` | **Corrigido em 24/08.** A afirmação "não está plugada" já tinha caído em 11/08 (commit `39ac2cf`) — este RECON a reportou como aberta por erro. O que restava era `nat_flow.py:340`, linha que nunca teve a chamada (é 481) |
 | Sem calendário de feriados | `nat_guard.py:200` | Em feriado o horário comercial passa e o agente dispara |
 | `whatsapp_templates` com 1 linha contra 81 na Meta | §1.6 | Não é espelho; quem assumir que é, erra |
 
@@ -571,7 +571,7 @@ Volume: ~20 chamadas/dia. Custo não é fator.
 - 13 linhas em `course_aliases` para os subSources da LP (G10) — tira "Grupos e Oficinas T2"
   da mensagem do lead **sem tocar em nenhum fluxo**.
 - Primeiro nome em vez do cadastro completo em `[NOME]`.
-- Corrigir a docstring de `nat_guard.py:6-7`, que afirma o oposto do código.
+- ~~Corrigir a docstring de `nat_guard.py:6-7`, que afirma o oposto do código.~~ **Premissa errada**: aquilo caiu em 11/08. Feito em 24/08 o que de fato faltava — as duas referências de linha da docstring, ambas defasadas.
 
 ### Fora de escopo, registrado
 **Follow-up de silêncio.** Decisão pendente (pergunta 8). Não implementar sem critério de
@@ -589,6 +589,6 @@ fala com o lead hoje — esta seria a primeira.
 | `ESTADO_NAT_20260809.md` §2 | 8 908 leads; `failed` 118, `sent` 190, `delivered` 146 | **9 132** leads; `failed` **128**, `sent` **195**, `delivered` **329** |
 | `nat_flow.py:93` | "`formacao` volta sempre vazia… no Exact ela não é campo estruturado" | Verdade para o código, **falso para o dado**: 100 % dos leads da LP têm profissão estruturada em `agendamentos.extras` e no `description` da Exact |
 | `nat_copy.py:95` | "A formação vem do Exact e falta em ~49 % dos leads" | Medido nos 200 mais recentes: falta em **0 %** dos leads da LP, **67 %** dos do RD |
-| `nat_guard.py:6-7` | "NÃO está plugada em `send_welcome_to_new_lead` nem em lugar nenhum" | Plugada em `nat_flow.py:306` e `nat_sender.py:94`. **Continua mentindo** — já apontado em 09/08 |
+| ~~`nat_guard.py:6-7`~~ **este RECON** | que a docstring ainda dizia "NÃO está plugada em lugar nenhum" | **Errado.** A docstring foi corrigida em 11/08 (`39ac2cf`) e já dizia "ONDE ESTÁ PLUGADA". O achado veio copiado do `ESTADO_NAT_20260809.md` sem reconferir o arquivo — o conserto entrou 2 dias depois daquele doc. Defeito real e menor: as linhas citadas (`nat_flow.py:340`, `nat_sender.py:94`) estavam defasadas; corrigidas em 24/08 |
 | `docs/form-nativo-snippet.html:91` | "Valores válidos hoje: PosMulheridades, posgenerot2, PosPraticasDialogicasTurma1" | 13 origens em produção (`AGENDAMENTO_SUBSOURCES`); 11 já com agendamento real |
 | `agendamento/extras.py:6` | extras "variam por página e por campanha" | Na prática **as mesmas 4 chaves em 80 de 81 casos** — só 1 linha usa `profissao`/`como_conheceu` em snake_case |
