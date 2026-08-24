@@ -87,6 +87,35 @@ Variáveis: 1 primeiro nome · 2 hora · 3 consultora
 
 ---
 
+## Submetidos ao Meta em 24/08/2026 ✅
+
+`POST /v22.0/1360246076143727/message_templates`, via `whatsapp.create_template`.
+Os 4 aceitos, nenhum rejeitado, nenhuma recategorização na submissão.
+
+| Template | `meta_template_id` | Categoria aceita | Status |
+|---|---|---|---|
+| `nat_abertura_agendado` | `2913902048954833` | UTILITY | PENDING |
+| `nat_abertura_qualificacao` | `1068302605748380` | MARKETING | PENDING |
+| `nat_abertura_sem_formacao` | `1036680979112055` | MARKETING | PENDING |
+| `nat_lembrete_reuniao` | `4036914996610587` | UTILITY | PENDING |
+
+WABA foi de 81 para 85 templates. Só `pt_BR` — nenhuma variante `en` criada.
+As 4 linhas estão em `whatsapp_templates` (ids 2-5), para a tela da plataforma enxergar
+o que foi criado por API.
+
+Enviados com **`allow_category_change: true`**: autoriza a Meta a CORRIGIR a categoria em
+vez de recusar o template. Sem isso, T1 — que confirma um compromisso mas termina
+perguntando "em que ano você concluiu?" — poderia voltar rejeitado por ser lido como
+marketing, e a correção custaria uma nova submissão. O parâmetro é keyword-only e fica
+desligado por padrão: na tela de templates, "a Meta trocou sozinha" é surpresa, não
+conveniência.
+
+⚠️ **`PENDING` é o aceite da submissão, não a aprovação.** A categoria final pode mudar
+durante a revisão. Conferir por `GET /message_templates` filtrando por **`hsm_id` +
+`language`**, nunca só por nome — não há polling nem job; a checagem é manual, na ativação.
+
+---
+
 ## Dependências deste bloco (do RECON)
 
 | Variável | De onde vem hoje | Estado |
