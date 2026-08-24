@@ -92,7 +92,7 @@ Variáveis: 1 primeiro nome · 2 hora · 3 consultora
 | Variável | De onde vem hoje | Estado |
 |---|---|---|
 | 1 primeiro nome | `agendamentos.nome` / `exact_leads.name` | ✅ `app.nomes.primeiro_nome`, entregue na Sprint Higiene (24/08) |
-| 2 curso | `resolve_course_name(sub_source)` | ⚠️ depende do Item 1 da Sprint Higiene — sem alias, sai "Grupos e Oficinas T2" |
+| 2 curso | `resolve_course_name(sub_source)` | ✅ 10 de 13 entregues na Sprint Higiene (24/08). ⚠️ 3 ainda saem com o código cru — Infantojuvenil EAD, Psicologia Escolar, Enfermagem |
 | 3 consultora | `consultoras.json` → `nome_exibicao`, via `agendamentos.sales_rep_email` | ✅ existe |
 | 4 data · 5 hora | `agendamentos.slot_inicio` | ✅ existe |
 | 6 formação | `agendamentos.extras['Profissão']` | ⚠️ existe no banco, ainda não ligado ao envio (Bloco 2 do RECON, G2) |

@@ -339,7 +339,7 @@ risco do §3.5.
 | **G7** | **Sem `kind` de lembrete no scheduler.** Existe a fila, não existe o handler | `nat_scheduler.MODULOS_DE_HANDLERS` tem 2 módulos | Baixa — é o padrão mais fácil do projeto |
 | **G8** | **Nenhuma etapa do roteiro cabe em `nat_flow_state`.** A coluna `etapa` tem CHECK com 7 valores fixos; nenhum é "aguardando motivação pós-agendamento" ou "confirmando horário" | `nat_flow_state_etapa_valida` | Média — migração ou tabela nova |
 | **G9** | **194 cliques capturados, 0 roteados.** `nat_flow_state` está vazia, então todo clique cai em "fora da etapa" | `nat_flow.py:427` | Alta — é intenção sendo jogada fora, ~8/dia |
-| **G10** | **13 subSources da LP sem `course_aliases`.** O curso cai no fallback de `course_names.py:29` | `course_aliases` tem 13 linhas, nenhuma casa | Média — vaza código de turma para o lead (§3.2) |
+| ~~**G10**~~ | ~~13 subSources da LP sem `course_aliases`~~ | **10 de 13 resolvidos em 24/08** (`seed_course_aliases_lp.py`). Faltam 3, pendentes de confirmação do time — ver pergunta 11 | Baixa |
 | **G11** | **Sem validação de LLM sobre a motivação.** O passo 3 pede resposta gerada do conteúdo real; hoje qualquer texto passa | `nat_flow.py:475` (Bloco 8, não iniciado) | Média |
 | **G12** | **`ai_configs.is_enabled = false` e motor comentado.** Não há caminho ligado de LLM em produção | `main.py:537-618` | Média |
 | **G13** | **Sem superfície para ligar o agente.** `nat_config` tem `PATCH /api/nat/config` (`nat_routes.py:476`), mas não há equivalente para o fluxo novo | — | Baixa |
@@ -486,7 +486,11 @@ maioria do que chega é conversa com SDR, não resposta a fluxo.
 9. **NAT: fica, morre, ou vira o agente novo?** `nat_flow_state` está vazia há um mês, mas
    4 templates NAT estão aprovados, `nat_sim` é literalmente o passo 1 do roteiro, e 194
    cliques já chegaram.
-10. **Os 194 cliques órfãos.** ~8/dia, 175 pessoas, nenhuma resposta. **Alguém deveria
+10. **Nome comercial de 3 cursos.** `Pos Infantojuvenil EAD` (há DOIS cursos infantojuvenis
+    no cadastro — qual é o EAD?), `Pos Psicologia Escolar` e `Pos Enfermagem em Saude Mental`
+    não têm nome completo em nenhuma fonte do projeto. Até a resposta, o lead desses três
+    recebe o código cru ("Pós-Graduação em Enfermagem em Saude Mental", sem acento).
+11. **Os 194 cliques órfãos.** ~8/dia, 175 pessoas, nenhuma resposta. **Alguém deveria
     responder retroativamente, ou a régua começa do zero?** (A janela de 24 h já fechou para
     quase todos.)
 
@@ -568,9 +572,10 @@ afirmar com honestidade, **não afirma** — devolve `None` e quem chama não en
 Volume: ~20 chamadas/dia. Custo não é fator.
 
 ### Bloco 8 — Higiene (independente, barato, melhora hoje)
-- 13 linhas em `course_aliases` para os subSources da LP (G10) — tira "Grupos e Oficinas T2"
-  da mensagem do lead **sem tocar em nenhum fluxo**.
-- Primeiro nome em vez do cadastro completo em `[NOME]`.
+- ~~13 linhas em `course_aliases`~~ **Feito em 24/08**: 10 inseridas, 3 pendentes de nome
+  comercial. Também corrigiu a **falta de acento** — o fallback devolvia "Alcool e Drogas T4"
+  e "Saude do Trabalhador", o que o §3.2 não tinha capturado.
+- ~~Primeiro nome em vez do cadastro completo em `[NOME]`.~~ **Feito em 24/08** (`app/nomes.py`).
 - ~~Corrigir a docstring de `nat_guard.py:6-7`, que afirma o oposto do código.~~ **Premissa errada**: aquilo caiu em 11/08. Feito em 24/08 o que de fato faltava — as duas referências de linha da docstring, ambas defasadas.
 
 ### Fora de escopo, registrado
