@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.models import ExactLead, Contact, Channel, Message, AIConversationSummary, AutoWelcomeConfig
 from app.whatsapp import send_template_message
 from app.course_names import resolve_course_name
+from app.nomes import primeiro_nome
 from app.date_parse import parse_datetime
 
 BASE_URL = "https://api.exactspotter.com/v3"
@@ -213,6 +214,9 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
         return result("failed", "no_template", "config.template_name vazio")
 
     course = await resolve_course_name(lead_data.get("sub_source", ""), db)
+    # SÓ para as variáveis da mensagem. `name` (cadastro completo) segue indo para o
+    # Contact e para o card do Kanban, que é onde o SDR precisa do nome inteiro.
+    nome_curto = primeiro_nome(name)
 
     from app.whatsapp import fetch_template_body, render_template_text
     auto_template_body = await fetch_template_body(
@@ -229,7 +233,7 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             language=template_lang,
             phone_number_id=channel.phone_number_id,
             token=channel.whatsapp_token,
-            parameters=[name, course],
+            parameters=[nome_curto, course],
         )
 
         if "messages" not in send_result:
@@ -276,8 +280,8 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             channel_id=channel_id,
             direction="outbound",
             message_type="template",
-            content=(render_template_text(auto_template_body, [name, course])
-                     or f"[Template] {name}, {course}"),
+            content=(render_template_text(auto_template_body, [nome_curto, course])
+                     or f"[Template] {nome_curto}, {course}"),
             timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
         ))

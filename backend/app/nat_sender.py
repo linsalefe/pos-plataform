@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import nat_copy
 from app.models import AutoWelcomeConfig, Channel, Contact, Message
 from app.nat_guard import _agora_sp, nat_pode_atuar
+from app.nomes import primeiro_nome
 from app.whatsapp import (send_interactive_buttons, send_template_message,
                           send_text_message)
 
@@ -99,7 +100,10 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, **v
         if canal is None:
             return recusa("canal não resolvido (contato sem channel_id e config sem canal)")
 
-        nome = vars.get("nome") or contact.name or ""
+        # ÚNICO ponto por onde toda mensagem da NAT passa — por isso o primeiro nome é
+        # aplicado aqui, e não em _dados_do_lead: aquele dicionário também alimenta a
+        # notificação do SDR, que precisa do cadastro inteiro para achar o lead.
+        nome = primeiro_nome(vars.get("nome") or contact.name or "")
         curso = vars.get("curso") or ""
         formacao = vars.get("formacao") or ""
 
