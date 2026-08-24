@@ -10,6 +10,9 @@ mockados, e o banco é falso (nada é gravado). O que estes testes provam:
                                                    + LEAD CARIMBADO  <-- a regra do Álefe
   3. lead já processado (force=False)           -> skipped/already_processed, 0 envios
   4. funil pós, automação LIGADA, lead limpo    -> sent,                    1 envio
+ 4b. automação DESLIGADA + AGENTE ligado      -> skipped/agente_assumiu,  0 envios
+                                                  + gatilho enfileirado
+ 4c. automação DESLIGADA + agente desligado   -> skipped/disabled,        0 envios
   5. canal em branco na config                  -> failed/no_channel,       0 envios
   6. bulk_send_template com nat_boasvindas      -> HTTP 400 (trava do envio em massa)
 
@@ -154,6 +157,43 @@ async def caso_4_envio_normal():
           f"envios={spy.call_count}  carimbo={lead.welcome_status!r}")
     print(f"     template={enviado['template_name']!r} lang={enviado['language']!r} "
           f"params={enviado['parameters']}")
+
+
+async def caso_4b_agente_assume_com_a_automacao_DESLIGADA():
+    """O caso que o desligamento de 24/08 revelou.
+
+    O checklist de ativação do agente manda desligar `auto_welcome_config`. Se o passo 1
+    saísse da função por causa disso, o passo 4.5 nunca rodaria e os leads do sync ficariam
+    SEM abertura nenhuma — a metade do agente que não vem da landing page morreria em
+    silêncio, com o lead carimbado como "automação desligada".
+    """
+    lead = _lead(status=None)
+    db = _fake_db(lead, _nat_cfg(qualificacao_enabled=True))
+    with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy, \
+         patch("app.qualificacao_gatilho.agendar_abertura", new=AsyncMock()) as gatilho:
+        r = await exact_spotter.send_welcome_to_new_lead(
+            _lead_data(lead), db, _cfg(enabled=False))     # <-- automação DESLIGADA
+    assert r["reason"] == "agente_assumiu", r
+    assert spy.call_count == 0, "FALHOU: mandou boas-vindas com a automação desligada!"
+    assert gatilho.await_count == 1, "FALHOU: o agente não foi enfileirado!"
+    assert lead.welcome_status == "skipped"
+    print(f"  4b. automação OFF + agente ON      -> {r['status']}/{r['reason']:18s} "
+          f"envios={spy.call_count}  gatilho={gatilho.await_count}  "
+          f"carimbo={lead.welcome_status!r}")
+
+
+async def caso_4c_automacao_e_agente_desligados():
+    """Não-regressão: com os dois desligados, o comportamento é o de sempre."""
+    lead = _lead(status=None)
+    db = _fake_db(lead, _nat_cfg(qualificacao_enabled=False))
+    with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy:
+        r = await exact_spotter.send_welcome_to_new_lead(
+            _lead_data(lead), db, _cfg(enabled=False))
+    assert r["reason"] == "disabled", r
+    assert spy.call_count == 0
+    assert lead.welcome_status == "skipped"
+    print(f"  4c. automação OFF + agente OFF     -> {r['status']}/{r['reason']:18s} "
+          f"envios={spy.call_count}  carimbo={lead.welcome_status!r}")
 
 
 async def caso_5_canal_em_branco():
@@ -339,6 +379,8 @@ async def main():
     await caso_2_automacao_desligada()
     await caso_3_lead_ja_processado()
     await caso_4_envio_normal()
+    await caso_4b_agente_assume_com_a_automacao_DESLIGADA()
+    await caso_4c_automacao_e_agente_desligados()
     await caso_5_canal_em_branco()
     await caso_6_trava_do_envio_em_massa()
     print()
@@ -352,7 +394,7 @@ async def main():
     await caso_13_resend_welcome_sem_token()
     await caso_14_resend_welcome_logado_mas_desligado()
     await caso_15_botao_sem_token()
-    print("\nOK: 15/15 passaram. Todas as PORTAS de envio travadas; a porta lateral e o botao "
+    print("\nOK: 17/17 passaram. Todas as PORTAS de envio travadas; a porta lateral e o botao "
           "agora exigem login; a automacao continua funcionando.\n")
 
 

@@ -3,7 +3,8 @@ import httpx
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.models import ExactLead, Contact, Channel, Message, AIConversationSummary, AutoWelcomeConfig
+from app.models import (ExactLead, Contact, Channel, Message, AIConversationSummary,
+                        AutoWelcomeConfig, NatConfig)
 from app.whatsapp import send_template_message
 from app.course_names import resolve_course_name
 from app.nomes import primeiro_nome
@@ -140,6 +141,24 @@ def extract_course_name(sub_source: str) -> str:
     return "Pós-Graduação"
 
 
+async def _agente_assume_a_abertura(db: AsyncSession) -> bool:
+    """O agente de pré-qualificação está ligado? Falha fechada: erro = False.
+
+    Lido UMA vez por lead e usado em DOIS pontos de `send_welcome_to_new_lead` (o passo 1 e
+    o 4.5). Tem que ser o mesmo valor nos dois: se o passo 1 deixasse passar por causa do
+    agente e o 4.5 decidisse o contrário, o lead cairia no envio da boas-vindas com a
+    automação desligada — exatamente o que o passo 1 existe para impedir.
+    """
+    try:
+        cfg = (await db.execute(select(NatConfig).where(NatConfig.id == 1))
+               ).scalar_one_or_none()
+        return bool(cfg is not None and cfg.qualificacao_enabled)
+    except Exception as e:
+        print(f"⚠️  Agente: não consegui ler nat_config ({type(e).__name__}: {e}) — "
+              "boas-vindas segue o caminho normal")
+        return False
+
+
 async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
                                    force: bool = False) -> dict:
     """Envia boas-vindas + ativa IA + cria card. Retorna a decisão tomada.
@@ -171,8 +190,19 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             lead_row.welcome_status = status
             lead_row.welcome_error = error
 
+    # A boas-vindas e o AGENTE são dois donos possíveis da mesma abertura, e este é o
+    # ponto onde se decide qual dos dois atende este lead. Lido antes do passo 1 porque o
+    # passo 1 pode sair da função — e sair dali com o agente ligado significaria que os
+    # leads do sync não receberiam abertura NENHUMA.
+    agente_ligado = False if force else await _agente_assume_a_abertura(db)
+
     # 1) LIGA/DESLIGA — carimba, para nunca receber retroativamente.
-    if not force and (config is None or not config.enabled):
+    #
+    # `agente_ligado` segura este return: com a boas-vindas desligada E o agente ligado, o
+    # lead PRECISA seguir até o passo 4.5. Foi o que faltou quando a automação foi desligada
+    # em 24/08 — o checklist de ativação do agente manda desligá-la, e sem esta condição
+    # seguir o checklist desativaria a metade do agente que atende os leads do sync.
+    if not force and not agente_ligado and (config is None or not config.enabled):
         stamp("skipped", "automação desligada — lead anterior à ativação")
         return result("skipped", "disabled")
 
@@ -209,21 +239,17 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
     #
     # `force=True` (reenvio manual, lead a lead) continua ignorando tudo isto, como já
     # ignora enabled, funil e idempotência.
-    if not force:
+    if agente_ligado:
+        from app.models import ORIGEM_EXACT
         from app.qualificacao_gatilho import agendar_abertura
-        from app.models import NatConfig, ORIGEM_EXACT
-        cfg_q = (await db.execute(select(NatConfig).where(NatConfig.id == 1))
-                 ).scalar_one_or_none()
-        if cfg_q is not None and cfg_q.qualificacao_enabled:
-            await agendar_abertura(db, telefone=phone, lead_id=exact_id,
-                                   origem=ORIGEM_EXACT,
-                                   # register_date já é UTC; o gatilho soma 3h a quem vem em
-                                   # SP, então descontamos para o valor chegar certo lá.
-                                   nascido_em=(lead_data.get("register_date") - timedelta(hours=3)
-                                               if lead_data.get("register_date") else None))
-            stamp("skipped", "agente de pré-qualificação assumiu a abertura")
-            print(f"🤝 Boas-vindas cedida ao agente para {name} ({phone})")
-            return result("skipped", "agente_assumiu")
+        # register_date já é UTC; o gatilho soma 3h a quem vem em SP, então descontamos aqui
+        # para o valor chegar certo do outro lado.
+        nascido = lead_data.get("register_date")
+        await agendar_abertura(db, telefone=phone, lead_id=exact_id, origem=ORIGEM_EXACT,
+                               nascido_em=(nascido - timedelta(hours=3)) if nascido else None)
+        stamp("skipped", "agente de pré-qualificação assumiu a abertura")
+        print(f"🤝 Boas-vindas cedida ao agente para {name} ({phone})")
+        return result("skipped", "agente_assumiu")
 
     # 5) CANAL — SEMPRE da config. Sem fallback para constante.
     channel_id = config.channel_id if (config and config.channel_id) else None
