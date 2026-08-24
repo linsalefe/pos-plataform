@@ -149,8 +149,9 @@ async def remover_box(box_id: int) -> None:
     await _req("DELETE", f"/BoxesRemove/{box_id}")
 
 
-async def criar_lead(*, nome: str, telefone: str, email: str | None, source: str,
-                     sub_source: str, funnel_id: int, ddi: str = "55") -> int:
+async def criar_lead(*, nome: str, telefone: str, source: str, sub_source: str,
+                     funnel_id: int, description: str | None = None,
+                     ddi: str = "55") -> int:
     """`POST /LeadsAdd`. Devolve o `leadId`. O lead nasce em `Entrada` do funil.
 
     `duplicityValidation=False` porque a LP é pública e um bloqueio por duplicidade viraria
@@ -158,12 +159,22 @@ async def criar_lead(*, nome: str, telefone: str, email: str | None, source: str
 
     O payload é ANINHADO sob `lead` — diferente do `BoxesAdd`, que é flat.
 
-    O E-MAIL VAI EM `description`, NÃO EM CAMPO PRÓPRIO. O `LeadsAdd` não tem campo de e-mail:
-    não está no payload documentado, e `GET /Leads` não devolve nenhuma chave de e-mail (as de
-    contato são `phone1`, `phone2` e `telephones`). Na Exact o e-mail pertence à *pessoa*, não
-    ao lead — outra entidade (`LeadsAndPersons`), fora do escopo deste módulo. Mandar
-    `"email"` no payload seria descartado em silêncio e a LP perderia o dado que pediu ao
-    visitante. Em `description` o SDR enxerga, e o nosso banco guarda em coluna própria.
+    O E-MAIL E OS EXTRAS VÃO EM `description`, NÃO EM CAMPO PRÓPRIO. O `LeadsAdd` não tem
+    campo de e-mail: não está no payload documentado, e `GET /Leads` não devolve nenhuma
+    chave de e-mail (as de contato são `phone1`, `phone2` e `telephones`). Na Exact o e-mail
+    pertence à *pessoa*, não ao lead — outra entidade (`LeadsAndPersons`), fora do escopo
+    deste módulo. Mandar `"email"` no payload seria descartado em silêncio e a LP perderia o
+    dado que pediu ao visitante. Em `description` o SDR enxerga, e o nosso banco guarda em
+    coluna própria.
+
+    QUEM MONTA O TEXTO É `extras.montar_descricao`, não esta função. Aqui é só transporte
+    HTTP: a formatação depende de sanitização, de ordem de campos e de um orçamento de
+    tamanho, e nada disso é assunto de cliente HTTP.
+
+    ⚠️ **O `description` tem teto de 8000 caracteres e a Exact TRUNCA EM SILÊNCIO** — 201 na
+    resposta, texto cortado no banco, nada em log (medido: FINDINGS §13). Não passe texto
+    cru de formulário aqui sem passar por `extras.montar_descricao`, que respeita um
+    orçamento de 4000 e corta com marca visível quando precisa.
     """
     lead = {
         "name": nome,
@@ -173,8 +184,8 @@ async def criar_lead(*, nome: str, telefone: str, email: str | None, source: str
         "ddiPhone": ddi,
         "phone": telefone,
     }
-    if email:
-        lead["description"] = f"E-mail informado na LP: {email}"
+    if description:
+        lead["description"] = description
     resp = await _req("POST", "/LeadsAdd", json={"duplicityValidation": False, "lead": lead})
     return int(resp.json()["value"])
 
@@ -199,6 +210,36 @@ async def agendar_reuniao(*, box_id: int, lead_id: int, stage_name: str,
     return bool(resp.json().get("value"))
 
 
+async def mudar_funil(lead_id: int, stage_id: int) -> bool:
+    """`POST /ChangeFunnel` — move o lead para outro funil, pelo id da etapa de DESTINO.
+
+    Devolve booleano, como o `scheduleAdd`. HTTP 201 no sucesso.
+
+    NÃO CONFUNDA COM `LeadsTransfer`. Os dois existem no `$metadata` e fazem coisas
+    diferentes: `LeadsTransfer` é `{ids, sdrEmail, group}` e troca o SDR dono do lead, sem
+    tocar no funil. Quem muda de funil é este aqui, e a chave é o `stageId` — não existe
+    parâmetro de funil, o funil é inferido da etapa.
+
+    ⚠️ **EFEITO COLATERAL MEDIDO: a reunião vira `Concluido`.** O box continua `busy` e
+    vinculado, a reunião mantém o id, a data e o rep — mas o `type` passa de `Vigente` para
+    `Concluido`, mesmo com a data no futuro (FINDINGS §15). Uma reunião que ainda não
+    aconteceu passa a constar como realizada. Não use esta função sem ter lido aquele
+    parágrafo e decidido que o efeito é aceitável.
+    """
+    resp = await _req("POST", "/ChangeFunnel", json={"leadId": int(lead_id),
+                                                     "stageId": int(stage_id)})
+    return bool(resp.json().get("value"))
+
+
+async def listar_stages(funnel_id: int | None = None) -> list[dict]:
+    """`GET /Stages`, opcionalmente de um funil. Usado para validar o destino no startup."""
+    params = {}
+    if funnel_id is not None:
+        params["$filter"] = f"funnelId eq {int(funnel_id)}"
+    resp = await _req("GET", "/Stages", params=params or None)
+    return resp.json().get("value", [])
+
+
 async def meeting_por_lead(lead_id: int) -> dict | None:
     """A reunião do lead, para guardar o `meeting_id` que o `scheduleAdd` não devolve.
 
@@ -209,13 +250,72 @@ async def meeting_por_lead(lead_id: int) -> dict | None:
     return valores[0] if valores else None
 
 
-async def buscar_lead_por_telefone(telefone: str) -> dict | None:
+async def listar_sources() -> list[dict]:
+    """`GET /Sources` com os `subSources` aninhados. Valida a allowlist no startup.
+
+    Cada source traz `value`, `id`, `active` e a lista `subSources`, cada um com o mesmo
+    formato. Em 18/08/2026 eram 23 sources, e só `Rd Marketing` (106847) tinha subSources —
+    62 deles.
+    """
+    resp = await _req("GET", "/Sources")
+    return resp.json().get("value", [])
+
+
+async def listar_sellers() -> list[dict]:
+    """`GET /Sellers`. Usado no startup para validar as consultoras configuradas.
+
+    Cada item tem `id`, `name`, `lastName`, `email`, `phone`, `phone2`, `active`. A base é
+    pequena (4 registros em 18/08/2026), então não pagina.
+
+    `active: false` importa: um seller desativado ainda aparece na lista, e um `BoxesAdd`
+    com o e-mail dele falha com `SDR not found` — mesma mensagem de um e-mail que nunca
+    existiu. Só esta consulta distingue os dois casos.
+    """
+    resp = await _req("GET", "/Sellers")
+    return resp.json().get("value", [])
+
+
+async def buscar_lead_por_id(lead_id: int) -> dict | None:
+    """O lead de um id, ou None se não existir. Usado para validar `leadId` vindo da LP.
+
+    POR QUE FILTRAR POR `id` E NÃO POR TEXTO. O índice de texto da Exact ATRASA: o E2E viu
+    `contains(lead,'TESTE API')` continuar devolvendo um lead que `id eq ...` já não
+    encontrava (FINDINGS §10). Filtro por id é consistente na hora; busca textual não é.
+
+    ARMADILHA MEDIDA (17/08/2026): id inexistente devolve **HTTP 200 com `value: []`** — e
+    ainda vem acompanhado de um `@odata.nextLink` apontando para `$skip=500`, que é mentira,
+    porque não há página nenhuma. Quem seguir o `nextLink` para "confirmar" entra em laço.
+    Lista vazia é a resposta final: não existe.
+
+    Não levanta para lead ausente — devolve None e quem chama decide. Levanta ExactErro só
+    quando a Exact recusou ou não respondeu, que é caso diferente de "não existe".
+    """
+    resp = await _req("GET", "/Leads", params={"$filter": f"id eq {int(lead_id)}", "$top": 1})
+    valores = resp.json().get("value", [])
+    return valores[0] if valores else None
+
+
+async def buscar_lead_por_telefone(telefone: str, ddi: str = "55") -> dict | None:
     """Lead existente com este telefone, se houver. Usado para não duplicar na LP.
 
     `duplicityValidation=False` não protege ninguém numa página pública: o mesmo visitante
     preenchendo duas vezes vira dois leads.
+
+    O DDI ENTRA NO FILTRO, E ESSA LINHA JÁ ESTEVE ERRADA. O `LeadsAdd` recebe `ddiPhone` e
+    `phone` SEPARADOS, mas o `GET /Leads` devolve `phone1` com os dois GRUDADOS —
+    `5583988046720`, não `83988046720`. Consultar sem o DDI não dá erro: dá **zero
+    resultados, sempre**. Medido em 18/08/2026:
+
+        phone1 eq '83988046720'    -> 0 leads
+        phone1 eq '5583988046720'  -> 4 leads
+
+    O módulo guarda o telefone sem DDI (é o que `_normalizar_telefone` produz, e é o que o
+    `LeadsAdd` quer), então a concatenação tem que acontecer aqui, na fronteira da consulta.
+
+    Curiosidade que confirma o desenho: `ddiPhone` volta **None** em todo lead lido — o campo
+    existe na escrita e não na leitura. Não dá para reconstruir o número pelos dois campos.
     """
-    filtro = f"phone1 eq '{telefone}'"
+    filtro = f"phone1 eq '{ddi}{telefone}'"
     resp = await _req("GET", "/Leads", params={"$filter": filtro, "$top": 1})
     valores = resp.json().get("value", [])
     return valores[0] if valores else None

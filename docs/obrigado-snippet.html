@@ -4,6 +4,7 @@
   ==========================================================================================
 
   COMO USAR
+    0. Ajuste ORIGEM abaixo para o curso desta LP (uma LP por curso = um valor por página).
     1. Cole este bloco inteiro (style + div + script) dentro do <body> do obrigado.html.
     2. Confira que o domínio da LP casa com AGENDAMENTO_CORS_ORIGIN_SUFFIXES no .env do
        backend (padrão: .cenatsaudemental.com e .netlify.app). Qualquer subdomínio desses
@@ -16,10 +17,21 @@
     propósito: a LP é de outro repositório e de outro time, e um snippet que precise de
     dependência vira um pedido de deploy.
 
+  ELE ATENDE DOIS FLUXOS, SOZINHO
+    (a) DUAS ETAPAS — a pessoa veio do form nativo do index.html e chegou aqui com
+        `?lead=ID&nome=&email=&tel=`. Os campos vêm preenchidos e o POST /agendar leva o
+        `leadId`, então o backend PULA o LeadsAdd e agenda o lead que já existe.
+    (b) UMA ETAPA — a pessoa caiu direto nesta página, sem query. Ela preenche os dados
+        aqui e o POST /agendar cria o lead junto com o agendamento, como sempre fez.
+
+    A diferença entre os dois é só a presença do `?lead=`. Nada mais no código muda, e a
+    LP de Mulheridades — que usa o fluxo (b) — continua funcionando sem tocar em nada.
+
   OS DADOS QUE ELE ENVIA
-    nome, email, telefone e o id do slot. O id do slot vem do GET /slots e volta verbatim
-    no POST — o backend valida contra a grade dele, então mexer nisso no navegador não
-    agenda nada fora do previsto.
+    nome, email, telefone, o id do slot e, quando houver, o leadId. O id do slot vem do
+    GET /slots e volta verbatim no POST — o backend valida contra a grade dele, então mexer
+    nisso no navegador não agenda nada fora do previsto. O leadId também é conferido lá
+    (GET /Leads com $filter id eq), e um id inventado responde 404 sem escrever nada.
 
   O AVISO DE REMARCAÇÃO NÃO É DECORATIVO
     Não existe cancelamento nem remarcação pela API da Exact. Depois de confirmado, o
@@ -91,8 +103,34 @@
   // hub.cenatdata.online faz proxy para o backend (127.0.0.1:8001).
   var API_BASE = "https://hub.cenatdata.online";
 
+  // AJUSTE POR LP: de qual curso é esta página. Tem que ser um valor da allowlist do
+  // backend (AGENDAMENTO_SUBSOURCES) — qualquer outro é recusado com 400, de propósito:
+  // a Exact CRIA a origem quando o valor não existe, e o cadastro dela é global.
+  // Valores válidos hoje: PosMulheridades, posgenerot2, PosPraticasDialogicasTurma1.
+  // Deixe "" para cair no padrão do backend.
+  //
+  // No fluxo de duas etapas, use O MESMO valor do form-nativo-snippet.html desta LP. Se o
+  // `?lead=` chegar, este valor nem é aplicado — o lead já nasceu com a origem do index e o
+  // backend pula o LeadsAdd. Ele só entra em jogo quando o lead é criado aqui.
+  var ORIGEM = "PosMulheridades";
+
   var $ = function (id) { return document.getElementById(id); };
   var dias = {}, diaSel = null, slotSel = null, semGrade = false;
+
+  // O que o form nativo do index.html mandou na query. Tudo opcional: quem cai direto
+  // nesta página preenche na mão, e o fluxo de uma etapa segue idêntico.
+  function query(nome) {
+    var m = new RegExp("[?&]" + nome + "=([^&]*)").exec(window.location.search);
+    return m ? decodeURIComponent(m[1].replace(/\+/g, " ")) : "";
+  }
+
+  // `lead` só é aceito se for inteiro positivo. Um `?lead=abc` ou `?lead=0` vira ausência,
+  // e a página cai no fluxo de uma etapa em vez de mandar lixo ao backend — que responderia
+  // 422 e deixaria o visitante travado por causa de uma URL malformada.
+  var LEAD_ID = (function () {
+    var bruto = query("lead");
+    return /^[0-9]+$/.test(bruto) && +bruto > 0 ? +bruto : null;
+  })();
 
   var MES = ["jan", "fev", "mar", "abr", "mai", "jun",
              "jul", "ago", "set", "out", "nov", "dez"];
@@ -190,7 +228,13 @@
     // não havia horário seria o pior desfecho de uma página de obrigado.
     var rota = semGrade ? "/api/agendamento/lead" : "/api/agendamento/agendar";
     var corpo = { nome: nome, email: email, telefone: tel };
-    if (!semGrade) { corpo.slot = slotSel; }
+    if (ORIGEM) { corpo.origem = ORIGEM; }
+    if (!semGrade) {
+      corpo.slot = slotSel;
+      // Só no /agendar. No /lead ele não faria sentido: aquela rota CRIA lead, e mandar um
+      // id existente para ela criaria um segundo cadastro — o oposto do que queremos.
+      if (LEAD_ID) { corpo.leadId = LEAD_ID; }
+    }
 
     fetch(API_BASE + rota, {
       method: "POST",
@@ -208,6 +252,14 @@
           msg("Esse horário acabou de ser preenchido. Escolha outro, por favor.", "erro");
           slotSel = null;
           return carregarSlots();
+        }
+        if (res.status === 404 && LEAD_ID) {
+          // O `?lead=` da URL não existe mais no CRM (excluído, ou copiado de outra
+          // sessão). Em vez de mostrar erro, esquece o id e reenvia — o backend cria o
+          // lead junto com o agendamento. O visitante não tem como resolver isso sozinho,
+          // e ficar preso numa página por causa de um id velho seria perder o lead à toa.
+          LEAD_ID = null;
+          return enviar();
         }
         if (res.status >= 400) {
           return msg(res.corpo.detail || "Não consegui concluir. Tente de novo.", "erro");
@@ -235,6 +287,20 @@
       + '<p class="aviso">Precisa remarcar ou cancelar? Fale com a gente pelo WhatsApp — '
       + "é por lá que ajustamos o horário.</p>";
   }
+
+  // Pré-preenche com o que veio do index.html. Os campos seguem editáveis de propósito:
+  // se a pessoa errou o telefone na tela anterior, esta é a última chance de corrigir antes
+  // de o horário virar reunião na agenda de uma consultora.
+  //
+  // Corrigir aqui NÃO atualiza o lead que já foi criado — não há LeadsUpdate neste fluxo.
+  // O valor corrigido vai para a nossa tabela `agendamentos`, e é lá que o SDR confere
+  // quando o telefone do CRM não atende.
+  (function preencher() {
+    var de = { "ag-nome": query("nome"), "ag-email": query("email"), "ag-tel": query("tel") };
+    Object.keys(de).forEach(function (id) {
+      if (de[id] && $(id)) { $(id).value = de[id]; }
+    });
+  })();
 
   $("ag-enviar").onclick = enviar;
   carregarSlots();

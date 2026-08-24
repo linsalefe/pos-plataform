@@ -196,16 +196,30 @@ def render_template_text(body: str, params: list = None) -> str:
 
 
 async def create_template(waba_id: str, token: str, name: str, language: str,
-                          category: str, components: list) -> dict:
+                          category: str, components: list, *,
+                          allow_category_change: bool = False) -> dict:
     """Cria (submete pra aprovação) um template no WABA. Retorna o JSON do Meta.
 
     Não levanta exceção: quem chama decide o que fazer com o corpo de erro do Meta
     (precisamos repassar o erro verbatim pra tela).
+
+    `allow_category_change` autoriza a Meta a CORRIGIR a categoria em vez de recusar o
+    template quando ela discorda da que pedimos. Sem ele, um corpo que a Meta leia como
+    marketing enviado como UTILITY pode voltar rejeitado, e a correção custa uma nova
+    submissão — dias de espera.
+
+    Fica DESLIGADO por padrão, e keyword-only: a tela de templates (routes.py:694) manda a
+    categoria que o admin escolheu, e ali "a Meta trocou sozinha" é surpresa, não conveniência.
+    Ligado nas submissões por script, onde o combinado é aceitar a categoria que vier.
     """
+    corpo = {"name": name, "language": language, "category": category,
+             "components": components}
+    if allow_category_change:
+        corpo["allow_category_change"] = True
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{BASE_URL}/{waba_id}/message_templates",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"name": name, "language": language, "category": category, "components": components},
+            json=corpo,
         )
         return response.json()

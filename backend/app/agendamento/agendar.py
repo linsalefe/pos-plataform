@@ -29,30 +29,95 @@ e `LeadsDelete` transformaria uma falha de agendamento numa perda de lead.
 de quem for mexer nisto depois.
 
 ------------------------------------------------------------------------------------------
+O FLUXO DE DUAS ETAPAS: `lead_id` JÁ PRONTO
+------------------------------------------------------------------------------------------
+A landing page trocou o formulário do RD Station por um form nativo, e isso partiu o fluxo
+em duas requisições:
+
+    index.html   -> POST /lead                  -> lead criado em Entrada
+    obrigado.html -> POST /agendar com leadId   -> agenda O MESMO lead
+
+Sem isso, o `/agendar` faria `LeadsAdd` de novo e a pessoa viraria DOIS leads no funil — um
+do formulário, outro do agendamento — com o SDR ligando duas vezes para o mesmo telefone.
+
+Com `lead_id`, o passo 2 deixa de ser criação e vira **verificação**: `GET /Leads` com
+`$filter=id eq {leadId}`. Lead inexistente para o fluxo antes de qualquer escrita.
+
+E a compensação ganha uma razão a mais para não tocar no lead. No fluxo de uma etapa,
+preservar o lead é decisão de produto. Aqui é mais simples que isso: **o lead não é nosso**.
+Foi criado por outra requisição, possivelmente minutos antes, e apagá-lo destruiria o
+contato de alguém que sequer chegou a escolher horário. A coluna `lead_externo` grava essa
+distinção, porque `lead_id` preenchido tem a mesma cara nos dois caminhos.
+
+O caminho SEM `lead_id` continua idêntico ao que sempre foi — a LP de Mulheridades usa ele.
+
+------------------------------------------------------------------------------------------
+QUAL CONSULTORA ATENDE, E POR QUE O 409 FICOU MAIS RARO
+------------------------------------------------------------------------------------------
+Com mais de uma consultora, o mesmo horário pode estar livre para várias. A escolha é por
+**menor carga do dia** (`escolher_consultora`), contada na NOSSA tabela — não na Exact, que
+não distingue reunião nossa de compromisso pessoal dela.
+
+E o `Boxes are occupied` deixou de ser 409 imediato. Antes ele significava "o horário
+morreu"; agora significa "morreu PARA ESTA consultora", e o fluxo tenta a próxima da lista
+antes de desistir. Só quando todas recusam é que o visitante vê 409.
+
+Isso importa mais do que parece: `disponibilidade` é cacheada por 60s, então duas pessoas
+que abrem a página juntas veem a mesma oferta. Sem o retry, a segunda tomaria 409 mesmo
+havendo consultora livre no mesmo horário — e a LP mandaria ela escolher outro horário sem
+necessidade.
+
+O `BoxesAdd` continua sendo o lock. O que mudou é que agora existem N locks independentes,
+um por agenda, e perder um não é perder o horário.
+
+------------------------------------------------------------------------------------------
+PASSO 4 OPCIONAL: MOVER PARA O FUNIL DE VENDAS
+------------------------------------------------------------------------------------------
+A reunião **precisa** nascer no funil 18535: o `scheduleAdd` exige que a etapa anterior do
+lead tenha "Scheduling" como ação de saída, e no funil de Vendas (18537) a etapa `Agendados`
+é a POSIÇÃO 1 — não há etapa anterior (FINDINGS §14). Não é escolha nossa, é estrutural.
+
+`POST /ChangeFunnel {leadId, stageId}` move o lead DEPOIS de agendado, e o agendamento
+sobrevive: box segue `busy` e vinculado, reunião mantém id, data e consultora.
+
+⚠️ **Mas a reunião vira `Concluido`.** Medido: uma reunião marcada para 2027 passou de
+`Vigente` para `Concluido` no instante da transferência — consta como realizada antes de
+acontecer (FINDINGS §15). Por isso o passo é OPCIONAL e vem DESLIGADO: sem
+`AGENDAMENTO_FUNIL_DESTINO` no env, nada disso roda e o lead fica no 18535, como hoje.
+
+E é **não-fatal por construção**. Quando roda e falha, o agendamento continua válido: o lead
+fica no 18535 em `Agendados`, com a reunião na agenda da consultora. Um erro de transferência
+não pode desfazer um horário que a pessoa já viu confirmado na tela — a transferência é
+arrumação interna de funil, não parte da promessa feita ao visitante.
+
+------------------------------------------------------------------------------------------
 O QUE NÃO TEM DESFAZER
 ------------------------------------------------------------------------------------------
 Depois do passo 3 não há compensação nenhuma: não existe `ScheduleRemove` na API. Remarcação
 e cancelamento saem pelo WhatsApp, por decisão de produto. A consequência aceita é que cada
 remarcação queima um slot da agenda para sempre.
 """
+import os
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agendamento import client, disponibilidade
-from app.agendamento.grade import Slot, grade
+from app.agendamento import client, consultoras as equipe_mod, disponibilidade
+from app.agendamento import extras as extras_mod, origens
+from app.agendamento.grade import Slot
 from app.agendamento.horarios import agora_sp
 from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_INICIADO,
                         PASSO_LEAD_CRIADO, Agendamento)
 
-# Constantes de produto, fixas de propósito. `source`/`subSource` são texto livre resolvido
-# contra um cadastro GLOBAL da Exact, usado em relatório (FINDINGS §3): aceitar esses valores
-# da query string da LP deixaria qualquer visitante poluir o cadastro de origens.
+# `source` segue fixo: é a origem de marketing da CENAT inteira, não varia por curso.
+#
+# `subSource` NÃO é mais fixo — vem do corpo do POST, conferido contra a allowlist de
+# `origens.py`. O que não pode é aceitar texto livre: `LeadsAdd` CRIA o subSource quando o
+# valor não existe (medido — ver o cabeçalho de origens.py), e o cadastro é global e usado em
+# relatório. A allowlist é o que separa "configurável" de "qualquer um escreve lá dentro".
 FUNIL_POS_GRADUACAO = 18535
-SOURCE = "Rd Marketing"
-SUB_SOURCE = "DialogicasTurma"
 STAGE_AGENDADOS = "Agendados"
 
 # Janela em que dois POSTs do mesmo telefone são tratados como duplo clique, não como duas
@@ -61,12 +126,75 @@ STAGE_AGENDADOS = "Agendados"
 JANELA_DUPLO_CLIQUE = timedelta(seconds=90)
 
 
+def funil_destino() -> int | None:
+    """Id da etapa para onde mover o lead depois de agendado. None = passo 4 desligado.
+
+    É o id da ETAPA, não do funil: o `ChangeFunnel` não tem parâmetro de funil, ele infere
+    pelo destino. Para o funil de Vendas (18537), `Agendados` é 133413.
+
+    Valor ilegível vira None com aviso, em vez de derrubar o agendamento: um env mal digitado
+    não pode custar a reunião de ninguém.
+    """
+    bruto = (os.getenv("AGENDAMENTO_FUNIL_DESTINO") or "").strip()
+    if not bruto:
+        return None
+    try:
+        valor = int(bruto)
+    except ValueError:
+        print(f"⚠️ agendamento: AGENDAMENTO_FUNIL_DESTINO={bruto!r} não é um id de etapa. "
+              "Passo 4 desligado.")
+        return None
+    return valor or None
+
+
+async def validar_funil_destino() -> dict:
+    """Confere no startup que o id configurado é uma etapa real e ativa. NUNCA levanta.
+
+    Sem isto, um id errado faria toda transferência falhar — e como o passo é não-fatal, a
+    falha só apareceria como um warning por agendamento, que ninguém lê. Melhor uma linha no
+    boot dizendo exatamente qual etapa de qual funil vai receber os leads.
+    """
+    alvo = funil_destino()
+    if alvo is None:
+        print("ℹ️ agendamento: passo 4 (mover para funil de vendas) DESLIGADO — "
+              "os leads ficam no funil 18535 depois de agendados.")
+        return {"ativo": False}
+    try:
+        etapas = await client.listar_stages()
+    except client.ExactErro as e:
+        print(f"⚠️ agendamento: não consegui validar AGENDAMENTO_FUNIL_DESTINO={alvo} "
+              f"({type(e).__name__}: {e}). Passo 4 segue ligado, sem verificação.")
+        return {"ativo": True, "stage_id": alvo, "checagem_falhou": True}
+    achada = next((e for e in etapas if e.get("id") == alvo), None)
+    if achada is None:
+        print(f"❌ agendamento: AGENDAMENTO_FUNIL_DESTINO={alvo} não existe em /Stages. "
+              "Toda transferência vai falhar (sem desfazer agendamento). Corrija o env.")
+        return {"ativo": True, "stage_id": alvo, "invalida": True}
+    if not achada.get("active", True):
+        print(f"❌ agendamento: etapa {alvo} ({achada.get('value')!r}) está INATIVA na Exact.")
+        return {"ativo": True, "stage_id": alvo, "invalida": True}
+    print(f"✅ agendamento: passo 4 LIGADO — depois de agendado, o lead vai para "
+          f"{achada.get('value')!r} (etapa {alvo}, funil {achada.get('funnelId')}). "
+          "A reunião passa a constar como 'Concluido' — ver FINDINGS §15.")
+    return {"ativo": True, "stage_id": alvo, "etapa": achada.get("value"),
+            "funnel_id": achada.get("funnelId")}
+
+
 class SlotInvalido(Exception):
     """O id de slot não pertence à grade, ou já venceu a antecedência mínima. -> 400"""
 
 
 class SlotIndisponivel(Exception):
     """O horário foi tomado entre a exibição e o clique. -> 409, o front recarrega."""
+
+
+class LeadNaoEncontrado(Exception):
+    """O `leadId` do corpo não existe na Exact. -> 404, e NADA foi escrito.
+
+    Acontece de verdade, não é só defesa contra POST forjado: o visitante pode ter deixado
+    o obrigado.html aberto até o lead ser excluído do CRM, ou ter chegado com um `?lead=`
+    copiado de outra sessão.
+    """
 
 
 class AgendamentoFalhou(Exception):
@@ -84,6 +212,8 @@ class Resultado:
     box_id: int
     slot: Slot
     meeting_id: int | None
+    consultora_email: str = ""
+    consultora_nome: str = ""
 
 
 async def _duplo_clique(db: AsyncSession, telefone: str) -> Agendamento | None:
@@ -113,13 +243,82 @@ async def _marcar(db: AsyncSession, ag: Agendamento, passo: str, *, erro: str | 
     await db.commit()
 
 
+async def escolher_consultora(db: AsyncSession, candidatas, dia) -> list:
+    """Ordena as candidatas por carga do dia, da mais livre para a mais cheia.
+
+    Devolve LISTA, não uma só: quem chama percorre na ordem quando a primeira perde a
+    corrida do `BoxesAdd`. Empate mantém a ordem da configuração, que é estável entre
+    processos — sortear aqui tornaria o comportamento irreprodutível no log.
+
+    A carga é contada na NOSSA tabela e não na Exact de propósito. A agenda da consultora tem
+    compromisso pessoal, bloco de equipe e reunião de outro funil; distribuir por ela faria a
+    LP evitar quem tem a agenda cheia por motivos que não têm nada com a landing page. O que
+    queremos equilibrar é o que NÓS mandamos.
+    """
+    if len(candidatas) <= 1:
+        return list(candidatas)
+    inicio = datetime.combine(dia, time.min)
+    fim = inicio + timedelta(days=1)
+    res = await db.execute(
+        select(Agendamento.sales_rep_email, func.count())
+        .where(Agendamento.slot_inicio >= inicio,
+               Agendamento.slot_inicio < fim,
+               Agendamento.passo.notin_([PASSO_FALHOU, PASSO_INICIADO]))
+        .group_by(Agendamento.sales_rep_email)
+    )
+    carga = {(linha[0] or "").lower(): linha[1] for linha in res.all()}
+    ordenadas = sorted(enumerate(candidatas),
+                       key=lambda par: (carga.get(par[1].email.lower(), 0), par[0]))
+    return [c for _, c in ordenadas]
+
+
 async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: str,
-                  slot_id: str, origem_ip: str | None = None) -> Resultado:
-    """Caminho completo da LP. Levanta SlotInvalido / SlotIndisponivel / AgendamentoFalhou."""
-    g = grade()
-    slot = g.slot_por_id(slot_id)
-    if slot is None:
+                  slot_id: str, origem: str | None = None, lead_id: int | None = None,
+                  extras: dict[str, str] | None = None,
+                  origem_ip: str | None = None) -> Resultado:
+    """Caminho completo da LP.
+
+    Com `lead_id`, agenda um lead que JÁ existe e pula o `LeadsAdd` — é o fluxo de duas
+    etapas descrito no cabeçalho. Sem ele, cria o lead como sempre fez.
+
+    Levanta SlotInvalido / SlotIndisponivel / LeadNaoEncontrado / AgendamentoFalhou /
+    origens.OrigemInvalida.
+    """
+    # O slot é resolvido contra a UNIÃO das grades: com várias consultoras, um horário é
+    # válido se ao menos uma o oferece. Continua sendo validação de entrada — um id que não
+    # esteja em grade nenhuma é recusado antes de qualquer escrita.
+    slot = None
+    candidatas = []
+    for c in equipe_mod.consultoras():
+        achado = c.grade.slot_por_id(slot_id)
+        if achado is not None:
+            slot = achado
+            candidatas.append(c)
+    if slot is None or not candidatas:
         raise SlotInvalido(f"slot fora da grade ou vencido: {slot_id!r}")
+
+    # Resolvido ANTES de qualquer escrita: uma origem inválida não pode chegar a criar box e
+    # depois falhar, deixando o horário bloqueado até a faxina passar.
+    sub_source = origens.resolver(origem)
+
+    # Mesma razão para validar o lead externo AQUI e não no passo 2: um `leadId` inválido
+    # depois do BoxesAdd deixaria o horário travado na agenda da consultora até a faxina
+    # passar, e o visitante veria um erro que não tem nada a ver com disponibilidade.
+    #
+    # A falha de REDE nesta consulta é tratada como indisponibilidade, não como "não
+    # existe". Confundir as duas agendaria por cima de um lead inexistente — ou, pior,
+    # recusaria um lead válido porque a Exact piscou.
+    lead_externo = lead_id is not None
+    if lead_externo:
+        try:
+            achado = await client.buscar_lead_por_id(lead_id)
+        except client.ExactErro as e:
+            print(f"❌ agendamento: não consegui verificar o lead {lead_id} — "
+                  f"{type(e).__name__}: {e}")
+            raise AgendamentoFalhou(f"verificação do lead {lead_id} falhou: {e}") from e
+        if achado is None:
+            print(f"⚠️ agendamento: leadId {lead_id} não existe na Exact (ip {origem_ip})")
+            raise LeadNaoEncontrado(f"lead {lead_id} não encontrado")
 
     anterior = await _duplo_clique(db, telefone)
     if anterior is not None:
@@ -127,75 +326,129 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
         # clicou duas vezes vê a mesma confirmação, que é o que ele espera.
         print(f"🔁 agendamento: duplo clique de {telefone}, devolvendo #{anterior.id}")
         return Resultado(agendamento_id=anterior.id, lead_id=anterior.lead_id,
-                         box_id=anterior.box_id, slot=slot, meeting_id=anterior.meeting_id)
+                         box_id=anterior.box_id, slot=slot, meeting_id=anterior.meeting_id,
+                         consultora_email=anterior.sales_rep_email or "",
+                         consultora_nome=equipe_mod.nome_de(anterior.sales_rep_email or ""))
 
     agora = agora_sp()
     ag = Agendamento(
         nome=nome, email=email, telefone=telefone,
         slot_inicio=slot.inicio, slot_fim=slot.fim,
-        sales_rep_email=g.sales_rep_email,
+        # Fica com a primeira candidata e é REESCRITO quando o BoxesAdd define a
+        # vencedora. A coluna nunca é NULL, então uma tentativa que morra no passo 1 ainda
+        # diz a quem ela era destinada.
+        sales_rep_email=candidatas[0].email, sub_source=sub_source,
+        lead_id=lead_id, lead_externo=lead_externo,
+        # Guardado mesmo quando o lead é externo e o LeadsAdd não vai rodar: o que a pessoa
+        # respondeu NESTA submissão é dado nosso, e some se depender só do CRM.
+        extras=extras or None,
         passo=PASSO_INICIADO, origem_ip=origem_ip,
         created_at=agora, updated_at=agora,
     )
     db.add(ag)
     await db.commit()
 
-    # ---- passo 1: o lock ------------------------------------------------------------
-    try:
-        box_id = await client.criar_box(
-            inicio=slot.inicio, fim=slot.fim,
-            sales_rep_email=g.sales_rep_email,
-            type_meeting=g.type_meeting,
-            description=f"Agendamento LP — {nome}",
-        )
-    except client.SlotOcupado as e:
-        await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
+    # ---- passo 1: o lock, tentando cada consultora ----------------------------------
+    # `Boxes are occupied` numa consultora NÃO significa que o horário morreu — significa
+    # que morreu para ela. Só depois que todas recusarem é que o visitante vê 409.
+    ordem = await escolher_consultora(db, candidatas, slot.inicio.date())
+    box_id = None
+    consultora = None
+    ultimo_ocupado = None
+    for tentativa in ordem:
+        try:
+            box_id = await client.criar_box(
+                inicio=slot.inicio, fim=slot.fim,
+                sales_rep_email=tentativa.email,
+                type_meeting=tentativa.grade.type_meeting,
+                description=f"Agendamento LP — {nome}",
+            )
+            consultora = tentativa
+            break
+        except client.SlotOcupado as e:
+            ultimo_ocupado = e
+            print(f"↪️ agendamento #{ag.id}: {tentativa.nome_exibicao} ocupada em "
+                  f"{slot.id} — tentando a próxima")
+            continue
+        except client.ExactErro as e:
+            # Erro que não é disputa de horário (SDR not found, rede, 5xx) para o fluxo:
+            # insistir na próxima consultora só transformaria um erro de configuração em
+            # vários boxes criados por engano.
+            await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
+            print(f"❌ agendamento #{ag.id}: BoxesAdd falhou em {tentativa.email} — "
+                  f"{type(e).__name__}: {e}")
+            raise AgendamentoFalhou(str(e)) from e
+
+    if consultora is None:
+        msg = str(ultimo_ocupado) if ultimo_ocupado else "nenhuma consultora disponível"
+        await _marcar(db, ag, PASSO_FALHOU, erro=msg)
         disponibilidade.invalidar_cache()
-        print(f"⚠️ agendamento #{ag.id}: slot {slot.id} já ocupado — {e}")
-        raise SlotIndisponivel(str(e)) from e
-    except client.ExactErro as e:
-        await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
-        print(f"❌ agendamento #{ag.id}: BoxesAdd falhou — {type(e).__name__}: {e}")
-        raise AgendamentoFalhou(str(e)) from e
+        print(f"⚠️ agendamento #{ag.id}: slot {slot.id} ocupado nas "
+              f"{len(ordem)} consultora(s) — {msg}")
+        raise SlotIndisponivel(msg) from ultimo_ocupado
 
     ag.box_id = box_id
+    ag.sales_rep_email = consultora.email
     await _marcar(db, ag, PASSO_BOX_CRIADO)
-    print(f"📦 agendamento #{ag.id}: box {box_id} criado para {slot.id}")
+    print(f"📦 agendamento #{ag.id}: box {box_id} criado para {slot.id} "
+          f"com {consultora.nome_exibicao} <{consultora.email}>")
 
     # ---- passo 2: o lead ------------------------------------------------------------
-    try:
-        lead_id = await client.criar_lead(
-            nome=nome, telefone=telefone, email=email,
-            source=SOURCE, sub_source=SUB_SOURCE, funnel_id=FUNIL_POS_GRADUACAO,
-        )
-    except client.ExactErro as e:
-        await _compensar_box(db, ag, motivo="LeadsAdd falhou")
-        await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
-        print(f"❌ agendamento #{ag.id}: LeadsAdd falhou — {type(e).__name__}: {e}")
-        raise AgendamentoFalhou(str(e)) from e
+    # Com lead externo não há chamada nenhuma aqui: o lead já foi verificado lá em cima, e
+    # criar outro é exatamente o bug que o `leadId` existe para evitar. O passo é marcado
+    # do mesmo jeito para a faxina enxergar o mesmo desenho de estado nos dois fluxos.
+    if lead_externo:
+        await _marcar(db, ag, PASSO_LEAD_CRIADO)
+        # Os extras desta submissão ficam só na NOSSA tabela. O `description` do lead foi
+        # escrito no POST /lead e não há LeadsUpdate neste fluxo — reescrevê-lo exigiria
+        # outra chamada, e sobrescrever o que o formulário do index já gravou seria pior
+        # que não escrever. Na prática o index é quem pergunta, então o dado já está lá.
+        aviso = " (extras só na tabela local)" if extras else ""
+        print(f"👤 agendamento #{ag.id}: lead {lead_id} JÁ EXISTIA (veio no corpo) — "
+              f"LeadsAdd pulado, subSource {sub_source} não reaplicado{aviso}")
+    else:
+        try:
+            lead_id = await client.criar_lead(
+                nome=nome, telefone=telefone,
+                source=origens.source_configurado(), sub_source=sub_source,
+                funnel_id=FUNIL_POS_GRADUACAO,
+                description=extras_mod.montar_descricao(email, extras),
+            )
+        except client.ExactErro as e:
+            await _compensar_box(db, ag, motivo="LeadsAdd falhou")
+            await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
+            print(f"❌ agendamento #{ag.id}: LeadsAdd falhou — {type(e).__name__}: {e}")
+            raise AgendamentoFalhou(str(e)) from e
 
-    ag.lead_id = lead_id
-    await _marcar(db, ag, PASSO_LEAD_CRIADO)
-    print(f"👤 agendamento #{ag.id}: lead {lead_id} criado (Entrada, funil {FUNIL_POS_GRADUACAO})")
+        ag.lead_id = lead_id
+        await _marcar(db, ag, PASSO_LEAD_CRIADO)
+        print(f"👤 agendamento #{ag.id}: lead {lead_id} criado "
+              f"(Entrada, funil {FUNIL_POS_GRADUACAO}, subSource {sub_source})")
 
     # ---- passo 3: ponto de não retorno ----------------------------------------------
     try:
         await client.agendar_reuniao(
             box_id=box_id, lead_id=lead_id,
-            stage_name=STAGE_AGENDADOS, sales_rep_email=g.sales_rep_email,
+            stage_name=STAGE_AGENDADOS, sales_rep_email=consultora.email,
         )
     except client.ExactErro as e:
         # O box sai; o LEAD FICA em Entrada, com telefone e origem. Ver cabeçalho.
+        #
+        # Vale nos DOIS fluxos, por razões diferentes: no lead nosso é decisão de produto
+        # (o contato vale mais que o horário perdido); no lead externo é que ele não nos
+        # pertence — foi criado por outra requisição e não é nosso para desfazer. Em
+        # nenhum dos dois se chama LeadsDelete.
         await _compensar_box(db, ag, motivo="scheduleAdd falhou")
         await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
+        posse = "externo, não é nosso" if lead_externo else "nosso, mantido de propósito"
         print(f"❌ agendamento #{ag.id}: scheduleAdd falhou — {type(e).__name__}: {e}. "
-              f"Lead {lead_id} MANTIDO em Entrada de propósito.")
+              f"Lead {lead_id} PRESERVADO ({posse}).")
         raise AgendamentoFalhou(str(e), lead_id=lead_id) from e
 
     await _marcar(db, ag, PASSO_AGENDADO)
     disponibilidade.invalidar_cache()
     print(f"✅ agendamento #{ag.id}: lead {lead_id} agendado em {slot.id} "
-          f"(box {box_id}, {g.sales_rep_email})")
+          f"(box {box_id}, {consultora.nome_exibicao} <{consultora.email}>)")
 
     # O id da reunião é best-effort: o scheduleAdd devolve booleano (FINDINGS §4) e falhar
     # aqui não desfaz nada — a reunião existe.
@@ -208,8 +461,60 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     except (client.ExactErro, KeyError, TypeError, ValueError) as e:
         print(f"⚠️ agendamento #{ag.id}: agendado, mas não consegui o meeting_id — {e}")
 
+    # ---- passo 4: mover para o funil de vendas (OPCIONAL, NÃO-FATAL) ----------------
+    # Vem depois de `meeting_por_lead` de propósito: o id da reunião é lido enquanto ela
+    # ainda está `Vigente`, antes de a transferência mexer no estado dela.
+    #
+    # Qualquer falha aqui é warning e nada mais. O visitante já viu "agendado" na tela, a
+    # reunião está na agenda da consultora, e o lead está em `Agendados` no 18535 — que é um
+    # desfecho correto. Trocar isso por um erro seria desfazer o que deu certo.
+    destino = funil_destino()
+    if destino is not None:
+        try:
+            await client.mudar_funil(lead_id, destino)
+            print(f"➡️ agendamento #{ag.id}: lead {lead_id} movido para a etapa {destino}")
+        except client.ExactErro as e:
+            print(f"⚠️ agendamento #{ag.id}: lead {lead_id} AGENDADO, mas a transferência "
+                  f"para a etapa {destino} falhou ({type(e).__name__}: {e}). "
+                  "Ele fica no funil 18535 em Agendados — agendamento intacto.")
+
+    # ---- agente de pré-qualificação: abertura em +5 min, e o lembrete da reunião -------
+    #
+    # Depois de TUDO que importa para o visitante, e sem poder derrubar nada: as duas
+    # chamadas engolem a própria exceção. Um erro no agente não pode custar um agendamento
+    # que já está na agenda da consultora e já foi mostrado na tela.
+    #
+    # `agendar_lembrete` é chamado aqui porque este é UM DOS DOIS NASCIMENTOS de uma reunião
+    # — o outro é o próprio agente marcando pelo WhatsApp. Quem agenda pelo obrigado.html
+    # nunca passa pelo fluxo do agente, e sem esta linha ficaria sem lembrete.
+    #
+    # Import DENTRO da função, sempre: `qualificacao_fluxo` carrega `nat_sender` -> `whatsapp`,
+    # e o topo deste módulo é caminho de request da landing page (ver horarios.py:26-27).
+    await _gatilho_do_agente(db, ag)
+
     return Resultado(agendamento_id=ag.id, lead_id=lead_id, box_id=box_id,
-                     slot=slot, meeting_id=ag.meeting_id)
+                     slot=slot, meeting_id=ag.meeting_id,
+                     consultora_email=consultora.email,
+                     consultora_nome=consultora.nome_exibicao)
+
+
+async def _gatilho_do_agente(db: AsyncSession, ag: Agendamento) -> None:
+    """Enfileira a abertura do agente e, quando há reunião, o lembrete. Nunca levanta."""
+    try:
+        from app.qualificacao_gatilho import agendar_abertura
+        await agendar_abertura(db, telefone=ag.telefone, lead_id=ag.lead_id,
+                               nascido_em=ag.created_at)
+    except Exception as e:
+        print(f"⚠️ agendamento #{ag.id}: gatilho do agente não enfileirado "
+              f"({type(e).__name__}: {e})")
+    if ag.passo != PASSO_AGENDADO:
+        return
+    try:
+        from app.qualificacao_fluxo import agendar_lembrete
+        await agendar_lembrete(ag, db)
+    except Exception as e:
+        print(f"⚠️ agendamento #{ag.id}: lembrete não agendado "
+              f"({type(e).__name__}: {e})")
 
 
 async def _compensar_box(db: AsyncSession, ag: Agendamento, *, motivo: str) -> None:
@@ -229,7 +534,9 @@ async def _compensar_box(db: AsyncSession, ag: Agendamento, *, motivo: str) -> N
 
 
 async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str | None,
-                                     telefone: str, origem_ip: str | None = None) -> int:
+                                     telefone: str, origem: str | None = None,
+                                     extras: dict[str, str] | None = None,
+                                     origem_ip: str | None = None) -> int:
     """Fallback do POST /lead: cadastra e pronto. O lead cai em `Entrada`.
 
     Existe para o visitante que não quer escolher horário, e para o caso de a grade estar
@@ -238,11 +545,16 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
 
     Não cria box e não toca em agenda — por isso não tem compensação nenhuma.
     """
+    sub_source = origens.resolver(origem)
     agora = agora_sp()
     ag = Agendamento(
         nome=nome, email=email, telefone=telefone,
         slot_inicio=agora, slot_fim=agora,  # sem slot; as colunas são NOT NULL
-        sales_rep_email=grade().sales_rep_email,
+        # Não há consultora escolhida: este caminho não cria box nem reunião. A coluna é
+        # NOT NULL, então fica a primeira em rotação, e `passo` nunca chega a `agendado` —
+        # é o que distingue esta linha de um agendamento de verdade num relatório.
+        sales_rep_email=equipe_mod.consultoras()[0].email, sub_source=sub_source,
+        extras=extras or None,
         passo=PASSO_INICIADO, origem_ip=origem_ip,
         created_at=agora, updated_at=agora,
     )
@@ -251,8 +563,10 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
 
     try:
         lead_id = await client.criar_lead(
-            nome=nome, telefone=telefone, email=email,
-            source=SOURCE, sub_source=SUB_SOURCE, funnel_id=FUNIL_POS_GRADUACAO,
+            nome=nome, telefone=telefone,
+            source=origens.source_configurado(), sub_source=sub_source,
+            funnel_id=FUNIL_POS_GRADUACAO,
+            description=extras_mod.montar_descricao(email, extras),
         )
     except client.ExactErro as e:
         await _marcar(db, ag, PASSO_FALHOU, erro=str(e))
@@ -261,5 +575,11 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
 
     ag.lead_id = lead_id
     await _marcar(db, ag, PASSO_LEAD_CRIADO)
-    print(f"👤 agendamento #{ag.id}: lead {lead_id} cadastrado sem agendar (Entrada)")
+    print(f"👤 agendamento #{ag.id}: lead {lead_id} cadastrado sem agendar "
+          f"(Entrada, subSource {sub_source})")
+
+    # Mesma espera de 5 min do outro caminho. Quem preencheu o formulário e vai agendar em
+    # seguida cai aqui primeiro; o handler relê o estado e escolhe a abertura certa. Sem
+    # lembrete: ainda não existe reunião.
+    await _gatilho_do_agente(db, ag)
     return lead_id

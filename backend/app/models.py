@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, Text, DateTime, BigInteger, Integer, Boolean, ForeignKey, func, Table, CheckConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -320,6 +321,19 @@ class NatConfig(Base):
     nat_enabled = Column(Boolean, nullable=False, default=False)
     nat_start_at = Column(DateTime, nullable=True)
     max_envios_hora = Column(Integer, nullable=False, default=20)
+
+    # --- Eixos do AGENTE de pré-qualificação, separados dos da NAT de botões ---
+    #
+    # Dois eixos pelo mesmo motivo dos de cima: ligar só o booleano não faz o agente atuar,
+    # porque o corte por data continua bloqueando.
+    #
+    # E são campos PRÓPRIOS de propósito. Ligar o agente NÃO pode ressuscitar o fluxo de
+    # botões — que segue governado por nat_enabled — nem o contrário. Os dois moram na mesma
+    # linha por serem a mesma classe de trava, não por serem a mesma trava.
+    qualificacao_enabled = Column(Boolean, nullable=False, default=False,
+                                  server_default="false")
+    qualificacao_start_at = Column(DateTime, nullable=True)
+
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
@@ -423,6 +437,15 @@ KIND_SLA_CHECK = "sla_check"
 # Bloco 6: 10 min depois de o SDR marcar "não consegui contato", cobra o SDR de novo. O
 # destinatário é o SDR, NUNCA o lead — a mensagem ao lead sai uma única vez, no clique.
 KIND_RETRY_CONTATO = "retry_contato"
+
+# Agente de pré-qualificação: abre a conversa +5 min depois da aplicação. A espera existe
+# porque a ramificação "já agendou × não agendou" só é definitiva depois que a pessoa
+# terminou (ou não) o fluxo do obrigado.html — medido: mediana 28s, máximo 3min14s.
+KIND_INICIAR_QUALIFICACAO = "iniciar_qualificacao"
+
+# Lembrete T-30min da reunião. Agendado no instante em que a reunião passa a ser conhecida,
+# venha ela do agente ou do obrigado.html.
+KIND_LEMBRETE_REUNIAO = "lembrete_reuniao"
 
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3
@@ -530,11 +553,124 @@ class Agendamento(Base):
     slot_inicio = Column(DateTime, nullable=False)
     slot_fim = Column(DateTime, nullable=False)
     sales_rep_email = Column(String(200), nullable=False)
+    # De qual curso veio o lead. Conferido contra a allowlist de agendamento/origens.py antes
+    # de ir para a Exact — `LeadsAdd` CRIA o subSource quando o valor não existe, e o cadastro
+    # é global. Guardado aqui porque é a única forma de saber depois de qual LP veio cada
+    # agendamento: em `exact_leads` o dado só aparece no sync seguinte, e some se o lead for
+    # excluído. NULL nas linhas anteriores a esta coluna.
+    sub_source = Column(String(100), nullable=True)
     box_id = Column(BigInteger, nullable=True)
     lead_id = Column(BigInteger, nullable=True)
+    # True quando o `lead_id` veio PRONTO no corpo do POST (fluxo de duas etapas da LP:
+    # o form nativo cria o lead em /lead e o obrigado.html só agenda). Nesse caso o módulo
+    # NÃO chamou LeadsAdd — o lead é de outra requisição, e a compensação não pode presumir
+    # que ele é nosso. É a única forma de responder depois "este lead foi criado aqui ou já
+    # existia?", porque `lead_id` preenchido tem a mesma cara nos dois caminhos.
+    lead_externo = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Respostas livres do formulário da LP: profissão, como conheceu, faixa de investimento.
+    # Variam por página e por campanha — viram JSON e não coluna, senão cada pergunta nova
+    # da equipe de marketing viraria uma migração.
+    #
+    # JSONB, e não Text com json.dumps como `templates.components` e
+    # `nat_scheduled_actions.payload`. Aqueles dois são payloads OPACOS, guardados para
+    # auditoria e nunca consultados por dentro. Este aqui existe justamente para ser
+    # consultado — `extras->>'Como conheceu'` é a pergunta que o marketing vai fazer — e
+    # JSONB dá isso sem parse na aplicação, além de recusar JSON inválido na escrita.
+    extras = Column(JSONB, nullable=True)
     meeting_id = Column(BigInteger, nullable=True)
     passo = Column(String(20), nullable=False, default=PASSO_INICIADO)
     erro = Column(Text, nullable=True)           # mensagem crua da Exact, sem tradução
     origem_ip = Column(String(45), nullable=True)  # 45 = IPv6 textual
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime, nullable=False)
+
+
+# ==========================================================================================
+# AGENTE DE PRÉ-QUALIFICAÇÃO
+# ==========================================================================================
+#
+# Etapas do fluxo do AGENTE. Espelha o CHECK de migrate_qualificacao.py — mesma regra do
+# ETAPAS_VALIDAS do fluxo velho: divergir daqui faz o INSERT falhar na hora, que é o desejado.
+#
+# São DUAS entradas possíveis, e é por isso que existe `aguardando_formacao`: a abertura T3
+# (`nat_abertura_sem_formacao`) pergunta QUAL É a formação, então a primeira resposta do lead
+# é a formação, não o ano. T1 e T2 já afirmam a formação e perguntam o ano direto.
+ETAPA_Q_AGUARDANDO_FORMACAO = "aguardando_formacao"
+ETAPA_Q_AGUARDANDO_ANO = "aguardando_ano"
+ETAPA_Q_AGUARDANDO_ATUACAO = "aguardando_atuacao"
+ETAPA_Q_AGUARDANDO_MOTIVACAO = "aguardando_motivacao"
+ETAPA_Q_OFERTANDO_AGENDA = "ofertando_agenda"
+ETAPA_Q_ESCOLHENDO_SLOT = "escolhendo_slot"
+ETAPA_Q_CONCLUIDO = "concluido"
+ETAPA_Q_TRANSFERIDO = "transferido_humano"
+ETAPA_Q_ENCERRADO = "encerrado"
+
+ETAPAS_QUALIFICACAO_VALIDAS = frozenset({
+    ETAPA_Q_AGUARDANDO_FORMACAO, ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
+    ETAPA_Q_AGUARDANDO_MOTIVACAO, ETAPA_Q_OFERTANDO_AGENDA, ETAPA_Q_ESCOLHENDO_SLOT,
+    ETAPA_Q_CONCLUIDO, ETAPA_Q_TRANSFERIDO, ETAPA_Q_ENCERRADO,
+})
+
+# Etapas em que o agente É DONO do inbound daquele contato (Bloco D, precedência). Fora
+# delas o estado existe mas o agente calou-se — e o fluxo velho, se um dia rodar, volta a
+# ver a mensagem.
+ETAPAS_QUALIFICACAO_ATIVAS = frozenset({
+    ETAPA_Q_AGUARDANDO_FORMACAO, ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
+    ETAPA_Q_AGUARDANDO_MOTIVACAO, ETAPA_Q_OFERTANDO_AGENDA, ETAPA_Q_ESCOLHENDO_SLOT,
+})
+
+# De qual gatilho o lead veio. Decide de onde a formação é lida: `lp` tem os extras do
+# formulário no nosso banco; `exact` só tem o `description`, que é texto livre.
+ORIGEM_LP = "lp"
+ORIGEM_EXACT = "exact"
+ORIGENS_QUALIFICACAO_VALIDAS = frozenset({ORIGEM_LP, ORIGEM_EXACT})
+
+
+class NatQualificacaoState(Base):
+    """Onde cada lead está no fluxo do AGENTE. UM estado por contato.
+
+    NÃO é nat_flow_state com etapas novas — ver o cabeçalho de migrate_qualificacao.py. Em
+    resumo: aquela tabela tem `contact_wa_id UNIQUE` e um CHECK com as 7 etapas do fluxo de
+    botões; juntar os dois obrigaria a precedência do webhook a virar um `if` sobre o valor
+    de `etapa`. Tabelas separadas dão a precedência de graça — existe linha aqui? o agente é
+    o dono do inbound.
+
+    Sem FK para contacts, exact_leads, users ou agendamentos: escrita de dentro do webhook,
+    e uma FK só acrescentaria um modo de falha capaz de derrubar o lote de mensagens.
+
+    `ultimo_wa_message_id` é a trava de idempotência (padrão nat_flow._ja_processado): a Meta
+    reentrega webhook, e sem ele a mesma resposta avançaria a etapa duas vezes.
+    """
+    __tablename__ = "nat_qualificacao_state"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    contact_wa_id = Column(String(20), unique=True, nullable=False)
+    exact_lead_id = Column(Integer, nullable=True)
+    origem = Column(String(10), nullable=False)
+    etapa = Column(String(30), nullable=False, index=True)
+
+    formacao = Column(Text, nullable=True)
+    ano_conclusao = Column(Text, nullable=True)
+    atuacao = Column(Text, nullable=True)
+    motivacao = Column(Text, nullable=True)
+
+    # COLETADA E NUNCA LIDA PELO FLUXO. A régua R$100/200/300 é critério humano (RECON §1.11).
+    # Guardar não custa; deixar o LLM decidir com ela custaria.
+    faixa_investimento = Column(Text, nullable=True)
+
+    # O que o LLM extrair além dos campos nomeados, sem exigir ALTER a cada pergunta nova do
+    # roteiro. NÃO é onde mora estado de máquina — `etapa` é coluna, e só código a muda.
+    dados_extras = Column(JSONB, nullable=True)
+
+    # Id da NOSSA tabela agendamentos, solto de propósito (sem FK).
+    agendamento_id = Column(BigInteger, nullable=True)
+
+    ultimo_wa_message_id = Column(Text, nullable=True)
+
+    transferido_em = Column(DateTime, nullable=True)
+    # POR QUE o agente desistiu. Sem isto, `transferido_humano` é um balde onde não se
+    # distingue "o LLM caiu" de "o lead pediu para falar com uma pessoa".
+    transferido_motivo = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

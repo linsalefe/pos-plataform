@@ -33,8 +33,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import agendar as fluxo
-from app.agendamento import disponibilidade
-from app.agendamento.grade import grade
+from app.agendamento import client, consultoras as equipe_mod, disponibilidade
+from app.agendamento import extras as extras_mod, origens
 from app.database import get_db
 
 router = APIRouter(prefix="/api/agendamento", tags=["agendamento"])
@@ -94,6 +94,33 @@ class DadosLead(BaseModel):
     nome: str = Field(min_length=2, max_length=200)
     email: str | None = Field(default=None, max_length=200)
     telefone: str = Field(min_length=8, max_length=25)
+    # De qual curso veio. Conferido contra a allowlist em `origens.py`, NUNCA repassado como
+    # texto livre: `LeadsAdd` cria o subSource quando o valor não existe. Ausente = padrão.
+    origem: str | None = Field(default=None, max_length=100)
+    # Respostas livres do formulário: profissão, como conheceu, faixa de investimento. Vão
+    # para `agendamentos.extras` (JSONB) e para o `description` do lead, que é o que o SDR
+    # lê antes de ligar. Declarado aqui no DadosLead de propósito: assim vale para /lead e
+    # para /agendar sem duplicar nada, e as duas rotas têm o mesmo contrato.
+    #
+    # Os limites (10 chaves, 200 chars) são RECUSA, não corte — ver o validador abaixo.
+    extras: dict[str, str] | None = Field(default=None)
+
+    @field_validator("extras")
+    @classmethod
+    def _extras_limpos(cls, v):
+        """Aplica contrato e sanitização de uma vez só.
+
+        `ExtrasInvalidos` herda de `ValueError`, então o Pydantic já o transforma em 422 com
+        a mensagem dentro — sem `except` aqui e sem tratamento no endpoint.
+
+        Recusar em vez de truncar é decisão consciente, e vai contra o "visitante nunca fica
+        preso" que rege o resto do módulo. A razão: extras alimentam relatório de marketing,
+        e um valor cortado pela metade é pior que uma submissão recusada, porque ninguém
+        descobre. Quem controla o formulário somos nós — 10 perguntas é uma LP longa, e uma
+        11ª significa que alguém mexeu no form sem olhar o backend. O 422 aparece no console
+        de quem publicou a página, que é exatamente quem pode consertar.
+        """
+        return extras_mod.sanitizar(v) or None
 
     @field_validator("nome")
     @classmethod
@@ -115,6 +142,18 @@ class DadosLead(BaseModel):
 
 class PedidoAgendamento(DadosLead):
     slot: str = Field(min_length=10, max_length=40)
+    # Lead que JÁ existe, criado antes pelo POST /lead. Presente = pula o LeadsAdd e agenda
+    # este lead; ausente = cria um novo, como sempre. É o que impede a pessoa de virar dois
+    # leads no fluxo de duas etapas da LP (form no index -> agendamento no obrigado).
+    #
+    # O nome é `leadId` porque é o que a query string do obrigado.html carrega (`?lead=`) e
+    # o que o front monta. `lead_id` também é aceito, para quem chamar de dentro do projeto.
+    #
+    # `gt=0` porque id da Exact é sempre positivo, e um `0` vindo de string vazia mal
+    # convertida no front viraria uma consulta inútil à Exact — melhor recusar como 422.
+    lead_id: int | None = Field(default=None, alias="leadId", gt=0)
+
+    model_config = {"populate_by_name": True}
 
 
 @router.get("/slots")
@@ -132,11 +171,18 @@ async def listar_slots(request: Request, db: AsyncSession = Depends(get_db)):
         print(f"❌ /agendamento/slots: {type(e).__name__}: {e}")
         return {"dias": {}, "fallback": True,
                 "mensagem": "Não consegui carregar os horários agora."}
-    g = grade()
+    equipe = equipe_mod.consultoras()
+    if not dias:
+        # Sem horário nenhum a LP não tem o que mostrar. Pode ser feriado, agenda lotada, ou
+        # todas as consultoras fora de rotação pela validação de startup. `fallback:true` é o
+        # que faz o front cair no "deixe seu contato" em vez de exibir grade vazia.
+        return {"dias": {}, "fallback": True,
+                "mensagem": "Não há horários abertos no momento."}
+    # A duração é política do produto e igual para todas; leio da primeira em rotação.
     return {
         "dias": dias,
         "fallback": False,
-        "duracao_min": int(g.duracao.total_seconds() // 60),
+        "duracao_min": int(equipe[0].grade.duracao.total_seconds() // 60),
         "fuso": "America/Sao_Paulo",
     }
 
@@ -149,9 +195,23 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
     try:
         r = await fluxo.agendar(db, nome=pedido.nome, email=pedido.email,
                                 telefone=pedido.telefone, slot_id=pedido.slot,
-                                origem_ip=_ip(request))
+                                origem=pedido.origem, lead_id=pedido.lead_id,
+                                extras=pedido.extras, origem_ip=_ip(request))
+    except origens.OrigemInvalida as e:
+        # 400 e não 422: o corpo está bem formado, o valor é que não é aceito. E a mensagem
+        # não lista as origens permitidas — é endpoint público, e a lista é dado interno.
+        print(f"⚠️ /agendamento/agendar: {e} (ip {_ip(request)})")
+        raise HTTPException(status_code=400, detail="Origem inválida.") from e
     except fluxo.SlotInvalido as e:
         raise HTTPException(status_code=400, detail="Horário inválido ou expirado.") from e
+    except fluxo.LeadNaoEncontrado as e:
+        # 404 e não 400: o corpo está correto, o recurso é que não existe. O front trata
+        # reenviando SEM `leadId` — aí o /agendar cria o lead e o visitante não fica preso
+        # por causa de um `?lead=` velho na URL.
+        raise HTTPException(
+            status_code=404,
+            detail="O cadastro informado não foi encontrado. "
+                   "Recarregue a página e tente de novo.") from e
     except fluxo.SlotIndisponivel as e:
         raise HTTPException(
             status_code=409,
@@ -174,6 +234,9 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
         "inicio": r.slot.inicio.strftime("%Y-%m-%dT%H:%M:%S"),
         "fim": r.slot.fim.strftime("%Y-%m-%dT%H:%M:%S"),
         "fuso": "America/Sao_Paulo",
+        # Quem vai atender. O e-mail NÃO vai junto de propósito: é endpoint público, e o
+        # endereço interno da consultora não é dado do visitante.
+        "consultora_nome": r.consultora_nome,
         "aviso": "Para remarcar ou cancelar, fale com a gente pelo WhatsApp.",
     }
 
@@ -188,10 +251,26 @@ async def criar_lead_sem_agendar(pedido: DadosLead, request: Request,
     _limitar(request, LIMITE_ESCRITA, "lead")
     try:
         lead_id = await fluxo.cadastrar_lead_sem_agendar(
-            db, nome=pedido.nome, email=pedido.email,
-            telefone=pedido.telefone, origem_ip=_ip(request))
+            db, nome=pedido.nome, email=pedido.email, telefone=pedido.telefone,
+            origem=pedido.origem, extras=pedido.extras, origem_ip=_ip(request))
+    except origens.OrigemInvalida as e:
+        print(f"⚠️ /agendamento/lead: {e} (ip {_ip(request)})")
+        raise HTTPException(status_code=400, detail="Origem inválida.") from e
     except fluxo.AgendamentoFalhou as e:
-        raise HTTPException(status_code=502,
-                            detail="Não consegui registrar seu contato. Tente de novo.") from e
+        # 503 quando a Exact não respondeu, 502 quando ela respondeu recusando. A diferença
+        # importa para o FRONT, não para o visitante: o form nativo segue para o obrigado.html
+        # de qualquer jeito (sem `lead=` na URL), e lá o POST /agendar cria o lead. Ninguém
+        # fica preso numa página porque o CRM piscou.
+        #
+        # Nenhum dos dois é 500: 500 quer dizer "quebrou aqui dentro", e não é o caso — a
+        # falha é de uma dependência externa, e o front tem o que fazer com essa informação.
+        indisponivel = isinstance(e.__cause__, client.ExactIndisponivel)
+        raise HTTPException(
+            status_code=503 if indisponivel else 502,
+            detail="Não consegui registrar seu contato agora. Tente de novo.") from e
+    # `lead_id` (snake) é a chave canônica de RESPOSTA em todo o módulo — igual ao /agendar,
+    # e igual ao resto do corpo (`agendamento_id`, `inicio`, `fim`). O `leadId` em camelCase é
+    # aceito só na ENTRADA do /agendar, porque é o formato que o front tem em mãos. Devolver
+    # as duas grafias aqui deixaria o contrato ambíguo sobre qual é a de verdade.
     return {"ok": True, "lead_id": lead_id,
             "aviso": "Recebemos seu contato. Nossa equipe fala com você em breve."}

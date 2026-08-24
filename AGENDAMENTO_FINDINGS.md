@@ -136,9 +136,11 @@ registerDate: 2026-08-17T18:34:22.8874557Z
 
 Observações:
 
-- **`source`/`subSource` são strings que casam com cadastros existentes.** Vieram resolvidos
-  para os ids 106847 e 176793 — a API não criou origem nova. Um valor não cadastrado
-  provavelmente cria lixo no cadastro; **valide antes de enviar**.
+- ~~**`source`/`subSource` casam com cadastros existentes; a API não criou origem nova.**~~
+  **ERRADO — corrigido em §11.** `subSource` voltou resolvido com o id 176793, e eu li isso
+  como prova de que o cadastro já existia. Não era: **o `LeadsAdd` CRIOU o cadastro**, porque
+  `"DialogicasTurma"` era um nome que eu inventei. O valor voltar com id não distingue
+  "encontrou" de "acabou de criar".
 - **`funnelId` é `18535`** (`Pos Graduacao`), confirmado em `GET /Funnels`. É obrigatório se
   você for informar `stage`; sem ele o lead cai no primeiro estágio do funil padrão.
 - **Sem `stage`, o lead nasce em `Entrada`** (posição 1 do funil 18535).
@@ -642,6 +644,598 @@ clique; os três desfechos da faxina; e o rate limit por IP.
 
 ---
 
+## 11. `subSource`: a API cria o cadastro, e eu criei um sem querer (17/08/2026)
+
+### A correção
+
+§3 afirmava que `LeadsAdd` só casa com cadastros existentes. **Está errado.** O `subSource`
+`"DialogicasTurma"` — um nome que inventei para o primeiro teste — voltou resolvido com o
+**id 176793**, e eu li o id como prova de que já existia.
+
+`GET /Sources` desmente: 176793 é **o id mais alto de toda a base**, acima de qualquer curso
+real. O `LeadsAdd` criou o cadastro na hora. Ele continua lá depois que o lead de teste foi
+excluído — a exclusão do lead não desfaz a origem.
+
+> **A regra verdadeira:** `source` e `subSource` são texto livre, e o que não existe **é
+> criado**. O cadastro de origens é global e usado em relatório de marketing. Um campo aberto
+> vindo de página pública é uma porta para poluir esse cadastro, e o dano é silencioso.
+
+Foi por isso que o módulo ganhou `app/agendamento/origens.py`: allowlist em env, conferida
+antes de a chamada sair. O que não está na lista é 400, e nada é criado.
+
+### `PosMulheridades` — a resposta da pergunta
+
+`posgenero` **não** é a pós de Mulheridades. São cursos diferentes, e `posgenero` ainda por
+cima é a turma velha.
+
+| subSource | id | leads em `exact_leads` | último lead | o que é |
+|---|---|---|---|---|
+| **`PosMulheridades`** | 173358 | **120** | 17/08/2026 | **a pós de Mulheridades** |
+| `posgenerot2` | 168707 | 325 | 17/08/2026 | pós de Gênero, turma 2 — a viva |
+| `posgenero` | 137321 | 109 | 31/10/2025 | pós de Gênero, turma 1 — morta |
+| `PosPraticasDialogicasTurma1` | 170904 | 90 | 16/08/2026 | pós de Práticas Dialógicas |
+| `DialogicasTurma` | 176793 | 0 | — | **lixo criado por este teste** |
+
+`PosMulheridades` já existe, está ativo e recebe lead hoje. **Não precisa criar nada.**
+
+Todos sob o source `Rd Marketing` (id 106847), que tem 61 subSources no total.
+
+### O que a allowlist tem, e o que ficou de fora
+
+```
+AGENDAMENTO_SUBSOURCES=PosMulheridades,posgenerot2,PosPraticasDialogicasTurma1
+AGENDAMENTO_SUBSOURCE_PADRAO=PosPraticasDialogicasTurma1
+```
+
+Fora de propósito: `posgenero` (turma morta) e `DialogicasTurma` (o lixo). Note que o padrão
+mudou — era `DialogicasTurma`, que **nunca deveria ter sido o valor de produção**. O certo é
+`PosPraticasDialogicasTurma1`.
+
+A comparação é case-insensitive, mas o valor enviado é o da allowlist com a caixa exata: os
+nomes reais misturam convenções (`posgenerot2` e `PosMulheridades` convivem), e mandar
+`posmulheridades` criaria um **segundo** cadastro com o mesmo nome em caixa diferente.
+
+### Dívida deixada
+
+`DialogicasTurma` (176793) continua no cadastro de origens. Não há endpoint de escrita para
+origem no `$metadata` — só `Sources`, sem `SourcesAdd`/`SourcesRemove`. **A limpeza é manual,
+pela UI da Exact.** Não tem lead nenhum apontando para ele, então é cosmético; mas aparece na
+lista de origens de quem for montar um relatório.
+
+---
+
+## 12. `leadId` no `/agendar`: o fluxo de duas etapas (18/08/2026)
+
+A LP trocou o formulário do RD Station por form nativo, o que parte o fluxo em duas
+requisições — e cria o risco de a mesma pessoa virar dois leads. Três medições novas contra a
+API real saíram desta sprint.
+
+### `$filter=id eq {leadId}` é consistente, mas mente na paginação
+
+É o filtro certo para validar um `leadId`: responde na hora, sem o atraso de índice que a
+busca textual tem (§10). Id existente devolve o lead; id inexistente devolve **HTTP 200 com
+`value: []`**.
+
+A armadilha está no que vem junto:
+
+```json
+{"@odata.context":"...#Leads","value":[],
+ "@odata.nextLink":"https://api.exactspotter.com/v3/Leads?$filter=id%20eq%20999999999&$skip=500"}
+```
+
+**O `@odata.nextLink` aparece mesmo com zero resultados**, apontando para `$skip=500` de um
+conjunto vazio. Quem seguir o link para "confirmar que acabou" pagina para sempre. Lista
+vazia é resposta final.
+
+Vale também registrar que um `leadId` válido pode apontar para lead em qualquer etapa —
+o primeiro lead que peguei de amostra estava em `Descartado`. O módulo valida **existência**,
+não estado: um `scheduleAdd` sobre lead descartado o move para `Agendados`, o que é o
+comportamento desejado (alguém descartado que voltou a se interessar).
+
+### ⚠️ `phone1` volta com o DDI grudado — e o código estava errado por isso
+
+O `LeadsAdd` recebe `ddiPhone` e `phone` **separados**. O `GET /Leads` devolve `phone1` com
+os dois **grudados**. Não é simetria óbvia, e consultar do jeito errado não dá erro nenhum:
+
+| filtro | resultado |
+|---|---|
+| `phone1 eq '83988046720'` | **0 leads** |
+| `phone1 eq '5583988046720'` | **4 leads** |
+
+`client.buscar_lead_por_telefone()` montava o filtro **sem** o DDI desde que foi escrita.
+Ela nunca encontrou lead nenhum, e nunca falhou — devolvia `None`, que é indistinguível de
+"não existe". Não causou dano porque a trava de duplo clique usa a tabela local e não ela,
+mas era uma defesa antiduplicata que não defendia nada. Corrigida nesta sprint.
+
+Detalhe que fecha o diagnóstico: **`ddiPhone` volta `None` em todo lead lido**. O campo existe
+na escrita e não na leitura, então não dá para remontar o número a partir dos dois campos —
+a concatenação tem que ser feita na consulta.
+
+> Lição geral: na Exact, **filtro que não casa devolve lista vazia, não erro**. Toda consulta
+> nova merece uma verificação contra um registro que você sabe que existe, senão o silêncio
+> passa por resposta.
+
+### O fuso pegou o próprio teste
+
+O E2E falhou com `esperava 1 slot em 2027-03-18, achei 0`. A causa não tinha nada a ver com a
+Exact: `_preparar_grade` calculava o horizonte com `date.today()` (hora do sistema, UTC)
+enquanto a grade conta os dias a partir de `agora_sp()`. Rodando 00:0x UTC, `date.today()`
+dava `2026-08-18` e `agora_sp().date()` dava `2026-08-17` — horizonte um dia curto, alvo fora
+da grade. O mesmo defeito latente estava no E2E de uma etapa. Ambos passaram a usar
+`_horizonte_ate()`, que conta em SP.
+
+É a mesma classe de erro de §1, do lado do teste. Vale como aviso: **nada neste projeto deve
+chamar `date.today()` ou `datetime.now()` sem fuso** — inclusive teste.
+
+### E2E do fluxo de duas etapas
+
+`backend/test_agendamento_e2e_leadid.py --sim-eu-quero`, alvo **2027-03-18 14:00**, telefone
+exclusivo `11999995555` para a contagem ser conclusiva.
+
+| # | verificação | resultado |
+|---|---|---|
+| 1 | telefone sem lead, data sem box | limpo |
+| 2 | etapa 1 (`POST /lead`) | lead **51437955** em `Entrada`, subSource `PosMulheridades` |
+| 3 | etapa 2 (`POST /agendar` com `leadId`) | agendamento #5, box **43726884**, reunião **4725239** |
+| 4 | **exatamente 1 lead com o telefone** | **1** — nenhum `LeadsAdd` extra ✅ |
+| 5 | o lead andou de etapa | `Entrada` → `Agendados`, subSource intacto |
+| 6 | fuso | `start=2027-03-18T14:00:00Z` — hora de parede preservada |
+| 7 | estado local | `passo=agendado`, `lead_externo=True` |
+| 8-9 | limpeza | lead excluído (204), 0 leads, 0 boxes visíveis |
+
+O passo 4 é a razão de o arquivo existir. Se o `leadId` for ignorado em qualquer ponto do
+caminho, aparecem 2 leads e um SDR liga duas vezes para o mesmo número — falha que nenhum
+teste offline pega, porque o que quebra é a integração inteira.
+
+### Resíduo desta rodada
+
+| Artefato | Destino |
+|---|---|
+| Leads 51437948 e 51437955 | excluídos, 204 ✅ |
+| Linhas em `agendamentos` | removidas, tabela de volta a 0 ✅ |
+| **Box 43726883** | **órfão** — da execução que falhou na asserção do telefone ⚠️ |
+| **Box 43726884** | **órfão** — da execução boa ⚠️ |
+
+Os dois em 2027-03-18, invisíveis em todo `GET`, sem bloquear a agenda (§8).
+
+**Total de órfãos invisíveis acumulados: 5** (43722204, 43722368, 43722680, 43726883,
+43726884).
+
+O primeiro deles é o preço de uma asserção errada minha, não do código: o fluxo tinha
+funcionado, e foi a verificação por telefone — sem DDI — que reprovou um resultado correto.
+Cada reexecução do E2E custa um box permanente, então **vale conferir a asserção antes de
+rodar**, não depois.
+
+
+---
+
+## 13. `description`: teto de 8000 e truncamento silencioso (18/08/2026)
+
+Medido criando e apagando leads reais. Sem `BoxesAdd` e sem `scheduleAdd`, o `LeadsDelete`
+limpa 100% — **esta sondagem não deixou órfão nenhum**.
+
+| enviado | guardado | veredito |
+|---|---|---|
+| 200 | 200 | intacto |
+| 4000 | 4000 | intacto |
+| 7999 | 7999 | intacto |
+| **8000** | **8000** | intacto — é o teto exato |
+| **8001** | **7999** | **TRUNCADO** |
+| 10000 | 7999 | TRUNCADO |
+
+**Nenhuma das tentativas devolveu erro.** O `LeadsAdd` responde 201 e corta o texto em
+silêncio: nada no corpo da resposta, nada em log, nada que distinga "guardei tudo" de
+"joguei metade fora". Só relendo o lead dá para saber.
+
+Repare que estourar por 1 caractere custa 2: 8001 vira 7999, não 8000. Não investiguei a
+causa (provavelmente `NVARCHAR(8000)` com algum marcador), mas o número medido é 7999.
+
+> **Consequência prática:** qualquer texto de tamanho variável indo para `description`
+> precisa de orçamento próprio, abaixo de 8000, com corte visível do nosso lado. O módulo
+> usa 4000 e marca o corte com `…` (`app/agendamento/extras.py`). O pior caso real do
+> formulário — e-mail mais 10 extras cheios — dá 2868 caracteres, então o orçamento nunca
+> deveria ser atingido; ele existe para o dia em que alguém afrouxar um limite de campo sem
+> lembrar que há um teto do outro lado.
+
+### O `description` demora a aparecer na leitura
+
+Na primeira sondagem, três dos cinco leads voltaram com `description: null` logo após o
+`LeadsAdd` — e os mesmos leads, relidos alguns segundos depois, tinham o campo preenchido.
+Não é o mesmo atraso do índice de texto (§10): aqui o filtro era `id eq`, que é consistente
+para *encontrar* o lead. É o **campo** que demora a materializar.
+
+Quem for conferir um `description` recém-escrito precisa insistir na leitura, senão conclui
+que o dado não foi gravado quando ele foi.
+
+### O atraso de índice também afeta `phone1 eq`, não só `contains()`
+
+§10 registrou que `contains(lead, ...)` continua devolvendo lead já excluído. Esta rodada
+mostrou que **`phone1 eq '55...'` faz o mesmo** — o E2E dos extras falhou na verificação
+final com o lead 51438000, que o `DELETE` já tinha removido com 204.
+
+Ou seja: não é uma peculiaridade da busca textual. **`id eq` é o único filtro consistente na
+hora.** Qualquer confirmação de exclusão por outro campo precisa insistir.
+
+### E2E sem resíduo
+
+`backend/test_agendamento_e2e_extras.py --sim-eu-quero` — 8/8, e é o **único E2E do módulo
+que não deixa órfão**, porque exercita só o `LeadsAdd`. Prova que o `description` chega
+íntegro (134 chars idênticos), que a acentuação sobrevive (`Profissão`, `Até R$100,00`) e
+que o JSONB volta como `dict` consultável por `extras->>'Como conheceu'`.
+
+**Órfãos acumulados continuam 5** — nada nesta sprint acrescentou resíduo.
+
+
+---
+
+## 14. Consultoras e funil de vendas (18/08/2026)
+
+### `GET /Sellers` — só existem 4, e 3 ativos
+
+| ativo | id | nome | e-mail |
+|---|---|---|---|
+| ✅ | 415967 | Victória | `comercial@cenatcursos.com.br` |
+| ✅ | 430634 | Victória | `processoseletivo@cenatcursos.com.br` |
+| ✅ | 448892 | Marina | `executivadecarreiras@cenatcursos.com.br` |
+| ❌ | 430631 | Isabela | `isabelaoliveira+vd@cenatcursos.com.br` |
+
+Um `salesRepEmail` que não esteja ATIVO aqui faz o `BoxesAdd` responder `SDR not found.` —
+a **mesma** mensagem de um e-mail que nunca existiu. Só `GET /Sellers` separa os dois casos,
+e é por isso que a validação de startup existe.
+
+Nota que incomoda: quem trabalhou o funil de vendas historicamente foi a **Isabela**, hoje
+**inativa** — 395 dos 500 leads lidos em 18537 têm `salesRep` dela, e ainda por cima num
+domínio diferente (`@ceos.com.br`, não `@cenatcursos.com.br`).
+
+### ⛔ O `scheduleAdd` NÃO consegue colocar a reunião no funil 18537
+
+Duas tentativas, as duas recusadas, por razões diferentes e complementares.
+
+**Tentativa 1 — criar o lead direto no funil de vendas.** `LeadsAdd` com `funnelId: 18537`
+funciona, e o lead nasce em **`Agendados`**. Aí o `scheduleAdd` recusa:
+
+```
+HTTP 400: Previous stage is not exit action Scheduling
+```
+
+**Tentativa 2 — lead em 18535, pedindo etapa do 18537.** `scheduleAdd` com
+`stageName: "Em Negociação"` (que só existe no 18537):
+
+```
+HTTP 400: Stage not found
+```
+
+O `stageName` é resolvido **dentro do funil do lead**. Não é um ponteiro global.
+
+### Por que é estrutural, e não um detalhe de configuração
+
+A posição da etapa explica tudo:
+
+| funil | etapa `Agendados` | **posição** | primeira etapa |
+|---|---|---|---|
+| 18535 `Pos Graduacao` | id 133409, gate 2 | **14** (última) | `Entrada` (1) |
+| 18537 `Pós Graduação - Vendas` | id 133413, gate 2 | **1** (primeira) | — é ela mesma |
+
+O `scheduleAdd` exige que a etapa **anterior** do lead tenha "Scheduling" como ação de saída.
+No 18537 não existe etapa anterior: o portão de agendamento É a porta de entrada. Nenhum lead
+daquele funil pode ser agendado pela API, hoje ou nunca, com essa configuração.
+
+> **Conclusão:** a reunião precisa nascer no **18535**, em `Agendados` (id 133409) — que é
+> exatamente o que o módulo já faz. Levar o lead ao 18537 depois é outro mecanismo:
+> `LeadsTransfer` (existe no `$metadata`, não testado) ou automação interna do CRM. Mudar a
+> posição de `Agendados` no 18537 pela UI também resolveria, mas mexe num funil com 385 leads
+> vendidos — não é decisão de código.
+
+### ✅ `BoxesAdd` e `scheduleAdd` funcionam com qualquer seller ativo
+
+Testado com `executivadecarreiras@` (Marina), que **não** é o `comercial@` do módulo original:
+`BoxesAdd` 201, `scheduleAdd` `true`, e o lead saiu de `Entrada` para `Agendados` com
+`salesRep: executivadecarreiras@`. Não há nada de especial no `comercial@` — a troca é só
+configuração.
+
+### `$top` máximo é 500
+
+`$top=1000` devolve erro, não lista truncada:
+
+```
+The limit of '500' for Top query has been exceeded.
+```
+
+Perigoso porque o corpo do erro não tem a chave `value`: um `resp.json().get("value", [])`
+transforma o erro em **lista vazia**, e a agenda parece livre quando a consulta é que falhou.
+Foi o que aconteceu na primeira análise de agendas desta sprint — três consultoras
+"sem nenhum box" que na verdade tinham 358. `client.listar_boxes` já usa 500.
+
+### Agendas reais — janela de 90 dias (−45/+45)
+
+Separando **bloco recorrente** (`leadId: 0`, aparece 3× ou mais) de **reunião real**:
+
+| rep | boxes | reuniões reais | blocos recorrentes |
+|---|---|---|---|
+| `comercial@` (SDR) | 196 | 50 | seg–qui 09:00–10:10 · 13:30–14:30 · 15:00–15:45 · sex 08:00–09:10 · 18:00–19:00 |
+| `processoseletivo@` | 143 | **80** | seg 12:00–13:30 · seg 15:00–16:00 · **seg–sex 18:20–18:50** |
+| `executivadecarreiras@` | 19 | **0** | **seg 16:10–17:00** |
+
+`executivadecarreiras@` não tem nenhuma reunião com lead nos 90 dias — agenda praticamente
+vazia. `processoseletivo@` é quem de fato atende hoje.
+
+### E2E do retry, com recusa real da Exact
+
+`backend/test_agendamento_e2e_consultoras.py --sim-eu-quero` — 10/10. Cria um box
+**bloqueador** na agenda da primeira consultora e deixa o `BoxesAdd` bater nele de verdade,
+sem mock. O fluxo pulou para a segunda e agendou.
+
+Isso protege um acoplamento invisível: `client._ERROS` casa `Boxes are occupied` por prefixo.
+Se a Exact mudar o texto, o erro deixa de virar `SlotOcupado`, o retry nunca acontece, e o
+visitante toma 502 em vez de ser atendido pela outra consultora. Só teste real pega.
+
+### Resíduo desta rodada
+
+| Artefato | Destino |
+|---|---|
+| Leads 51438054/56/57/58/61/62, 51438172 | excluídos ✅ |
+| Boxes 43727108, 43727110, bloqueador 43727120 | removidos limpos ✅ |
+| **Box 43727109** | órfão — experimento do `scheduleAdd` com consultora ⚠️ |
+| **Box 43727121** | órfão — E2E do retry ⚠️ |
+
+**Total de órfãos acumulados: 7.** As duas tentativas recusadas (§ acima) **não** custaram
+órfão: sem reunião criada, o box sai com 204.
+
+
+---
+
+## 15. `ChangeFunnel`: o caminho existe, e cobra um preço (18/08/2026)
+
+### `LeadsTransfer` não é o que o nome sugere
+
+O `$metadata` tem os dois, e eles fazem coisas diferentes:
+
+| EntitySet | corpo | o que faz |
+|---|---|---|
+| `LeadsTransfer` | `{ids: [int], sdrEmail, group}` | troca o **SDR** dono do lead. **Não** mexe no funil |
+| **`ChangeFunnel`** | `{leadId, stageId}` | **muda o funil**, pelo id da etapa de destino |
+| `SellerTransfer` | `{sellerEmail, ids}` | troca o vendedor |
+| `LeadStages` (leitura) | — | histórico com `originFunnelId` / `destinationFunnelId` |
+| `TransferHistory` (leitura) | — | auditoria de transferência |
+
+Não existe parâmetro de funil no `ChangeFunnel`: **o funil é inferido da etapa**. Para o
+funil de Vendas (18537), o destino é `Agendados` = **133413**.
+
+### O experimento
+
+Lead agendado normalmente no 18535 (box `busy`, reunião `Vigente`), depois
+`POST /ChangeFunnel {leadId, stageId: 133413}` → **HTTP 201, `value: true`**.
+
+| | antes | depois | |
+|---|---|---|---|
+| funil | 18535 | **18537** | ✅ mudou |
+| etapa | `Agendados` | `Agendados` | ✅ |
+| salesRep | `processoseletivo@` | `processoseletivo@` | ✅ preservado |
+| box | `busy`, `leadId` vinculado | **igual** | ✅ intacto |
+| reunião | id 4725248 | **id 4725248** | ✅ sobreviveu |
+| **`type` da reunião** | **`Vigente`** | **`Concluido`** | ⚠️ |
+
+### ⚠️ O preço: reunião futura vira "realizada"
+
+O agendamento sobrevive — nada some, nada desvincula. Mas o `type` da reunião passa de
+`Vigente` para `Concluido` **no instante da transferência**, com a data ainda no futuro
+(2027-05-12 e 2027-05-19 nos dois testes).
+
+Que isso é anormal, e não o estado natural de quem está no 18537, dá para afirmar com dado de
+produção. `GET /Meetings` com `$filter=meetingDate ge '2026-08-18'`:
+
+```
+13 reuniões de hoje em diante -> {'Cancelada': 8, 'Vigente': 4, 'Concluido': 1}
+```
+
+As 4 `Vigente` são as reuniões reais marcadas pela LP; as 8 `Cancelada` são resíduo de testes
+(lead excluído cascateia, §6). **`Vigente` é o estado normal de uma reunião que ainda vai
+acontecer.** Marcar `Concluido` antes da hora tem consequências que a API não mostra:
+
+- relatório de "reuniões realizadas" conta o que não aconteceu;
+- qualquer fluxo que dependa de `Vigente` (lembrete, formulário de qualidade) pula a reunião;
+- a lista de próximas reuniões da consultora pode não exibi-la — o box continua na agenda,
+  então o horário aparece, mas o vínculo com a reunião muda de estado.
+
+> **Por isso o passo 4 nasceu DESLIGADO.** `AGENDAMENTO_FUNIL_DESTINO` vazio = nada roda, o
+> lead fica no 18535 em `Agendados`, como sempre. Ligar é decisão de produto, não de código:
+> depende de a equipe preferir o lead no funil certo com a reunião mal rotulada, ou o
+> contrário.
+
+### Filtro de data em `/Meetings` é STRING
+
+`meetingDate` e `startTime` são `Edm.String` no schema, não data. Comparar com literal de data
+dá 400:
+
+```
+$filter=meetingDate ge 2026-08-18    -> 400 incompatible types 'Edm.String' and 'Edm.Date'
+$filter=meetingDate ge '2026-08-18'  -> 200
+```
+
+Funciona porque `YYYY-MM-DD` ordena igual como texto e como data. Para `startTime`, o mesmo
+com o ISO completo entre aspas.
+
+### O `.env` de produção vaza para a suíte offline
+
+Quando `AGENDAMENTO_CONSULTORAS_PATH` foi ativado, `test_agendamento.py` começou a falhar no
+caso 4 — por um motivo sem relação com o que ele testa. Causa: `app.database` chama
+`load_dotenv()` no import, então **todo o `.env` entra em `os.environ` antes do primeiro
+teste**, e a suíte passou a rodar contra a grade real das consultoras.
+
+Um teste offline que muda de resultado conforme o servidor não é teste. A suíte agora limpa
+as variáveis `AGENDAMENTO_*` logo após os imports, e cada caso define o que precisa.
+
+### Resíduo
+
+| Artefato | Destino |
+|---|---|
+| Leads 51438287, 51438298 | excluídos ✅ |
+| **Box 43727398** | órfão — experimento do `ChangeFunnel` ⚠️ |
+| **Box 43727399** | órfão — E2E do passo 4 ⚠️ |
+
+**Total de órfãos acumulados: 9.**
+
+
+---
+
+## 16. Criação do source `Landing Page` e das 12 origens (18/08/2026)
+
+Execução autorizada e controlada: dry-run aprovado antes do disparo, criação em sequência
+parando no primeiro erro, verificação byte a byte, limpeza dos leads descartáveis.
+
+### Como se cria um source (não há endpoint para isso)
+
+Não existe `SourcesAdd` no `$metadata`. **O único jeito de criar source e subSource é pelo
+`LeadsAdd`**, que cria o que não encontra — o mesmo comportamento que §11 registrou como
+acidente, usado aqui de propósito.
+
+A primeira chamada criou **as duas coisas de uma vez**: o source `Landing Page` e a subSource
+`PosMulheridades` dentro dele. As outras 11 só acrescentaram subSource ao source já existente.
+Não foi preciso criar o source separadamente.
+
+### O resultado
+
+**Source `Landing Page` = id 140648**, ativo, com exatamente 12 subSources, todas ativas e
+idênticas byte a byte à lista aprovada (ASCII puro, sem acento — `Suicidio`, `Alcool`,
+`Gestao`, `Saude`, `Clinica`):
+
+| id | subSource | id | subSource |
+|---|---|---|---|
+| 176807 | `PosMulheridades` | 176813 | `Pos Psicologia Escolar` |
+| 176808 | `Pos Grupos e Oficinas T2` | 176814 | `Pos Alcool e Drogas T4` |
+| 176809 | `Pos Infantojuvenil EAD` | 176815 | `Pos Psicologia Clinica T2` |
+| 176810 | `Pos Psicologia na RAPS T3` | 176816 | `Pos Gestao Psicossocial T5` |
+| 176811 | `Pos Psicologia Hospitalar` | 176817 | `Pos TEA V3` |
+| 176812 | `Pos Suicidio e Luto T3` | 176818 | `Pos Saude do Trabalhador` |
+
+Ids sequenciais 176807–176818, na ordem do disparo. Nenhum subSource inesperado apareceu.
+
+`PosMulheridades` passa a existir em **dois** sources — 173358 sob `Rd Marketing` (125 leads
+históricos) e 176807 sob `Landing Page`. É intencional: o par enviado agora é sempre
+(`Landing Page`, `PosMulheridades`), então o novo recebe e o antigo preserva o histórico.
+
+### Os 12 leads descartáveis saíram inteiros
+
+`TESTE CRIACAO ORIGEM - excluir`, telefone exclusivo `11999990001`, ids 51438411–51438422.
+Excluídos por id (204 em todos), confirmados por `id eq` — o filtro consistente — e depois
+por varredura em `phone1 eq '5511999990001'`, que voltou 0 já na primeira tentativa.
+
+Sem box e sem `scheduleAdd`, `LeadsDelete` limpa 100%: **nenhum órfão nesta operação.**
+
+### ⚠️ Valor com espaço no `.env` exige ASPAS
+
+Três coisas leem `backend/.env`, e elas discordam:
+
+| leitor | `KEY=Landing Page` | `KEY="Landing Page"` |
+|---|---|---|
+| systemd `EnvironmentFile` | ✅ ok | ✅ ok |
+| `python-dotenv` | ✅ ok | ✅ ok |
+| **bash `set -a && . .env`** | ❌ **quebra** | ✅ ok |
+
+Sem aspas, o bash lê `AGENDAMENTO_SOURCE=Landing` e tenta executar `Page` como comando:
+
+```
+.env: line 29: Page: command not found
+```
+
+A variável fica pela metade e o código cai no valor padrão — `Rd Marketing` com 3 origens em
+vez de `Landing Page` com 12. **O serviço não é afetado** (systemd + dotenv leem certo), mas
+qualquer script de operação que dê `source` no `.env` roda com a config errada em silêncio.
+
+Foi assim que o problema apareceu: a validação imprimiu `source: 'Rd Marketing' | allowlist: 3`
+numa linha e `✅ source 'Landing Page' ... 12 origens` na seguinte, no mesmo comando — o
+shell tinha uma verdade, o processo Python tinha outra. **Sempre aspar valor com espaço.**
+
+### Estado final verificado
+
+```
+boot: ✅ 2 consultora(s) em rotação — Victória Amorim, Victória Rodrigues
+boot: ✅ source 'Landing Page' (id 140648) com as 12 origens da allowlist confirmadas
+boot: ℹ️ passo 4 (mover para funil de vendas) DESLIGADO
+
+POST /lead origem="Pos Saude do Trabalhador" -> 200, lead 51438429
+  Exact: Entrada | funil 18535 | source 140648 'Landing Page'
+                 | subSource 176818 'Pos Saude do Trabalhador'
+  excluído (204), confirmado por id eq
+
+POST /lead origem="posgenerot2" -> 400 (saiu da allowlist, como esperado)
+```
+
+**Órfãos acumulados continuam 9** — esta operação não criou nenhum.
+
+> **Superado em parte:** o source tem **13** subSources desde a 13ª LP — ver §17.
+
+
+---
+
+## 17. A 13ª LP: `Pos Enfermagem em Saude Mental` (18/08/2026)
+
+Mesmo procedimento do §16, agora com o source já existente: uma chamada só, porque `Landing
+Page` (140648) não precisava ser criado. Autorizado após dry-run.
+
+**Resultado: subSource `Pos Enfermagem em Saude Mental` = id 176822**, ativa, sob o source
+140648. Byte a byte idêntica ao valor aprovado (ASCII puro — `Saude`, sem circunflexo).
+
+O source agora tem **13 subSources**. A tabela do §16 continua valendo para as 12 primeiras;
+a lista completa e atual está na seção *Estado atual* logo abaixo.
+
+### O id não é sequencial ao lote anterior
+
+As 12 de hoje saíram em 176807–176818. Esta saiu **176822**, não 176819: os ids 176819–176821
+foram consumidos por outra coisa na base entre as duas operações. Isso não é sinal de erro —
+o contador é global da Exact, não do nosso source. O que importa é que a verificação pós-disparo
+não achou **nenhum subSource inesperado** sob `Landing Page`: 13 valores, 13 esperados, zero
+sobrando.
+
+### ⚠️ Já existia `posenfermagemsm` sob `Rd Marketing`
+
+Achado no dry-run: **id 176805**, sob o source antigo `Rd Marketing` (106847), com **2 leads**.
+Mesmo curso, nomenclatura antiga, criado pouco antes do lote de hoje.
+
+Deixado como está, de propósito, pelo mesmo raciocínio do `PosMulheridades` (§16): o par
+enviado daqui pra frente é sempre (`Landing Page`, `Pos Enfermagem em Saude Mental`), o novo
+recebe o volume e o antigo preserva o que já tem. Com 2 leads não há histórico relevante a
+partir. **Em relatório de marketing, os dois são o mesmo curso** — não somar às cegas nem
+tratar como origens distintas.
+
+### Lead descartável saiu inteiro
+
+`TESTE CRIACAO ORIGEM - excluir`, id **51441741**, telefone de lote `11999990001` (o mesmo do
+§16, para varredura única). `LeadsDelete` → 204, confirmado por `id eq` (0 resultados) e por
+varredura `phone1 eq '5511999990001'` → 0.
+
+Sem box e sem `scheduleAdd`, `LeadsDelete` limpa 100%: **nenhum órfão nesta operação.**
+**Órfãos acumulados continuam 9.**
+
+### Estado atual
+
+`AGENDAMENTO_SUBSOURCES` no `backend/.env` com 13 valores, entre aspas (§16 explica por quê).
+Conferido nos dois leitores: `bash set -a && . .env` devolve `Landing Page` inteiro e 13
+valores, e a validação de startup bate contra a Exact real.
+
+| id | subSource | id | subSource |
+|---|---|---|---|
+| 176807 | `PosMulheridades` | 176814 | `Pos Alcool e Drogas T4` |
+| 176808 | `Pos Grupos e Oficinas T2` | 176815 | `Pos Psicologia Clinica T2` |
+| 176809 | `Pos Infantojuvenil EAD` | 176816 | `Pos Gestao Psicossocial T5` |
+| 176810 | `Pos Psicologia na RAPS T3` | 176817 | `Pos TEA V3` |
+| 176811 | `Pos Psicologia Hospitalar` | 176818 | `Pos Saude do Trabalhador` |
+| 176812 | `Pos Suicidio e Luto T3` | **176822** | **`Pos Enfermagem em Saude Mental`** |
+| 176813 | `Pos Psicologia Escolar` | | |
+
+```
+boot: ✅ agendamento: source 'Landing Page' (id 140648) com as 13 origens da allowlist confirmadas
+
+POST /lead origem="Pos Enfermagem em Saude Mental" -> 200, lead 51441824
+  Exact: Entrada | funnelId 18535 | source 140648 'Landing Page'
+                 | subSource 176822 'Pos Enfermagem em Saude Mental'
+                 | description "E-mail: ... | profissao: ... | como_conheceu: ..."
+  excluído (204), confirmado por id eq e por varredura de telefone
+```
+
+
+---
+
 ## Apêndice — inventário de endpoints (do `$metadata`)
 
 Agenda: `Boxes` · `BoxesAdd` · `BoxesUpdate` · `BoxesRemove` · `ScheduleAdd` · `Meetings` ·
@@ -653,6 +1247,9 @@ Leads: `Leads` · `LeadsAdd` · `LeadsUpdate` · `LeadsDelete` · `LeadsRecover`
 `CustomFieldsLeads` · `CustomFieldsLeadsRemove`
 
 **Não existe `ScheduleRemove` nem `ScheduleUpdate`** — a base de §7.2.
+
+Transferência: `LeadsTransfer` (troca SDR) · **`ChangeFunnel`** (muda funil, §15) ·
+`SellerTransfer` · `TransferHistory` · `LeadStages` (ambos leitura).
 
 Funis (`GET /Funnels`): Intercambio 18285 · **Pos Graduacao 18535** · Pós Graduação - Vendas
 18537 · Reativação - SQL 20647 · CONGRESSO PRESENCIAL 20776 · Vagas Afirmativas 21007 ·

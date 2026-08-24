@@ -34,10 +34,26 @@ HORA_INICIO = "11:00"
 HORA_FIM = "11:45"
 
 
+def _horizonte_ate(alvo):
+    """Dias de hoje até o alvo, contados NO FUSO DE SÃO PAULO.
+
+    `date.today()` usa a hora do sistema, que aqui é UTC. A grade conta os dias a partir de
+    `agora_sp()`. Entre 21:00 e 00:00 de São Paulo os dois JÁ ESTÃO EM DIAS DIFERENTES, e o
+    horizonte sai um dia curto — o alvo simplesmente não aparece em `slots_candidatos()`, e
+    o teste morre com "esperava 1 slot, achei 0" sem nada a ver com o que ele testa.
+
+    É a mesma classe de erro que o módulo inteiro existe para evitar (FINDINGS §1), só que
+    do lado do teste. Medido de verdade: rodando 00:0x UTC, `date.today()` dava 2026-08-18 e
+    `agora_sp().date()` dava 2026-08-17.
+    """
+    from app.agendamento.horarios import agora_sp
+    return (alvo - agora_sp().date()).days
+
+
 def _preparar_grade():
     """Grade de um slot só, na quarta distante. Precisa vir ANTES de importar o módulo."""
     assert ALVO.weekday() == 2, f"{ALVO} não é quarta-feira"
-    horizonte = (ALVO - date.today()).days
+    horizonte = _horizonte_ate(ALVO)
     os.environ["AGENDAMENTO_GRADE_JSON"] = json.dumps({
         "sales_rep_email": "comercial@cenatcursos.com.br",
         "duracao_min": 45,
