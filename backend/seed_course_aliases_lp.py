@@ -66,25 +66,36 @@ CURSOS_LP = [
     {"alias": "Pos Saude do Trabalhador",
      "full_name": "Pós-Graduação em Saúde Mental do Trabalhador",
      "short_name": "Saúde Mental do Trabalhador"},
+
+    # --- Os 3 que faltavam, confirmados pelo coordenador em 24/08 -----------------------
+    #
+    # São o nome comercial próprio, com acento e sem o prefixo `Pos`. `full_name` segue o
+    # padrão da linha acima ("Pós-Graduação em X"), porque o coordenador confirmou o nome
+    # curto e o campo é NOT NULL.
+    #
+    # MEDIDO antes de inserir: para os dois primeiros o valor é IDÊNTICO ao que o fallback
+    # de course_names.py já produzia — a linha não muda a mensagem, torna o valor explícito
+    # e imune a uma mudança futura na string do subSource. Só a Enfermagem muda de fato, e
+    # o que ela ganha é o acento: "Saude" -> "Saúde".
+    {"alias": "Pos Infantojuvenil EAD",
+     "full_name": "Pós-Graduação em Infantojuvenil EAD",
+     "short_name": "Infantojuvenil EAD"},
+    {"alias": "Pos Psicologia Escolar",
+     "full_name": "Pós-Graduação em Psicologia Escolar",
+     "short_name": "Psicologia Escolar"},
+    {"alias": "Pos Enfermagem em Saude Mental",
+     "full_name": "Pós-Graduação em Enfermagem em Saúde Mental",
+     "short_name": "Enfermagem em Saúde Mental"},
 ]
 
 # ------------------------------------------------------------------------------------------
-# OS 3 QUE FICARAM DE FORA — DE PROPÓSITO
+# NÃO HÁ MAIS PENDENTES
 # ------------------------------------------------------------------------------------------
-# Não têm nome comercial em NENHUMA fonte do projeto (course_aliases, seed_courses,
-# knowledge_documents, templates da Meta, docs). Inventar um nome de curso é pior que o
-# fallback: o fallback erra de um jeito visível ("Infantojuvenil EAD"), o palpite erra de um
-# jeito que ninguém percebe.
-#
-#   Pos Infantojuvenil EAD          existem DOIS cursos infantojuvenis no cadastro
-#                                   ("Interlocução no Território (T5)" e "Práticas Clínicas
-#                                   em Saúde Mental Infantojuvenil"); "EAD" não decide qual
-#   Pos Psicologia Escolar          nome completo não existe em lugar nenhum
-#   Pos Enfermagem em Saude Mental  idem
-#
-# Quando o time confirmar, acrescentar aqui em cima e rodar de novo.
-PENDENTES = ["Pos Infantojuvenil EAD", "Pos Psicologia Escolar",
-             "Pos Enfermagem em Saude Mental"]
+# Os 3 que faltavam não tinham nome comercial em NENHUMA fonte do projeto (course_aliases,
+# seed_courses, knowledge_documents, templates da Meta, docs) — e inventar um nome de curso
+# seria pior que o fallback, que ao menos erra de um jeito visível. Ficaram de fora até o
+# coordenador confirmar, o que aconteceu em 24/08. Os 13 subSources da LP estão cobertos.
+PENDENTES = []
 
 
 async def seed():
