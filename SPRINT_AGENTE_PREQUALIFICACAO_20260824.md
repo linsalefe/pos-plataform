@@ -121,7 +121,10 @@ Ordem importa. Nada disto foi feito.
 2. **`OPENAI_API_KEY` no `.env`** — já está. O cliente é preguiçoso: chave ausente não
    derruba o boot, só o fluxo.
 
-3. **Teste manual do LLM, aprovado** — nenhuma chamada real foi feita nesta sprint.
+3. ✅ **Teste manual do LLM** — feito em 24/08, `TESTE_LLM_20260824.md`. 15 cenários,
+   4 rodadas, 59/60 passagens, contrato 60/60. Achou 6 defeitos, um deles de arquitetura
+   (as missões não carregavam a próxima pergunta do roteiro).
+   ⚠️ **As correções de `PROMPT_BASE`/`MISSOES` exigem um novo restart para valer.**
 
 4. ✅ **Cursos** — os 13 subSources da LP têm alias desde 24/08. Nenhum sai mais com
    código de turma ou sem acento.

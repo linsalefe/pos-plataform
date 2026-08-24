@@ -74,22 +74,37 @@ TEXTO_FALLBACK = ("Deixa eu te conectar com uma pessoa da nossa equipe para segu
 
 # A missão de cada etapa. É o único lugar onde o roteiro vira texto para o modelo — mudar o
 # roteiro é mudar estas linhas, não caçar prompt espalhado pelo módulo.
+# A missão de cada etapa diz DUAS coisas, e a segunda é tão importante quanto a primeira:
+# o que extrair, e QUAL PERGUNTA FAZER EM SEGUIDA quando a etapa se cumpre.
+#
+# Sem a segunda, o teste manual de 24/08 mostrou o que acontece: com `etapa_cumprida=true`
+# o modelo inventava um fecho ("quer que eu te envie as próximas etapas da inscrição?"),
+# `_avancar` mandava essa mensagem E movia a etapa, e o lead respondia uma pergunta que a
+# etapa seguinte ia interpretar como outra coisa. A pergunta seguinte não é criatividade do
+# modelo — é o roteiro.
 MISSOES = {
     ETAPA_Q_AGUARDANDO_FORMACAO: (
-        'Descubra QUAL É a formação (graduação) da pessoa. Quando ela responder, '
-        'dado_extraido = {"formacao": "<o que ela disse>"}.'),
+        'Descubra QUAL É a formação (graduação) da pessoa. '
+        'dado_extraido = {"formacao": "<o que ela disse>"}. '
+        'SE ELA RESPONDER: valide em uma frase e TERMINE perguntando em que ano ela '
+        'concluiu essa graduação.'),
     ETAPA_Q_AGUARDANDO_ANO: (
         'Descubra em QUE ANO ela concluiu a graduação. Se ela ainda está cursando, isso '
-        'também serve como resposta. dado_extraido = {"ano_conclusao": "<o que ela disse>"}.'),
+        'também serve como resposta. dado_extraido = {"ano_conclusao": "<o que ela disse>"}. '
+        'SE ELA RESPONDER: valide em uma frase e TERMINE perguntando como e onde ela atua '
+        'profissionalmente hoje.'),
     ETAPA_Q_AGUARDANDO_ATUACAO: (
         'Descubra COMO E ONDE ela atua profissionalmente hoje. Se estiver fora da área ou '
-        'sem atuar, isso também é resposta. '
-        'dado_extraido = {"atuacao": "<o que ela disse>"}.'),
+        'sem atuar, isso também é resposta. dado_extraido = {"atuacao": "<o que ela disse>"}. '
+        'SE ELA RESPONDER: valide em uma frase e TERMINE perguntando, de forma aberta, o que '
+        'despertou o interesse dela nesta pós-graduação.'),
     ETAPA_Q_AGUARDANDO_MOTIVACAO: (
         'Pergunta ABERTA: o que despertou o interesse dela nesta pós-graduação. '
-        'Quando ela responder, sua mensagem deve VALIDAR o que ela de fato disse — comente o '
-        'conteúdo real da resposta dela, com as palavras dela. Nada de frase genérica tipo '
-        '"que interessante". dado_extraido = {"motivacao": "<o que ela disse>"}.'),
+        'dado_extraido = {"motivacao": "<o que ela disse>"}. '
+        'SE ELA RESPONDER: sua mensagem VALIDA o que ela de fato disse — comente o conteúdo '
+        'real, com as palavras dela; nada de "que interessante". E NÃO FAÇA NENHUMA '
+        'PERGUNTA: esta é a última etapa de qualificação, e quem fala em seguida é o '
+        'sistema, com os horários. Termine dizendo que vai ver os horários disponíveis.'),
     ETAPA_Q_OFERTANDO_AGENDA: (
         'Apresente os horários que estão no contexto, de forma curta, e pergunte qual serve. '
         'Use SOMENTE os horários listados. Quando ela escolher um deles, use '
