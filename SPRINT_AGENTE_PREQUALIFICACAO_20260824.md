@@ -106,24 +106,25 @@ Ordem importa. Nada disto foi feito.
 
 ### Antes
 
-1. **Templates `APPROVED`** — conferir por `hsm_id` + `language`, nunca por nome
-   (`nat_recuperacao_sdr` tem dois aprovados com corpos diferentes). Hoje os 4 estão
-   `PENDING`:
+1. ✅ **Templates `APPROVED`** — conferido em 24/08 por `hsm_id` + `language`. Os 4
+   aprovados, `pt_BR`, corpo idêntico ao submetido:
 
-   | Template | `hsm_id` |
-   |---|---|
-   | `nat_abertura_agendado` | `2913902048954833` |
-   | `nat_abertura_qualificacao` | `1068302605748380` |
-   | `nat_abertura_sem_formacao` | `1036680979112055` |
-   | `nat_lembrete_reuniao` | `4036914996610587` |
+   | Template | `hsm_id` | Categoria FINAL |
+   |---|---|---|
+   | `nat_abertura_agendado` | `2913902048954833` | **MARKETING** (a Meta recategorizou; pedimos UTILITY) |
+   | `nat_abertura_qualificacao` | `1068302605748380` | MARKETING |
+   | `nat_abertura_sem_formacao` | `1036680979112055` | MARKETING |
+   | `nat_lembrete_reuniao` | `4036914996610587` | UTILITY |
+
+   3 dos 4 são MARKETING — contam no limite por usuário e são pausáveis por qualidade.
 
 2. **`OPENAI_API_KEY` no `.env`** — já está. O cliente é preguiçoso: chave ausente não
    derruba o boot, só o fluxo.
 
 3. **Teste manual do LLM, aprovado** — nenhuma chamada real foi feita nesta sprint.
 
-4. **Os 3 cursos sem nome comercial** (`Pos Infantojuvenil EAD`, `Pos Psicologia Escolar`,
-   `Pos Enfermagem em Saude Mental`) ainda saem com o código cru na variável `{{2}}`.
+4. ✅ **Cursos** — os 13 subSources da LP têm alias desde 24/08. Nenhum sai mais com
+   código de turma ou sem acento.
 
 5. **`restart` do serviço** — o processo em execução (PID 1500356, de 18/08) não conhece
    nenhum módulo novo. Sem restart, nada disto existe em produção.
