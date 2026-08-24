@@ -38,7 +38,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import exact_spotter, whatsapp
-from app.models import ExactLead, AutoWelcomeConfig
+from app.models import ExactLead, AutoWelcomeConfig, NatConfig
 
 
 def _res(value):
@@ -66,6 +66,18 @@ def _lead(exact_id=111, funnel_id=18535, status=None):
     l.welcome_error = None
     l.welcome_sent_at = None
     return l
+
+
+def _nat_cfg(qualificacao_enabled=False):
+    """`nat_config` falso, para o passo 4.5 de send_welcome_to_new_lead.
+
+    DESLIGADO por padrão: é o estado de produção, e é o que faz a boas-vindas seguir o
+    caminho de sempre. Precisa ser um objeto REAL e não um MagicMock — em MagicMock qualquer
+    atributo é truthy, e `cfg.qualificacao_enabled` daria True sozinho, fazendo o agente
+    "assumir" em todo teste.
+    """
+    return NatConfig(id=1, nat_enabled=False, max_envios_hora=20,
+                     qualificacao_enabled=qualificacao_enabled)
 
 
 def _cfg(enabled=True, channel_id=1):
@@ -127,7 +139,7 @@ async def caso_3_lead_ja_processado():
 async def caso_4_envio_normal():
     lead = _lead(status=None)
     # ordem dos db.execute(): lead -> canal -> curso(alias) -> contato -> card
-    db = _fake_db(lead, CHANNEL, None, None, None)
+    db = _fake_db(lead, _nat_cfg(), CHANNEL, None, None, None)
     with patch.object(exact_spotter, "send_template_message",
                       new=AsyncMock(return_value=OK_SEND)) as spy, \
          patch.object(whatsapp, "fetch_template_body",
@@ -146,7 +158,7 @@ async def caso_4_envio_normal():
 
 async def caso_5_canal_em_branco():
     lead = _lead(status=None)
-    db = _fake_db(lead)
+    db = _fake_db(lead, _nat_cfg())
     with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy:
         r = await exact_spotter.send_welcome_to_new_lead(
             _lead_data(lead), db, _cfg(enabled=True, channel_id=None))
@@ -243,7 +255,7 @@ async def caso_12_automacao_continua_funcionando():
     """⭐ Prova de que a trava foi na PORTA e nao no CORREDOR: se estivesse dentro de
     send_template_message, a propria automacao teria sido bloqueada."""
     lead = _lead(status=None)
-    db = _fake_db(lead, CHANNEL, None, None, None)
+    db = _fake_db(lead, _nat_cfg(), CHANNEL, None, None, None)
     with patch.object(exact_spotter, "send_template_message",
                       new=AsyncMock(return_value=OK_SEND)) as spy, \
          patch.object(whatsapp, "fetch_template_body",

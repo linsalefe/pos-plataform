@@ -478,10 +478,43 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
                   f"para a etapa {destino} falhou ({type(e).__name__}: {e}). "
                   "Ele fica no funil 18535 em Agendados — agendamento intacto.")
 
+    # ---- agente de pré-qualificação: abertura em +5 min, e o lembrete da reunião -------
+    #
+    # Depois de TUDO que importa para o visitante, e sem poder derrubar nada: as duas
+    # chamadas engolem a própria exceção. Um erro no agente não pode custar um agendamento
+    # que já está na agenda da consultora e já foi mostrado na tela.
+    #
+    # `agendar_lembrete` é chamado aqui porque este é UM DOS DOIS NASCIMENTOS de uma reunião
+    # — o outro é o próprio agente marcando pelo WhatsApp. Quem agenda pelo obrigado.html
+    # nunca passa pelo fluxo do agente, e sem esta linha ficaria sem lembrete.
+    #
+    # Import DENTRO da função, sempre: `qualificacao_fluxo` carrega `nat_sender` -> `whatsapp`,
+    # e o topo deste módulo é caminho de request da landing page (ver horarios.py:26-27).
+    await _gatilho_do_agente(db, ag)
+
     return Resultado(agendamento_id=ag.id, lead_id=lead_id, box_id=box_id,
                      slot=slot, meeting_id=ag.meeting_id,
                      consultora_email=consultora.email,
                      consultora_nome=consultora.nome_exibicao)
+
+
+async def _gatilho_do_agente(db: AsyncSession, ag: Agendamento) -> None:
+    """Enfileira a abertura do agente e, quando há reunião, o lembrete. Nunca levanta."""
+    try:
+        from app.qualificacao_gatilho import agendar_abertura
+        await agendar_abertura(db, telefone=ag.telefone, lead_id=ag.lead_id,
+                               nascido_em=ag.created_at)
+    except Exception as e:
+        print(f"⚠️ agendamento #{ag.id}: gatilho do agente não enfileirado "
+              f"({type(e).__name__}: {e})")
+    if ag.passo != PASSO_AGENDADO:
+        return
+    try:
+        from app.qualificacao_fluxo import agendar_lembrete
+        await agendar_lembrete(ag, db)
+    except Exception as e:
+        print(f"⚠️ agendamento #{ag.id}: lembrete não agendado "
+              f"({type(e).__name__}: {e})")
 
 
 async def _compensar_box(db: AsyncSession, ag: Agendamento, *, motivo: str) -> None:
@@ -544,4 +577,9 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
     await _marcar(db, ag, PASSO_LEAD_CRIADO)
     print(f"👤 agendamento #{ag.id}: lead {lead_id} cadastrado sem agendar "
           f"(Entrada, subSource {sub_source})")
+
+    # Mesma espera de 5 min do outro caminho. Quem preencheu o formulário e vai agendar em
+    # seguida cai aqui primeiro; o handler relê o estado e escolhe a abertura certa. Sem
+    # lembrete: ainda não existe reunião.
+    await _gatilho_do_agente(db, ag)
     return lead_id

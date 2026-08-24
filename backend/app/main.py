@@ -463,19 +463,47 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         print(f"⚠️  Falha ao registrar clique em nat_button_events "
                               f"({wa_message_id}): {type(e).__name__}: {e}")
 
-                # Roteamento do fluxo NAT. Vem DEPOIS da persistência do evento (o registro
-                # do clique não pode depender do fluxo dar certo) e, como ela, dentro de
-                # SAVEPOINT: com a NAT desligada nada disto age, mas se um dia agir e falhar,
+                # Roteamento. Vem DEPOIS da persistência do evento (o registro do clique
+                # não pode depender do fluxo dar certo) e, como ela, dentro de SAVEPOINT:
+                # com os dois fluxos desligados nada disto age, mas se um dia agir e falhar,
                 # a mensagem do lead já está salva e o lote segue.
+                #
+                # ------------------------------------------------------------------------
+                # PRECEDÊNCIA: UM DONO POR MENSAGEM
+                # ------------------------------------------------------------------------
+                # O AGENTE de pré-qualificação tem prioridade. Se ele tem estado ATIVO para
+                # este contato, ele é o ÚNICO dono do inbound e o fluxo de botões NÃO roda
+                # para esta mensagem — nem `processar_clique`, nem `processar_texto`.
+                #
+                # A ordem não é arbitrária: os dois fluxos falam com o mesmo número, e uma
+                # mensagem tratada pelos dois manda duas respostas ao lead. O agente vem
+                # primeiro porque é ele que substitui o outro; enquanto ele não é dono de um
+                # contato, o comportamento é exatamente o de antes.
+                #
+                # `agente_e_dono` responde por ETAPA (ETAPAS_QUALIFICACAO_ATIVAS), a MESMA
+                # constante que `qualificacao_pode_atuar` usa para decidir se o agente pode
+                # enviar. Uma constante, dois lados — "o agente escuta" e "o agente fala"
+                # não podem divergir.
+                #
+                # Sem estado, ou em etapa terminal (concluido / transferido_humano /
+                # encerrado), `processar_texto` do agente devolve False e o fluxo velho segue
+                # o caminho de sempre.
                 try:
                     async with db.begin_nested():
-                        from app.nat_flow import processar_clique, processar_texto
-                        if evento_botao:
-                            await processar_clique(evento_botao, db)
-                        elif msg_type == "text":
-                            await processar_texto(msg["from"], content, wa_message_id, db)
+                        from app.qualificacao_fluxo import (
+                            processar_texto as processar_texto_agente)
+                        dono_agente = await processar_texto_agente(
+                            msg["from"], content, wa_message_id, db)
+
+                        if not dono_agente:
+                            from app.nat_flow import processar_clique, processar_texto
+                            if evento_botao:
+                                await processar_clique(evento_botao, db)
+                            elif msg_type == "text":
+                                await processar_texto(
+                                    msg["from"], content, wa_message_id, db)
                 except Exception as e:
-                    print(f"⚠️  Falha no fluxo NAT ({wa_message_id}): "
+                    print(f"⚠️  Falha no roteamento de fluxo ({wa_message_id}): "
                           f"{type(e).__name__}: {e}")
 
                 # Notificação de nova mensagem para o SDR dono (se houver)

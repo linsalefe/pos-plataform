@@ -1,6 +1,6 @@
 import os
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models import ExactLead, Contact, Channel, Message, AIConversationSummary, AutoWelcomeConfig
@@ -192,6 +192,38 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
     if not phone or len(phone) < 12:
         stamp("skipped", "sem telefone válido")
         return result("skipped", "no_phone")
+
+    # 4.5) UM DONO POR ABERTURA.
+    #
+    # Com o agente de pré-qualificação ligado, ele SUBSTITUI a boas-vindas para os leads que
+    # chegam pelo sync — os da landing page já foram enfileirados no POST, 5 minutos antes.
+    # Sem esta troca, o lead receberia DUAS aberturas diferentes do mesmo número: a
+    # `nat_boasvindas` ("posso falar agora?") e a do agente. Foi o mesmo problema que o
+    # `boas_vindas_wamid` resolveu entre a boas-vindas e a NAT.
+    #
+    # O CARIMBO É O DE SEMPRE. `welcome_status` continua sendo a trava permanente de
+    # idempotência (passo 3 acima testa `is not null`), então um lead que o agente assumiu
+    # NUNCA volta a ser candidato à boas-vindas — nem se o agente for desligado depois.
+    # Reaproveitar o carimbo em vez de criar outro é o que garante que os dois caminhos
+    # compartilham uma única verdade sobre "este lead já teve sua abertura decidida".
+    #
+    # `force=True` (reenvio manual, lead a lead) continua ignorando tudo isto, como já
+    # ignora enabled, funil e idempotência.
+    if not force:
+        from app.qualificacao_gatilho import agendar_abertura
+        from app.models import NatConfig, ORIGEM_EXACT
+        cfg_q = (await db.execute(select(NatConfig).where(NatConfig.id == 1))
+                 ).scalar_one_or_none()
+        if cfg_q is not None and cfg_q.qualificacao_enabled:
+            await agendar_abertura(db, telefone=phone, lead_id=exact_id,
+                                   origem=ORIGEM_EXACT,
+                                   # register_date já é UTC; o gatilho soma 3h a quem vem em
+                                   # SP, então descontamos para o valor chegar certo lá.
+                                   nascido_em=(lead_data.get("register_date") - timedelta(hours=3)
+                                               if lead_data.get("register_date") else None))
+            stamp("skipped", "agente de pré-qualificação assumiu a abertura")
+            print(f"🤝 Boas-vindas cedida ao agente para {name} ({phone})")
+            return result("skipped", "agente_assumiu")
 
     # 5) CANAL — SEMPRE da config. Sem fallback para constante.
     channel_id = config.channel_id if (config and config.channel_id) else None
