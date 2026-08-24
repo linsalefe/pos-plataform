@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models import (ExactLead, Contact, Channel, Message, AIConversationSummary,
-                        AutoWelcomeConfig, NatConfig)
+                        AutoWelcomeConfig, NatConfig, ExactStageEvent)
 from app.whatsapp import send_template_message
 from app.course_names import resolve_course_name
 from app.nomes import primeiro_nome
@@ -406,6 +406,31 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
         return result("failed", "exception", detail)
 
 
+async def _registrar_transicao(db: AsyncSession, exact_id, de, para, funnel_id) -> None:
+    """Grava uma mudança de estágio em `exact_stage_events`. NUNCA levanta.
+
+    SAVEPOINT + except largo, e o motivo é o mesmo dos savepoints do webhook: este INSERT é
+    a fundação de uma régua que ainda nem existe, e o `sync_exact_leads` é o que alimenta
+    boas-vindas, agente e todo o espelho de leads. Um erro aqui — coluna faltando, tipo
+    inesperado, o que for — não pode derrubar o sync inteiro e deixar a base congelada.
+
+    Try/except puro não bastaria: um IntegrityError deixaria a transação do asyncpg em
+    estado abortado e TODA operação seguinte da mesma sessão falharia com
+    InFailedSQLTransaction — inclusive o `setattr` dos 9.133 leads. O SAVEPOINT é o que
+    permite reverter só este INSERT.
+
+    A falha é RUIDOSA de propósito. Perder um evento em silêncio significa uma transição que
+    a régua nunca vai ver, e um lead que nunca recebe o follow que deveria.
+    """
+    try:
+        async with db.begin_nested():
+            db.add(ExactStageEvent(exact_lead_id=exact_id, stage_de=de, stage_para=para,
+                                   funnel_id=funnel_id))
+    except Exception as e:
+        print(f"⚠️  TRANSIÇÃO NÃO REGISTRADA lead={exact_id} {de!r}→{para!r}: "
+              f"{type(e).__name__}: {e}")
+
+
 async def sync_exact_leads(db: AsyncSession):
     """Sincroniza leads de pós do Exact Spotter com o banco local."""
     skip = 0
@@ -452,6 +477,19 @@ async def sync_exact_leads(db: AsyncSession):
             }
 
             if existing:
+                # TRANSIÇÃO DE ESTÁGIO — tem que ser lida ANTES do setattr, que sobrescreve.
+                #
+                # É a fundação da cadência de follow-up: sem isto, `exact_leads.stage` é uma
+                # coluna só e não há como distinguir "entrou em Follow 1 agora" de "está em
+                # Follow 1 há três semanas". Uma régua que dispare sobre ESTADO varreria de
+                # uma vez os leads parados nos follows.
+                #
+                # Custo no caminho quente: o INSERT só acontece na MUDANÇA real (~20/dia
+                # medido em 18535), não nas 9.133 linhas que o laço reescreve a cada 600s.
+                if existing.stage != lead_data.get("stage"):
+                    await _registrar_transicao(
+                        db, exact_id, existing.stage, lead_data.get("stage"),
+                        lead_data.get("funnel_id"))
                 for key, value in lead_data.items():
                     setattr(existing, key, value)
                 existing.synced_at = datetime.utcnow()
@@ -463,6 +501,11 @@ async def sync_exact_leads(db: AsyncSession):
                 # exact_id entra no dict SÓ DEPOIS de construir o ExactLead (senão viria
                 # duplicado no kwargs). É essencial para o carimbo do welcome_status.
                 lead_data["exact_id"] = exact_id
+                # Primeira aparição: evento com `stage_de = NULL`. O NULL é informação, não
+                # ausência — a régua precisa distinguir "nasceu em Follow 1" de "migrou para
+                # Follow 1", que são gatilhos diferentes.
+                await _registrar_transicao(db, exact_id, None, lead_data.get("stage"),
+                                           lead_data.get("funnel_id"))
                 # Só lead NOVO é candidato. Lead já existente cai no ramo de update acima e
                 # nunca é enfileirado — os antigos jamais entram aqui.
                 if lead_data.get("funnel_id") in funnels:

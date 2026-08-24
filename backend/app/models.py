@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, BigInteger, Integer, Boolean, ForeignKey, func, Table, CheckConstraint
+from sqlalchemy import Column, String, Text, DateTime, BigInteger, Integer, Boolean, ForeignKey, func, Table, CheckConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -447,6 +447,11 @@ KIND_INICIAR_QUALIFICACAO = "iniciar_qualificacao"
 # venha ela do agente ou do obrigado.html.
 KIND_LEMBRETE_REUNIAO = "lembrete_reuniao"
 
+# Encerra por inatividade um lead que parou de responder no meio da qualificação. Sem ele,
+# `ETAPA_Q_ENCERRADO` seria constante morta — o mesmo defeito que o ESTADO_NAT_20260809
+# apontou no fluxo velho (`sem_contato` e `encerrado` declaradas e nunca atribuídas).
+KIND_ENCERRAR_INATIVO = "encerrar_inativo"
+
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3
 
@@ -667,6 +672,13 @@ class NatQualificacaoState(Base):
 
     ultimo_wa_message_id = Column(Text, nullable=True)
 
+    # ENCERRAMENTO por inatividade. Colunas próprias, e não reuso de `transferido_*`: os
+    # dois desfechos são diferentes — transferido é "um humano assume", encerrado é
+    # "ninguém assume, o lead calou". A régua de follow-up futura escolhe quem entra nela
+    # justamente por essa distinção.
+    encerrado_em = Column(DateTime, nullable=True)
+    encerrado_motivo = Column(Text, nullable=True)
+
     transferido_em = Column(DateTime, nullable=True)
     # POR QUE o agente desistiu. Sem isto, `transferido_humano` é um balde onde não se
     # distingue "o LLM caiu" de "o lead pediu para falar com uma pessoa".
@@ -674,3 +686,30 @@ class NatQualificacaoState(Base):
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ExactStageEvent(Base):
+    """Uma mudança de estágio observada pelo sync. É o GATILHO da cadência de follow-up.
+
+    Ver o cabeçalho de `migrate_cadencia_fundacoes.py` para o porquê. Em resumo: o sync
+    sobrescreve `exact_leads.stage` sem comparar, então sem esta tabela é impossível saber
+    QUANDO um lead chegou ao estágio em que está — e uma régua que dispare sobre estado
+    varre a base parada na primeira execução.
+
+    `stage_de = NULL` significa PRIMEIRA APARIÇÃO do lead, e o NULL é informação: "nasceu em
+    Follow 1" e "migrou para Follow 1" são gatilhos diferentes.
+
+    `observado_em` é UTC (não naive-SP como messages.timestamp): este carimbo é comparado
+    com register_date e com os cortes de data, que são UTC.
+
+    Sem FK e sem UNIQUE — os dois de propósito, ver a migração.
+    """
+    __tablename__ = "exact_stage_events"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    exact_lead_id = Column(Integer, nullable=False, index=True)
+    stage_de = Column(String(50), nullable=True)
+    stage_para = Column(String(50), nullable=True)
+    funnel_id = Column(Integer, nullable=True)
+    observado_em = Column(DateTime, nullable=False,
+                          server_default=text("(now() AT TIME ZONE 'utc')"))
