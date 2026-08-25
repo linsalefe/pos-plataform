@@ -66,7 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models import (ACAO_CANCELADO, ACAO_EXECUTADO, ACAO_FALHOU, ACAO_PENDENTE,
-                        MAX_TENTATIVAS_ACAO, NatScheduledAction)
+                        ACAO_SKIPPED, MAX_TENTATIVAS_ACAO, NatScheduledAction)
 from app.nat_guard import _agora_sp
 
 # De quanto em quanto tempo o job varre a fila. 60s é o mesmo passo do
@@ -94,8 +94,54 @@ ATRASO_RETENTATIVA_SEGUNDOS = 60
 MODULOS_DE_HANDLERS: tuple[str, ...] = ("app.nat_sla", "app.nat_recuperacao",
                                        "app.qualificacao_fluxo")
 
+# Rótulo do desfecho "adiada" no resumo de processar_pendentes. NÃO é status de banco: a
+# linha continua `pendente`, com o run_at empurrado. Existe separado de ACAO_PENDENTE para o
+# resumo do ciclo distinguir "adiei 3" de "3 continuam na fila sem terem sido tocadas".
+ACAO_ADIADO = "adiado"
+
 # kind -> coroutine(acao: dict, db: AsyncSession). Preenchido por registrar_handler.
 _HANDLERS: dict = {}
+
+
+# ------------------------------------------------------------------------------------------
+# OS DOIS DESFECHOS QUE NÃO SÃO "EXECUTOU" NEM "FALHOU"  (Risco 3)
+# ------------------------------------------------------------------------------------------
+# Antes disto um handler tinha três saídas: agir, levantar exceção (retentativa), ou dar
+# `return` mudo. O `return` mudo virava `executado` — e "executado" passava a significar duas
+# coisas incompatíveis: "a abertura saiu" e "eu desisti deste lead". Foi assim que 4 ações
+# executadas produziram ZERO estados em 25/08 sem nada quebrar.
+#
+# São exceções, e não valores de retorno, por um motivo concreto: o handler roda dentro de
+# `db.begin_nested()`, e levantar REVERTE o savepoint. Um handler que já tinha escrito
+# metade das coisas (criado o Contact, criado o estado) e então descobre que não pode enviar
+# não deixa resíduo — o que um `return` no meio deixaria.
+class AcaoIgnorada(Exception):
+    """Não havia o que fazer, e não haverá. Vira `skipped` com o motivo GRAVADO.
+
+    Não consome tentativa e não vira `falhou`: nada falhou. É o desfecho de "este lead já
+    tem estado", "é anterior ao corte", "não tem telefone".
+    """
+
+    def __init__(self, motivo: str):
+        super().__init__(motivo)
+        self.motivo = motivo
+
+
+class AcaoAdiada(Exception):
+    """Não dá para agir AGORA, mas vai dar. Volta a `pendente` com `run_at` empurrado.
+
+    NÃO CONSOME TENTATIVA — esta é a diferença que importa em relação a levantar uma
+    exceção qualquer. Adiar não é falhar: um lead que chega às 22h vai esperar até as 09h e
+    isso não pode gastar 1 das 3 tentativas que existem para erro de verdade.
+
+    O motivo fica gravado na linha PENDENTE, que é o que torna visível — sem depender do log
+    — a fila que está parada esperando janela.
+    """
+
+    def __init__(self, quando: datetime, motivo: str):
+        super().__init__(f"{motivo} → {quando:%d/%m %H:%M}")
+        self.quando = quando
+        self.motivo = motivo
 
 
 def registrar_handler(kind: str):
@@ -244,7 +290,8 @@ def _snapshot(acao: NatScheduledAction, agora: datetime) -> dict:
 
 
 async def _finalizar(db: AsyncSession, acao_id: int, status: str, agora: datetime,
-                     attempts: int | None = None, run_at: datetime | None = None):
+                     attempts: int | None = None, run_at: datetime | None = None,
+                     motivo: str | None = None):
     """Grava o desfecho por UPDATE explícito, não por atributo do ORM.
 
     UPDATE e não `acao.status = ...` porque este código roda depois de um savepoint que pode
@@ -255,7 +302,9 @@ async def _finalizar(db: AsyncSession, acao_id: int, status: str, agora: datetim
     continua `pendente` e sem processed_at — o campo responde "quando isto saiu da fila", e
     não "quando foi tentado pela última vez".
     """
-    valores = {"status": status}
+    # `motivo` é escrito SEMPRE, inclusive como NULL: uma ação adiada pelo teto que enfim
+    # executa não pode ficar carregando o motivo do adiamento anterior como se ainda valesse.
+    valores = {"status": status, "motivo": motivo}
     if attempts is not None:
         valores["attempts"] = attempts
     if run_at is not None:
@@ -292,8 +341,24 @@ async def _executar_acao(acao: NatScheduledAction, db: AsyncSession, agora: date
         # segue utilizável para registrar a tentativa logo abaixo. try/except puro não
         # bastaria — um IntegrityError deixaria a transação abortada e o próprio UPDATE de
         # attempts falharia com InFailedSQLTransaction.
+        #
+        # AcaoIgnorada e AcaoAdiada também revertem este savepoint, e isso é o desejado: o
+        # handler pode ter criado Contact e estado antes de descobrir que não vai enviar, e
+        # nenhum dos dois deve sobreviver a uma abertura que não saiu.
         async with db.begin_nested():
             await handler(dados, db)
+    except AcaoIgnorada as e:
+        await _finalizar(db, acao_id, ACAO_SKIPPED, agora, motivo=e.motivo)
+        print(f"⏭️  NAT scheduler: {kind} (ação {acao_id}, {dados['contact_wa_id']}) "
+              f"SKIPPED — {e.motivo}")
+        return ACAO_SKIPPED
+    except AcaoAdiada as e:
+        # Sem `attempts=`: adiar não consome tentativa. Ver a docstring de AcaoAdiada.
+        await _finalizar(db, acao_id, ACAO_PENDENTE, agora, run_at=e.quando,
+                         motivo=e.motivo)
+        print(f"⏳ NAT scheduler: {kind} (ação {acao_id}, {dados['contact_wa_id']}) adiada "
+              f"para {e.quando:%d/%m %H:%M} — {e.motivo}")
+        return ACAO_ADIADO
     except Exception as e:
         tentativas = dados["attempts"] + 1
         if tentativas >= MAX_TENTATIVAS_ACAO:

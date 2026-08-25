@@ -170,7 +170,8 @@ async def caso_4b_agente_assume_com_a_automacao_DESLIGADA():
     lead = _lead(status=None)
     db = _fake_db(lead, _nat_cfg(qualificacao_enabled=True))
     with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as spy, \
-         patch("app.qualificacao_gatilho.agendar_abertura", new=AsyncMock()) as gatilho:
+         patch("app.qualificacao_gatilho.agendar_abertura",
+               new=AsyncMock(return_value=(True, "enfileirado"))) as gatilho:
         r = await exact_spotter.send_welcome_to_new_lead(
             _lead_data(lead), db, _cfg(enabled=False))     # <-- automação DESLIGADA
     assert r["reason"] == "agente_assumiu", r

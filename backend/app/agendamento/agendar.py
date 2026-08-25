@@ -529,8 +529,9 @@ async def _gatilho_do_agente(db: AsyncSession, ag: Agendamento) -> None:
     enfileirou = False
     try:
         from app.qualificacao_gatilho import agendar_abertura
-        enfileirou = await agendar_abertura(db, telefone=ag.telefone, lead_id=ag.lead_id,
-                                            nascido_em=ag.created_at) or enfileirou
+        ok, _motivo = await agendar_abertura(db, telefone=ag.telefone, lead_id=ag.lead_id,
+                                             nascido_em=ag.created_at)
+        enfileirou = ok or enfileirou
     except Exception as e:
         print(f"⚠️ agendamento #{ag.id}: gatilho do agente não enfileirado "
               f"({type(e).__name__}: {e})")

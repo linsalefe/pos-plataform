@@ -431,7 +431,19 @@ ACAO_EXECUTADO = "executado"
 ACAO_CANCELADO = "cancelado"
 ACAO_FALHOU = "falhou"
 
-STATUS_ACAO_VALIDOS = frozenset({ACAO_PENDENTE, ACAO_EXECUTADO, ACAO_CANCELADO, ACAO_FALHOU})
+# `executado` passou a significar UMA coisa só: o handler agiu. Quando ele decide NÃO agir —
+# o lead já tem estado, é anterior ao corte, não tem telefone — a ação vira `skipped` com o
+# motivo gravado em `motivo`, e não `executado` mudo.
+#
+# A distinção não é cosmética. `monitor_qualificacao.py` §2b cruza ação EXECUTADA contra
+# estado existente e chama de lead perdido a que não tem par. Com tudo virando `executado`,
+# essa consulta não conseguia separar "descartei o lead em silêncio" de "não havia o que
+# fazer" — as duas tinham exatamente a mesma assinatura no banco. Ver o Risco 3 em
+# SPRINT_ESPONTANEO_20260825.md §7.
+ACAO_SKIPPED = "skipped"
+
+STATUS_ACAO_VALIDOS = frozenset({ACAO_PENDENTE, ACAO_EXECUTADO, ACAO_CANCELADO, ACAO_FALHOU,
+                                 ACAO_SKIPPED})
 
 # Tipos de ação agendada. NÃO há CHECK no banco para `kind` (ver migrate_nat_sprint3.py): é
 # ponto de extensão, não máquina de estados fechada. O preço disso é que um kind cujo módulo
@@ -488,6 +500,15 @@ class NatScheduledAction(Base):
     attempts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, server_default=func.now())
     processed_at = Column(DateTime, nullable=True)
+    # POR QUE O MOTIVO É COLUNA E NÃO SÓ LOG. O log desta aplicação é afogado pelo
+    # `echo=True` do engine (36 750 linhas suprimidas pelo journald em 25/08), então
+    # "está no log" não é o mesmo que "dá para responder depois". Um `skipped` sem motivo
+    # legível no banco seria a mesma falha silenciosa que ele veio corrigir.
+    #
+    # Vale também para `pendente`: uma ação ADIADA pelo teto guarda aqui por que ela ainda
+    # não rodou, o que torna visível — sem ler log — a fila que está esperando janela.
+    # Limpo (NULL) quando a ação enfim executa.
+    motivo = Column(Text, nullable=True)
 
 
 class NatContactAttempt(Base):

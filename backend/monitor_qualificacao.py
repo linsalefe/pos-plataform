@@ -101,12 +101,17 @@ async def main(horas: float) -> int:
             alertas.append(f"{atrasadas[0][0]} ação(ões) pendentes atrasadas — job parado?")
 
         # ---------------------------------- 2b. ações consumidas SEM virar estado
-        # A assinatura do descarte silencioso. `abrir()` termina com `return` em três
-        # situações — teto por hora estourado, lead anterior ao corte, contato inexistente —
-        # e em todas elas o agendador marca a ação como `executado`. O lead perde a abertura
-        # PARA SEMPRE e não sobra nada no banco dizendo isso. Com o backlog da noite caindo
-        # todo às 09h (~7 aberturas medidas, teto de 20/h), é o modo de falha mais provável
-        # do dia.
+        # A assinatura do descarte silencioso — e depois do Risco 3 ela ficou AFIADA.
+        #
+        # Antes, `abrir()` saía com `return` mudo em cinco situações e todas viravam
+        # `executado`: esta consulta não conseguia separar "descartei o lead" de "não havia
+        # o que fazer", e o segundo caso (booking espontâneo de quem já tem estado) entrava
+        # aqui como falso positivo. Agora quem decide não agir vira `skipped` COM MOTIVO, e
+        # quem não pode agir agora volta a `pendente` com o motivo na linha.
+        #
+        # Sobrando `executado` sem estado, é bug de verdade: a ação diz que a abertura saiu
+        # e não há conversa nenhuma do outro lado. Por isso o alerta ficou mais severo, não
+        # menos — ele agora acusa uma coisa só.
         consumidas = await q("""SELECT a.contact_wa_id, a.run_at, a.attempts
                                 FROM nat_scheduled_actions a
                                 WHERE a.kind = 'iniciar_qualificacao'
@@ -120,11 +125,29 @@ async def main(horas: float) -> int:
             cab("2b. AÇÕES CONSUMIDAS SEM VIRAR ESTADO")
             print(f"  {len(consumidas)} executada(s) · {len(perdidas)} sem estado correspondente")
             for wa, ra, att in perdidas:
-                print(f"    ⚠️ {ra:%H:%M} {wa} (tentativas={att}) — procure no log: "
-                      f"'não admitida' / 'não existe em contacts' / 'já tem estado'")
+                print(f"    ⚠️ {ra:%H:%M} {wa} (tentativas={att}) — 'executado' significa que "
+                      f"a abertura SAIU; sem estado, isto é bug, não descarte")
             if perdidas:
-                alertas.append(f"{len(perdidas)} abertura(s) consumida(s) sem criar estado "
-                               f"— possível descarte pelo teto ou pelo corte de data")
+                alertas.append(f"{len(perdidas)} abertura(s) EXECUTADA(s) sem criar estado — "
+                               f"desde o Risco 3 isto não tem mais causa benigna")
+
+        # -------------------------------- 2b'. as decisões que agora ficam gravadas
+        # O outro lado da mesma moeda: com motivo no banco, "quem o agente deixou de fora e
+        # por quê" virou uma consulta em vez de uma caçada no log — que é justamente o que
+        # não dava para fazer em 25/08, com o journald suprimindo 36 750 linhas por causa do
+        # `echo=True` do engine.
+        decisoes = await q("""SELECT status, motivo, COUNT(*), MAX(run_at)
+                              FROM nat_scheduled_actions
+                              WHERE kind = 'iniciar_qualificacao' AND motivo IS NOT NULL
+                                AND run_at >= :desde
+                              GROUP BY status, motivo ORDER BY 3 DESC""", desde=desde_sp)
+        if decisoes:
+            cab("2b'. DECISÕES REGISTRADAS (skipped / adiadas)")
+            for st, motivo, n, ultimo in decisoes:
+                print(f"  {st:<9} {n:>3}x  {motivo[:70]:<70} último {ultimo:%d/%m %H:%M}")
+                # Pendente com motivo = fila parada esperando janela. Vale alerta se durar.
+                if st == ACAO_PENDENTE and ultimo < vencido_sp:
+                    alertas.append(f"{n} abertura(s) adiada(s) há mais de 10 min: {motivo}")
 
         # ------------------------------------------------- 2c. distância do teto
         if cfg:

@@ -170,7 +170,7 @@ class FilaFalsa:
         acao = SimpleNamespace(
             id=self._id, kind=kind, contact_wa_id=wa, run_at=run_at, status=status,
             attempts=attempts, payload=json.dumps(payload) if payload else None,
-            processed_at=None)
+            processed_at=None, motivo=None)
         self.acoes.append(acao)
         self._id += 1
         return acao
@@ -184,9 +184,11 @@ class FilaFalsa:
         vencidas.sort(key=lambda a: a.run_at)
         return vencidas[0] if vencidas else None
 
-    async def finalizar(self, db, acao_id, status, agora, attempts=None, run_at=None):
+    async def finalizar(self, db, acao_id, status, agora, attempts=None, run_at=None,
+                        motivo=None):
         acao = self.por_id(acao_id)
         acao.status = status
+        acao.motivo = motivo
         if attempts is not None:
             acao.attempts = attempts
         if run_at is not None:

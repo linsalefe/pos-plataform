@@ -97,13 +97,29 @@ async def contar_envios_ultima_hora(db: AsyncSession) -> int:
     return int(res.scalar() or 0)
 
 
+# O teto é o ÚNICO bloqueio deste módulo que passa sozinho com o tempo, e por isso é o único
+# que merece adiamento em vez de descarte (Risco 3). Quem recebe o motivo precisa reconhecê-lo
+# sem casar string à mão em três arquivos — daí a constante e o `e_teto`.
+MOTIVO_TETO = "teto de envios/hora estourado"
+
+
+def e_teto(motivo: str | None) -> bool:
+    """Este motivo de recusa é o teto por hora? Então esperar resolve — não descartar.
+
+    Serve tanto para o motivo devolvido pela ADMISSÃO quanto para o do ENVIO (`enviar_nat`
+    repassa o motivo do guard tal e qual), que é justamente o que permite ao handler da
+    abertura tratar os dois pontos com a mesma regra.
+    """
+    return bool(motivo) and motivo.startswith(MOTIVO_TETO)
+
+
 async def _teto_ok(config, db: AsyncSession) -> tuple[bool, str]:
     teto = config.max_envios_hora
     if teto is None:
         return False, "max_envios_hora não definido"
     enviados = await contar_envios_ultima_hora(db)
     if enviados >= teto:
-        return False, f"teto de envios/hora estourado ({enviados}/{teto})"
+        return False, f"{MOTIVO_TETO} ({enviados}/{teto})"
     return True, "ok"
 
 

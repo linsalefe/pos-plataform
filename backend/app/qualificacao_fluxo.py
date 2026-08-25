@@ -55,8 +55,8 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         PASSO_AGENDADO)
 from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
                            proximo_horario_util)
-from app.nat_scheduler import registrar_handler
-from app.nat_sender import send_nat_message
+from app.nat_scheduler import AcaoAdiada, AcaoIgnorada, registrar_handler
+from app.nat_sender import enviar_nat, send_nat_message
 from app.telefone import variantes_wa_id
 from app.nomes import primeiro_nome
 
@@ -67,6 +67,17 @@ MAX_HISTORICO = 10
 # Quanto antes da reunião o lembrete sai.
 ANTECEDENCIA_LEMBRETE = timedelta(minutes=30)
 
+# De quanto em quanto tempo uma abertura barrada pelo TETO por hora volta a tentar.
+#
+# O teto é uma contagem MÓVEL de 1h (qualificacao_guard.contar_envios_ultima_hora), então ele
+# se resolve sozinho conforme os envios antigos saem da janela — não há um instante exato para
+# esperar, e mirar "a hora cheia" seria pior: concentraria de novo todo mundo no mesmo minuto.
+# 10 min é o passo que espalha a fila sem fazer o lead esperar.
+#
+# MEDIDO em 24/08: ~7 aberturas caem juntas no pico das 09h, contra teto de 20/h. Isto é uma
+# rede, não um caminho quente.
+ATRASO_POR_TETO = timedelta(minutes=10)
+
 # Silêncio do lead que encerra a qualificação. Constante nomeada porque é número de produto,
 # não de engenharia: mudar a régua é mudar esta linha.
 #
@@ -75,10 +86,6 @@ ANTECEDENCIA_LEMBRETE = timedelta(minutes=30)
 # demais joga fora quem só demorou a ver o WhatsApp.
 INATIVIDADE_ENCERRA = timedelta(hours=72)
 MOTIVO_INATIVIDADE = "inatividade"
-
-# O mesmo valor do decorator abaixo. Nomeado porque o handler reagenda a si mesmo quando
-# acorda fora do horário comercial, e uma string solta em dois lugares diverge.
-KIND_INICIAR_QUALIFICACAO_STR = "iniciar_qualificacao"
 
 TIPO_NOTIF_AGENTE = "agente_transferiu"
 
@@ -169,6 +176,107 @@ async def _contato_de(wa_id: str, db: AsyncSession) -> Contact | None:
         return None
     res = await db.execute(select(Contact).where(Contact.wa_id.in_(vs)))
     return _mais_relevante(list(res.scalars()), vs, lambda c: c.wa_id)
+
+
+async def _identidade_do_lead(lead_id: int | None, db: AsyncSession) -> tuple[str, str | None]:
+    """`(nome, sdr_name)` do lead, de onde houver. `("", None)` quando não há nada.
+
+    Duas fontes na ordem em que ficam prontas: `exact_leads` é a boa (traz o SDR), mas o lead
+    da LP pode ainda não ter sido sincronizado — MEDIDO, o sync leva até 10 min e a abertura
+    dispara em 5. `agendamentos` tem o nome desde o instante do formulário, e é o que salva o
+    caso comum de quem acabou de se candidatar.
+    """
+    if not lead_id:
+        return "", None
+    from app.models import ExactLead
+    lead = (await db.execute(
+        select(ExactLead).where(ExactLead.exact_id == lead_id))).scalar_one_or_none()
+    if lead is not None:
+        return (lead.name or ""), lead.sdr_name
+    nome = (await db.execute(
+        select(Agendamento.nome).where(Agendamento.lead_id == lead_id)
+        .order_by(Agendamento.id.desc()).limit(1))).scalar_one_or_none()
+    return (nome or ""), None
+
+
+async def _contato_ou_criar(wa_id: str, *, lead_id: int | None,
+                            db: AsyncSession) -> Contact | None:
+    """O `Contact` para quem a abertura vai sair — CRIANDO-O se ele ainda não existe.
+
+    ------------------------------------------------------------------------------------
+    POR QUE CRIAR, E POR QUE ISTO ERA O BUG DE 25/08
+    ------------------------------------------------------------------------------------
+    `contacts` só nascia de dois jeitos: mensagem inbound do lead, ou efeito colateral do
+    envio da BOAS-VINDAS (`send_welcome_to_new_lead` cria o Contact junto com a Message do
+    template). O passo 4.5 cede a abertura ao agente e sai ANTES disso, e nada passou a criar
+    o contato no lugar.
+
+    Quem se candidata pela landing page e nunca mandou mensagem simplesmente não existe em
+    `contacts`. MEDIDO nos 45 leads de 25/08: 33 sem linha, 11 com. Três de cada quatro leads
+    não podiam receber abertura nenhuma — com a fila cheia, o agendador drenando e o agente
+    ligado. O agente herdou a dependência da boas-vindas sem herdar quem a satisfazia.
+
+    ------------------------------------------------------------------------------------
+    POR QUE A BUSCA AQUI É ESTRITA, E NÃO TOLERANTE AO 9º DÍGITO
+    ------------------------------------------------------------------------------------
+    Este contato existe para UMA coisa: ser encontrado por `nat_sender`, que faz
+    `Contact.wa_id == contact_wa_id`, igualdade crua. Um porteiro tolerante aqui não ajuda o
+    envio — ele só decide se a função segue adiante — e em 25/08 fez pior que não ajudar:
+
+        wa_id do lead   5582998307979  (Ronaldo Cesar, formulário da LP)
+        variante de 12  558298307979   -> já existia em contacts como **Pablo Valente**
+
+    A variante sem o 9º dígito do número de um é o número de OUTRA PESSOA (`app/telefone.py`
+    documenta por que a tolerância é ambígua justamente para local de 8 dígitos começando em
+    9). O porteiro abriu, o estado nasceu na linha de um estranho, e só não houve envio para
+    a pessoa errada porque o sender é estrito e não achou os 13 dígitos. A inconsistência
+    entre os dois foi o que impediu o estrago.
+
+    Então a regra passa a ser UMA: o contato da abertura é o da grafia para a qual vamos
+    mandar a mensagem. É exatamente o que a boas-vindas sempre fez
+    (`select(Contact).where(Contact.wa_id == phone)` e cria se não achar) — o comportamento
+    que o agente deveria ter herdado.
+
+    A tolerância continua onde ela é certa e não pode escrever nada: `estado_de` (o mesmo
+    humano não pode ganhar dois estados) e o histórico da conversa.
+
+    Devolve None só se não houver canal — sem canal o envio não sairia de qualquer forma, e
+    um Contact órfão sem `channel_id` seria lixo.
+    """
+    achado = (await db.execute(
+        select(Contact).where(Contact.wa_id == wa_id))).scalar_one_or_none()
+    if achado is not None:
+        return achado
+
+    from app.models import AutoWelcomeConfig
+    from app.sdr_mapping import resolve_sdr_user_id
+
+    # Mesmo canal que a boas-vindas usa, pela mesma leitura que `nat_sender._resolver_canal`
+    # já faz — uma fonte de verdade para a credencial do WABA, não duas.
+    cfg = (await db.execute(
+        select(AutoWelcomeConfig).where(AutoWelcomeConfig.id == 1))).scalar_one_or_none()
+    channel_id = cfg.channel_id if cfg else None
+    if channel_id is None:
+        return None
+
+    nome, sdr_name = await _identidade_do_lead(lead_id, db)
+    contato = Contact(
+        wa_id=wa_id,
+        name=nome or None,
+        channel_id=channel_id,
+        # ai_active=False, e aqui a boas-vindas NÃO é o modelo a seguir. Lá o True entrega a
+        # conversa ao `ai_engine`; aqui quem conduz é o agente, e marcar o lead como "a IA
+        # genérica responde" seria pedir dois robôs na mesma thread no dia em que aquele
+        # trecho do webhook (hoje comentado) voltar.
+        ai_active=False,
+        lead_status="novo",
+        assigned_to=resolve_sdr_user_id(sdr_name),
+    )
+    db.add(contato)
+    await db.flush()
+    print(f"👤 Agente: contato {wa_id} criado para a abertura "
+          f"({nome or 'sem nome'}, canal {channel_id})")
+    return contato
 
 
 async def estado_de(contact_wa_id: str, db: AsyncSession) -> NatQualificacaoState | None:
@@ -474,8 +582,19 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
     obrigado.html. Medido: mediana 28s, máximo 3min14s entre o formulário e o agendamento;
     aos 5 minutos a ramificação é definitiva.
 
-    Sai silencioso e bem-sucedido quando não há o que fazer — mesmo espírito de `nat_sla` e
-    `nat_recuperacao`: a ação vira `executado` e ninguém é acordado à toa.
+    NENHUMA SAÍDA DAQUI É SILENCIOSA (Risco 3). Até 25/08 este handler tinha cinco `return`
+    mudos, e os cinco viravam `executado` — a mesma marca de quem abriu a conversa. Foi assim
+    que 4 ações executadas produziram ZERO estados sem nada quebrar. Agora:
+
+        não dá para agir AGORA  -> AcaoAdiada  (fora do horário, teto por hora) — volta a
+                                   `pendente` com run_at empurrado, SEM consumir tentativa
+        não há o que fazer      -> AcaoIgnorada (já tem estado, anterior ao corte, sem
+                                   contato possível) — vira `skipped` com o motivo no banco
+        abriu                   -> `executado`, e agora isso significa uma coisa só
+
+    Levantar em vez de `return` também reverte o savepoint do handler, o que apaga de graça
+    o Contact e o estado criados antes de se descobrir que a abertura não sairia — a limpeza
+    que o `db.delete(estado)` fazia à mão, e que não cobria o contato.
     """
     from app.qualificacao_dados import resolver_dados
     from app.models import ORIGEM_LP
@@ -490,20 +609,24 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
     #
     # Fora da janela EMPURRA, não recusa: recusar deixaria sem abertura para sempre o lead
     # que se candidatou às 22h — e 22h é uma das horas de maior movimento da LP (8 dos 81
-    # formulários medidos). Reagendar não consome tentativa: a ação atual termina
-    # `executado` e uma nova nasce pendente, pelo mesmo `agendar` que o sla_check usa.
+    # formulários medidos).
+    #
+    # É a MESMA linha que continua pendente, com o run_at empurrado — e não uma linha nova
+    # como antes. A versão anterior chamava `agendar`, que começa cancelando o pendente do
+    # par (kind, contato): ou seja, cancelava a própria ação em execução e só não estragava
+    # nada porque o `_finalizar` logo depois a reescrevia para `executado`. Adiar a linha no
+    # lugar tira esse cruzamento, não gasta id, e mantém o histórico da espera num lugar só.
     agora = acao.get("agora") or _agora_sp()
     if not dentro_horario_comercial(agora):
-        from app.nat_scheduler import agendar as agendar_acao
-        quando = proximo_horario_util(agora)
-        await agendar_acao(KIND_INICIAR_QUALIFICACAO_STR, wa_id, quando, payload, db)
-        print(f"🌙 Agente: abertura de {wa_id} fora do horário ({agora:%H:%M}) — "
-              f"empurrada para {quando:%d/%m %H:%M}")
-        return
+        raise AcaoAdiada(proximo_horario_util(agora),
+                         f"fora do horário comercial ({agora:%H:%M})")
 
-    if await estado_de(wa_id, db) is not None:
-        print(f"↩️  Agente: {wa_id} já tem estado — abertura ignorada")
-        return
+    ja = await estado_de(wa_id, db)
+    if ja is not None:
+        # NÃO é lead perdido: é lead já atendido. Vira `skipped` justamente para o §2b do
+        # monitor parar de confundir os dois — ele procura ação EXECUTADA sem estado, e um
+        # booking espontâneo caía aqui e produzia essa assinatura como falso positivo.
+        raise AcaoIgnorada(f"já tem estado ({ja.etapa}) — abertura desnecessária")
 
     # ADMISSÃO. A data de referência vem de quem agendou a ação: para a LP é
     # agendamentos.created_at (o lead pode nem estar em exact_leads ainda), para o sync é
@@ -517,17 +640,17 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
             referencia = None
     pode, motivo = await guard.qualificacao_pode_iniciar(referencia, db)
     if not pode:
-        print(f"↩️  Agente: abertura de {wa_id} não admitida ({motivo})")
-        return
+        # O TETO É O ÚNICO "NÃO" QUE VIRA "SIM" SOZINHO. Corte de data e chave desligada não
+        # mudam de ideia em dez minutos; o teto por hora muda, porque a contagem é móvel.
+        # Tratar os dois igual era descartar lead por causa de uma janela cheia.
+        if guard.e_teto(motivo):
+            raise AcaoAdiada(agora + ATRASO_POR_TETO, motivo)
+        raise AcaoIgnorada(f"não admitido: {motivo}")
 
-    # Tolerante ao 9º dígito: `wa_id` aqui vem de `qualificacao_gatilho.wa_id_de`, montado
-    # do telefone do LEAD (13 dígitos), e a linha de `contacts` costuma existir na grafia do
-    # INBOUND (12). Com igualdade, a abertura era abortada com "não existe em contacts" para
-    # a maior parte dos leads — e o log dizia que o contato não existia, o que era mentira.
-    contato = await _contato_de(wa_id, db)
+    contato = await _contato_ou_criar(wa_id, lead_id=lead_id, db=db)
     if contato is None:
-        print(f"↩️  Agente: {wa_id} não existe em contacts — abertura ignorada")
-        return
+        raise AcaoIgnorada("não foi possível resolver nem criar o contato "
+                           "(sem canal configurado?)")
 
     dados = await resolver_dados(lead_id=lead_id, origem=origem, db=db)
     formacao = dados["formacao"]
@@ -561,14 +684,20 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
         parametros = [nome, curso]
 
     corpo = await _corpo_do_template(etapa_msg, parametros, db)
-    enviado = await send_nat_message(wa_id, etapa_msg, db, guard=guard.guard_de_abertura,
-                                     parametros=parametros, corpo_livre=corpo)
+    enviado, motivo_envio = await enviar_nat(wa_id, etapa_msg, db,
+                                             guard=guard.guard_de_abertura,
+                                             parametros=parametros, corpo_livre=corpo)
     if not enviado:
-        # Sem abertura não há conversa. Some o estado para o lead poder ser reaberto depois,
-        # em vez de ficar preso numa etapa que ninguém vai alimentar.
-        print(f"↩️  Agente: abertura de {wa_id} não saiu — estado descartado")
-        await db.delete(estado)
-        return
+        # Sem abertura não há conversa — e o savepoint do handler leva embora o estado E o
+        # contato recém-criados, sem `db.delete` à mão (que só cobria o estado).
+        #
+        # O teto pode estourar AQUI mesmo tendo passado na admissão: entre uma coisa e outra
+        # o `_corpo_do_template` faz uma chamada à Meta, e outras aberturas do mesmo ciclo
+        # podem ter enchido a janela nesse intervalo. Adiar em vez de descartar é o que faz a
+        # segunda linha de defesa não custar o lead.
+        if guard.e_teto(motivo_envio):
+            raise AcaoAdiada(agora + ATRASO_POR_TETO, motivo_envio)
+        raise AcaoIgnorada(f"abertura não saiu: {motivo_envio}")
 
     # Arma o relógio da inatividade já na abertura. Sem isto, quem NUNCA responde nunca
     # encerraria — e é justamente esse lead que a régua de follow-up quer receber.

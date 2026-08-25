@@ -708,28 +708,42 @@ for rot, quando, esperado in [
     checa(rot, proximo_horario_util(quando), esperado)
 
 
+from app.nat_scheduler import AcaoAdiada, AcaoIgnorada  # noqa: E402
+
+
 async def abre_em(agora):
-    """iniciar_qualificacao com o relógio do ciclo controlado."""
+    """iniciar_qualificacao com o relógio do ciclo controlado.
+
+    Devolve `(adiada|None, admissao)`. Fora do horário o handler não reagenda uma linha nova:
+    ele levanta AcaoAdiada, e é o agendador que empurra o run_at da MESMA ação sem consumir
+    tentativa (ver nat_scheduler.AcaoAdiada).
+    """
     with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=None)), \
-         patch("app.nat_scheduler.agendar", new=AsyncMock()) as reagenda, \
+         patch.object(fluxo, "_contato_ou_criar", new=AsyncMock(return_value=None)), \
          patch.object(fluxo.guard, "qualificacao_pode_iniciar",
                       new=AsyncMock(return_value=(True, "ok"))) as admissao:
-        await fluxo.iniciar_qualificacao(
-            {"contact_wa_id": "5583999998888", "agora": agora,
-             "payload": json.dumps({"lead_id": 1, "origem": ORIGEM_LP})}, _db())
-    return reagenda, admissao
+        try:
+            await fluxo.iniciar_qualificacao(
+                {"contact_wa_id": "5583999998888", "agora": agora,
+                 "payload": json.dumps({"lead_id": 1, "origem": ORIGEM_LP})}, _db())
+            return None, admissao
+        except AcaoAdiada as e:
+            return e, admissao
+        except AcaoIgnorada:
+            return None, admissao
 
 
-r, adm = asyncio.run(abre_em(_dt(*SEG, 2, 0)))
+adiada, adm = asyncio.run(abre_em(_dt(*SEG, 2, 0)))
 checa("abertura às 02h NÃO chega à admissão", adm.await_count, 0)
-checa("  e é empurrada para as 09h", r.await_args.args[2], _dt(*SEG, 9, 0))
-checa("  pelo mesmo kind", r.await_args.args[0], "iniciar_qualificacao")
+checa("  é ADIADA (não executada em silêncio)", isinstance(adiada, AcaoAdiada), True)
+checa("  para as 09h", adiada.quando, _dt(*SEG, 9, 0))
+checa("  com o motivo gravável", "fora do horário" in adiada.motivo, True)
 
-r, adm = asyncio.run(abre_em(_dt(*SEX, 19, 0)))
-checa("sexta 19h -> segunda 09h", r.await_args.args[2], _dt(2026, 8, 31, 9, 0))
+adiada, adm = asyncio.run(abre_em(_dt(*SEX, 19, 0)))
+checa("sexta 19h -> segunda 09h", adiada.quando, _dt(2026, 8, 31, 9, 0))
 
-r, adm = asyncio.run(abre_em(_dt(*SEG, 10, 0)))
-checa("dentro da janela NÃO reagenda", r.await_count, 0)
+adiada, adm = asyncio.run(abre_em(_dt(*SEG, 10, 0)))
+checa("dentro da janela NÃO adia", adiada, None)
 checa("  e segue para a admissão", adm.await_count, 1)
 
 

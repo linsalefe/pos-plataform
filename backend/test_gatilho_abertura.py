@@ -140,7 +140,8 @@ async def caso_1_passo_4_5_com_register_date():
                 lead_row=lead)
 
     with patch.object(exact_spotter, "send_template_message", new=AsyncMock()) as envio, \
-         patch("app.qualificacao_gatilho.agendar_abertura", new=AsyncMock()) as gatilho:
+         patch("app.qualificacao_gatilho.agendar_abertura",
+               new=AsyncMock(return_value=(True, "enfileirado"))) as gatilho:
         r = await exact_spotter.send_welcome_to_new_lead(
             _lead_data(lead, nascido), db, _cfg(enabled=False))
 

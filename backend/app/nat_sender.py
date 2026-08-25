@@ -70,7 +70,33 @@ async def _resolver_canal(contact: Contact, db: AsyncSession):
 async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, *,
                            guard=None, corpo_livre: str | None = None,
                            parametros: list | None = None, **vars) -> bool:
-    """Envia a mensagem da NAT correspondente a `etapa`. True se saiu, False se não.
+    """Envia a mensagem da NAT. True se saiu, False se não. Ver `enviar_nat`."""
+    enviado, _ = await enviar_nat(contact_wa_id, etapa, db, guard=guard,
+                                  corpo_livre=corpo_livre, parametros=parametros, **vars)
+    return enviado
+
+
+async def enviar_nat(contact_wa_id: str, etapa: str, db: AsyncSession, *,
+                     guard=None, corpo_livre: str | None = None,
+                     parametros: list | None = None, **vars) -> tuple[bool, str]:
+    """Envia a mensagem da NAT correspondente a `etapa`. `(saiu, motivo)`.
+
+    ------------------------------------------------------------------------------------
+    POR QUE O MOTIVO SUBIU DE `print` PARA VALOR DE RETORNO
+    ------------------------------------------------------------------------------------
+    Todos os oito caminhos de recusa daqui sabem exatamente por que não enviaram, e até
+    25/08 esse motivo só existia no stdout. Quem chamava recebia `False` e não tinha como
+    distinguir "o teto por hora estourou, tente daqui a pouco" de "este contato não pode
+    receber nada, desista" — e o handler da abertura tratava os dois como a mesma coisa:
+    apagava o estado e consumia a ação. Lead perdido por causa de um teto que passaria em
+    dez minutos.
+
+    Com o motivo na mão, `iniciar_qualificacao` adia num caso e pula no outro, e grava qual
+    dos dois foi (ver nat_scheduler.AcaoAdiada / AcaoIgnorada).
+
+    `send_nat_message` continua existindo com a assinatura e o retorno de sempre — os sete
+    chamadores do fluxo de botões não mudaram uma linha.
+    ------------------------------------------------------------------------------------
 
     `etapa` é a chave da mensagem em nat_copy (= nome do template que a respalda):
     nat_boasvindas, nat_sim, nat_confirma_transferencia, nat_outro_horario.
@@ -107,9 +133,9 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, *,
     continua sendo o único lugar. É o que permite ao teto por hora de cada fluxo contar os
     SEUS envios filtrando por nome de etapa.
     """
-    def recusa(motivo: str) -> bool:
+    def recusa(motivo: str) -> tuple[bool, str]:
         print(f"🔒 NAT não enviou ({etapa} → {contact_wa_id}): {motivo}")
-        return False
+        return False, motivo
 
     try:
         res = await db.execute(select(Contact).where(Contact.wa_id == contact_wa_id))
@@ -198,7 +224,7 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, *,
         print(f"📤 NAT enviou '{etapa}' para {contact_wa_id} "
               f"({'texto livre' if aberta else 'template'}, janela "
               f"{'aberta' if aberta else 'fechada'})")
-        return True
+        return True, "ok"
 
     except Exception as e:
         return recusa(f"erro inesperado: {type(e).__name__}: {e}")

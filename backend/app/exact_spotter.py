@@ -244,11 +244,27 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
         from app.qualificacao_gatilho import agendar_abertura
         # register_date já é UTC; o gatilho soma 3h a quem vem em SP, então descontamos aqui
         # para o valor chegar certo do outro lado.
+        from app.qualificacao_gatilho import MOTIVO_ERRO, MOTIVO_SEM_TELEFONE
         nascido = lead_data.get("register_date")
-        await agendar_abertura(db, telefone=phone, lead_id=exact_id, origem=ORIGEM_EXACT,
-                               nascido_em=(nascido - timedelta(hours=3)) if nascido else None)
-        stamp("skipped", "agente de pré-qualificação assumiu a abertura")
-        print(f"🤝 Boas-vindas cedida ao agente para {name} ({phone})")
+        enfileirou, motivo = await agendar_abertura(
+            db, telefone=phone, lead_id=exact_id, origem=ORIGEM_EXACT,
+            nascido_em=(nascido - timedelta(hours=3)) if nascido else None)
+
+        # O CARIMBO TEM QUE DIZER A VERDADE, porque ele é irreversível: `welcome_status`
+        # não-nulo é a trava de idempotência do passo 3, e um lead carimbado nunca volta a
+        # ser candidato — nem à boas-vindas, nem ao agente. Carimbar "o agente assumiu" em
+        # cima de um gatilho que NÃO enfileirou fecha a porta do lead pelos dois lados, e o
+        # deixa indistinguível dos leads realmente atendidos.
+        #
+        # `já tem estado` é o único False benigno: a pessoa está sendo atendida agora, e o
+        # carimbo de "assumido" é literalmente verdadeiro.
+        if not enfileirou and motivo.startswith((MOTIVO_ERRO, MOTIVO_SEM_TELEFONE)):
+            stamp("failed", f"agente ligado, mas a abertura não foi enfileirada: {motivo}")
+            print(f"⛔ Agente NÃO assumiu {name} ({phone}) — {motivo}")
+            return result("failed", "gatilho_falhou", motivo)
+
+        stamp("skipped", f"agente de pré-qualificação assumiu a abertura ({motivo})")
+        print(f"🤝 Boas-vindas cedida ao agente para {name} ({phone}) — {motivo}")
         return result("skipped", "agente_assumiu")
 
     # 5) CANAL — SEMPRE da config. Sem fallback para constante.
