@@ -212,3 +212,99 @@ dentro daquela função quebra o teste, em vez de esperar a próxima produção.
    isso durar, ausência de log **não é evidência de ausência de evento**.
 5. **Fluxo de leads parado.** Nada entrou na Exact entre 11:23:51 e 11:47 SP, depois de um
    ritmo de ~1/min. Pode ser normal; combinado com o relato do diretor, merece um olhar.
+
+---
+
+# ADENDO (15h20 UTC) — deploy feito, fila provada, e um TERCEIRO bloqueio a jusante
+
+## O que ficou provado em produção
+
+Backend reiniciado às **15:02:56 UTC** (PID 1587117, startup limpo). O sync das **15:12:56**
+foi o primeiro do dia a atravessar o laço de boas-vindas inteiro, **sem `❌ Erro no sync`**.
+
+```
+ id |         kind         | contact_wa_id |        run_at        |   status  | attempts
+ 60 | iniciar_qualificacao | 5582998307979 | 2026-08-25 12:18:35  | executado |        0
+ 61 | iniciar_qualificacao | 5565996306463 | 2026-08-25 12:18:35  | executado |        0
+```
+
+| | antes | agora |
+|---|---|---|
+| `n_tup_ins` | 57 | 61 |
+| `n_live_tup` | **0** | **2** |
+
+Enfileirou, **sobreviveu ao commit** (lido de conexão separada), venceu no horário e drenou
+com `attempts=0`. E os leads saíram **carimbados** — `welcome_status='skipped'`, motivo
+`agente de pré-qualificação assumiu a abertura` — o que nenhum dos 42 anteriores ficou.
+
+Detalhe que fecha o ciclo: os ids **58 e 59 não existem**. Houve um `POST /agendamento/lead`
+às 14:59:56, três minutos antes do restart — esses dois leads passaram pelo caminho LP com o
+código velho, foram enfileirados, anunciados no log e desfeitos. O sync das 15:13, já
+corrigido, recuperou os mesmos dois como 60 e 61. O bug e o fix no mesmo par de leads.
+
+**Os dois bugs deste documento estão resolvidos.** O caminho LP ainda não passou tráfego
+depois do restart (o único POST do período veio antes dele) — falta só a confirmação
+orgânica.
+
+## O que NÃO funcionou: a abertura não saiu
+
+```
+🔒 NAT não enviou (nat_abertura_qualificacao → 5582998307979): contato não existe no banco
+↩️  Agente: abertura de 5582998307979 não saiu — estado descartado
+↩️  Agente: 5565996306463 não existe em contacts — abertura ignorada
+⏱️  NAT scheduler: {'executado': 2}
+```
+
+`nat_qualificacao_state` continua com **zero linhas**. Ação executada sem estado
+correspondente — que é exatamente a assinatura que `monitor_qualificacao.py` §2b procura.
+Aqui, ao menos, ela **não foi silenciosa**: os três motivos estão no log.
+
+### Causa raiz: quem só preencheu o formulário não tem linha em `contacts`
+
+`contacts` nasce de duas formas: mensagem inbound no WhatsApp, ou como **efeito colateral do
+envio da boas-vindas** (`send_welcome_to_new_lead` cria o `Contact` junto com a `Message` do
+template, no passo 7). O passo 4.5 **cede a abertura ao agente e sai antes disso** — e nada
+passou a criar o contato no lugar.
+
+Quem se candidata pela LP e nunca mandou mensagem simplesmente não existe em `contacts`.
+Medido nos leads de hoje:
+
+```
+ sem linha em contacts : 33
+ com linha em contacts : 11
+```
+
+**Três de cada quatro leads não podem receber a abertura**, com fila cheia e agente ligado.
+
+### E os dois leads falharam de formas DIFERENTES — a segunda é pior
+
+`iniciar_qualificacao` usa `_contato_de()`, que é **tolerante ao 9º dígito**
+(`variantes_wa_id`). `nat_sender.enviar` faz `Contact.wa_id == contact_wa_id`, **igualdade
+estrita**. Os dois discordam, e o resultado depende de qual lead é:
+
+- **5565996306463 (Adriana):** não há contato em grafia nenhuma → porteiro fecha → saída
+  limpa, sem estado. Comportamento correto.
+- **5582998307979 (Ronaldo Cesar):** o porteiro **abriu** — mas a linha que ele encontrou é
+
+  ```
+   wa_id        | name          | created_at
+   558298307979 | Pablo Valente | 2026-07-22 19:13:38
+  ```
+
+  **outra pessoa.** A variante de 12 dígitos do número do Ronaldo é o número do Pablo. O
+  estado foi criado, e só não houve envio porque o `nat_sender` é estrito e não achou os 13
+  dígitos. A igualdade estrita — que é a inconsistência — foi o que impediu o estrago.
+
+`contato` é usado **só como porteiro**: é atribuído, testado contra `None` e nunca mais lido.
+Então a tolerância não está resolvendo identidade, está só afrouxando uma tranca — e um
+falso positivo dela é um lead entrando no fluxo pela linha de um estranho.
+
+## Decisões pendentes (nenhuma tomada aqui)
+
+1. **Quem cria o `Contact` no caminho do agente?** Sem isso a fila enche e drena sem efeito
+   para 3 em cada 4 leads. Opções: criar no passo 4.5, criar no handler antes do envio, ou
+   deixar o `nat_sender` criar quando a abertura for business-initiated.
+2. **O porteiro tolerante × sender estrito.** Precisa ser UMA regra só. E a tolerância ao 9º
+   dígito, do jeito que está, casa pessoas diferentes — merece decisão explícita, não
+   alinhamento automático para o lado tolerante.
+3. As pendências 2 a 5 da seção anterior continuam de pé.
