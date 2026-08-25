@@ -246,6 +246,15 @@ async def _contato_ou_criar(wa_id: str, *, lead_id: int | None,
     achado = (await db.execute(
         select(Contact).where(Contact.wa_id == wa_id))).scalar_one_or_none()
     if achado is not None:
+        # Contato que existe SEM nome recebe o nome do lead — exatamente o que a boas-vindas
+        # faz no passo 7 (`if not contact.name: contact.name = name`). Sem isto, um contato
+        # criado por outro caminho (disparo em massa, inbound de perfil sem nome) mantém o
+        # nome vazio para sempre, e o `{{1}}` vazio faz a Meta recusar a abertura inteira.
+        if not (achado.name or "").strip():
+            nome_do_lead, _ = await _identidade_do_lead(lead_id, db)
+            if nome_do_lead:
+                achado.name = nome_do_lead
+                print(f"👤 Agente: nome de {wa_id} preenchido do lead ({nome_do_lead})")
         return achado
 
     from app.models import AutoWelcomeConfig
@@ -370,8 +379,29 @@ async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
 
 
 async def _nome(estado: NatQualificacaoState, db: AsyncSession) -> str:
+    """Primeiro nome do lead. DUAS fontes, porque uma só não cobre.
+
+    `contacts.name` nasce do perfil do WhatsApp e está VAZIO em 4 490 linhas do Hub — quem
+    nunca mandou mensagem e quem tem o perfil sem nome público. Este campo era a única fonte,
+    e um nome vazio aqui vira `{{1}}` vazio no template, que a Meta recusa inteiro:
+
+        (#131008) Required parameter is missing
+        details: 'Parameter of type text is missing text value'
+
+    Não é degradação elegante: a mensagem simplesmente não sai. Em 25/08 derrubou 3 das 18
+    aberturas do backfill (Karen, Marlen, Beatriz) — e as três tinham nome em `exact_leads` o
+    tempo todo. A Beatriz é a prova do mecanismo: o perfil dela chegou às 20:18 e a recusa
+    dela foi às 19:46, com o mesmo número e o mesmo template.
+
+    A segunda fonte é o cadastro do lead, que é onde o nome sempre esteve — o mesmo lugar de
+    onde `_contato_ou_criar` tira o nome ao criar o contato.
+    """
     contato = await _contato_de(estado.contact_wa_id, db)
-    return primeiro_nome((contato.name if contato else "") or "")
+    nome = primeiro_nome((contato.name if contato else "") or "")
+    if nome:
+        return nome
+    do_lead, _ = await _identidade_do_lead(estado.exact_lead_id, db)
+    return primeiro_nome(do_lead or "")
 
 
 def _espalhados(horarios: list[dict], n: int) -> list[dict]:

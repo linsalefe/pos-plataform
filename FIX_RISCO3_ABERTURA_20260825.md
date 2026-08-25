@@ -257,7 +257,7 @@ caminhos. Idempotente por consequência: na segunda passada nenhum deles casa ma
 
 ## 5. Testes
 
-`backend/test_risco3_abertura.py` — **15/15**:
+`backend/test_risco3_abertura.py` — **16/16**:
 
 | | caso | o que trava |
 |---|---|---|
@@ -276,6 +276,7 @@ caminhos. Idempotente por consequência: na segunda passada nenhum deles casa ma
 | 13 | agendador: executar | **limpa** o motivo de um adiamento anterior |
 | 14 | passo 4.5 | gatilho que falhou carimba `failed`, não "assumiu" |
 | 15 | janela de 24h com inbound de 12 dígitos | vê as duas grafias; a escrita continua na do envio |
+| 16 | contato sem nome | cai para o nome do lead; parâmetro em branco não chega na Meta |
 
 **Não-regressão, 15 suites:** `test_gatilho_abertura` 8/8 · `test_welcome_guardrail` 17/17 ·
 `test_qualificacao` ok · `test_nat_flow` 13/13 · `test_agendamento` 33/33 · `test_espontaneo` ok ·
@@ -320,6 +321,54 @@ envio. Caso 15 do suite tranca as duas metades.
 
 Vale o registro de método: este bug não apareceu em nenhuma das 15 suites nem no monitor. Ele
 só existe quando um humano de DDD 83 responde — e foi um teste manual que o produziu.
+
+---
+
+## 5c. ADENDO — `(#131008)`: nome vazio derrubava a abertura inteira
+
+Três das 18 aberturas do backfill morreram assim, e o Risco 3 as deixou **legíveis no banco**
+em vez de mudas — foi o próprio `motivo` que permitiu achar isto em minutos:
+
+```
+abertura não saiu: Meta recusou: (#131008) Required parameter is missing
+  details: 'Parameter of type text is missing text value'
+```
+
+Reconstruindo os parâmetros das três contra os dois controles que deram certo:
+
+```
+51529947 Karen   [qualificacao]  {{1}}=''         {{2}}='Saúde Mental do Trabalhador'  ❌
+51542763 Marlen  [sem_formacao]  {{1}}=''         {{2}}='PsicologiaEscolar'            ❌
+51542378 Beatriz [qualificacao]  {{1}}='Beatriz'  ...                                  ✅ hoje
+51542752 Erica   [sem_formacao]  {{1}}='Erica'    {{2}}='PsicologiaEscolar'            ✅
+```
+
+`{{1}}` é o nome, e ele vinha de **uma fonte só**: `contacts.name`, que nasce do perfil do
+WhatsApp e está **vazio em 4 490 linhas do Hub** — quem nunca mandou mensagem, e quem tem o
+perfil sem nome público. Um `{{n}}` em branco não degrada: a Meta recusa a mensagem inteira.
+
+A Beatriz é a prova do mecanismo. Ela aparece OK agora porque o perfil dela chegou às
+**20:18:25** — e a recusa foi às **19:46:59**, mesmo número, mesmo template. As três tinham
+nome em `exact_leads` o tempo todo.
+
+**Três correções, em camadas:**
+
+1. `_nome` ganha **segunda fonte**: sem nome no contato, cai para o nome do lead
+   (`_identidade_do_lead`), que é de onde `_contato_ou_criar` já tirava o nome ao criar.
+   O contato continua tendo precedência quando tem nome.
+2. `_contato_ou_criar` **preenche** `contacts.name` quando o contato já existe sem nome —
+   exatamente o `if not contact.name: contact.name = name` do passo 7 da boas-vindas, que o
+   agente não tinha herdado.
+3. `enviar_nat` **barra parâmetro em branco antes da rede**. Trocar um erro remoto e opaco
+   por um motivo local e acionável — que, depois do Risco 3, fica gravado na própria ação:
+
+   ```
+   template 'nat_abertura_qualificacao' com parâmetro(s) [1] em branco — a Meta
+   recusaria com #131008. Recebidos: ['', 'Saúde Mental do Trabalhador', 'Pedagogia']
+   ```
+
+A camada 3 é a que importa a longo prazo: ela vale para **todo** envio da NAT, não só a
+abertura, e transforma a classe inteira de erro em recusa explicada.
 
 ---
 

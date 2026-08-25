@@ -48,6 +48,7 @@ Casos:
  13. o agendador: executado LIMPA o motivo de um adiamento anterior
  14. passo 4.5: gatilho que NÃO enfileirou não carimba "o agente assumiu"
  15. janela de 24h enxerga o inbound na grafia de 12 dígitos (o 8º ponto de comparação)
+ 16. contato SEM nome -> nome vem do lead, e o parâmetro em branco é barrado antes da Meta
 """
 import asyncio
 import json
@@ -514,6 +515,64 @@ async def teste_15_janela_tolerante_ao_9o_digito():
           "contact_wa_id=contact_wa_id" in fonte)
 
 
+async def teste_16_parametro_vazio_nunca_chega_na_meta():
+    print("\n16) contato SEM nome -> nome vem do lead; parâmetro em branco é barrado aqui")
+    # 25/08: 3 das 18 aberturas do backfill morreram com (#131008) "Parameter of type text is
+    # missing text value". `contacts.name` está vazio em 4 490 linhas do Hub, era a ÚNICA
+    # fonte do `{{1}}`, e um parâmetro em branco faz a Meta recusar a mensagem INTEIRA.
+    from app import nat_sender
+
+    estado = SimpleNamespace(contact_wa_id=WA, exact_lead_id=51529947)
+
+    # (a) contato sem nome -> cai para o nome do lead
+    with patch.object(fluxo, "_contato_de",
+                      new=AsyncMock(return_value=_contato(WA, name := ""))), \
+         patch.object(fluxo, "_identidade_do_lead",
+                      new=AsyncMock(return_value=("Karen Rossi Faris", None))):
+        nome = await fluxo._nome(estado, SessaoFalsa())
+    check("contato sem nome -> primeiro nome do LEAD", nome == "Karen", repr(nome))
+
+    # (b) o contato manda quando tem nome — a segunda fonte não atropela a primeira
+    with patch.object(fluxo, "_contato_de",
+                      new=AsyncMock(return_value=_contato(WA, "Beatriz Cristina"))), \
+         patch.object(fluxo, "_identidade_do_lead",
+                      new=AsyncMock(return_value=("Outro Nome", None))) as lead:
+        nome = await fluxo._nome(estado, SessaoFalsa())
+    check("contato COM nome continua mandando", nome == "Beatriz", repr(nome))
+    check("  e nem consulta o lead", lead.await_count == 0, str(lead.await_count))
+
+    # (c) parâmetro em branco não chega na Meta
+    envio = AsyncMock()
+    db = SessaoFalsa(contatos=[_contato(WA, "Karen")])
+    with patch.object(nat_sender, "send_template_message", new=envio), \
+         patch.object(nat_sender, "janela_aberta", new=AsyncMock(return_value=False)), \
+         patch.object(nat_sender, "_resolver_canal",
+                      new=AsyncMock(return_value=SimpleNamespace(
+                          id=1, phone_number_id="1", whatsapp_token="t"))):
+        saiu, motivo = await nat_sender.enviar_nat(
+            WA, "nat_abertura_qualificacao", db,
+            guard=AsyncMock(return_value=(True, "ok")),
+            parametros=["", "Saúde Mental do Trabalhador", "Pedagogia"])
+    check("recusa antes de chamar a Meta", saiu is False and envio.await_count == 0,
+          f"saiu={saiu} chamadas={envio.await_count}")
+    check("  e o motivo aponta o parâmetro", "[1]" in motivo and "131008" in motivo, motivo)
+
+    # (d) com todos preenchidos, passa
+    envio = AsyncMock(return_value={"messages": [{"id": "wamid.X"}]})
+    db = SessaoFalsa(contatos=[_contato(WA, "Karen")])
+    with patch.object(nat_sender, "send_template_message", new=envio), \
+         patch.object(nat_sender, "janela_aberta", new=AsyncMock(return_value=False)), \
+         patch.object(nat_sender, "_resolver_canal",
+                      new=AsyncMock(return_value=SimpleNamespace(
+                          id=1, phone_number_id="1", whatsapp_token="t"))):
+        saiu, _ = await nat_sender.enviar_nat(
+            WA, "nat_abertura_qualificacao", db,
+            guard=AsyncMock(return_value=(True, "ok")),
+            parametros=["Karen", "Saúde Mental do Trabalhador", "Pedagogia"])
+    check("todos preenchidos -> envia normalmente", saiu is True and envio.await_count == 1,
+          f"saiu={saiu} chamadas={envio.await_count}")
+
+
 async def main():
     print("=" * 90)
     print("RISCO 3 — nenhuma ação `executado` sem envio, e o contato que o agente não criava")
@@ -524,7 +583,8 @@ async def main():
               teste_8_teto_no_envio, teste_9_envio_recusado_por_outro_motivo,
               teste_10_fora_do_horario, teste_11_scheduler_skipped,
               teste_12_scheduler_adiada, teste_13_executado_limpa_o_motivo,
-              teste_14_carimbo_nao_mente, teste_15_janela_tolerante_ao_9o_digito):
+              teste_14_carimbo_nao_mente, teste_15_janela_tolerante_ao_9o_digito,
+              teste_16_parametro_vazio_nunca_chega_na_meta):
         await t()
 
     print("\n" + "=" * 90)

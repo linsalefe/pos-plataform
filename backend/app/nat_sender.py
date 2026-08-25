@@ -211,6 +211,15 @@ async def enviar_nat(contact_wa_id: str, etapa: str, db: AsyncSession, *,
                 return recusa(
                     f"template '{etapa}' não pode ser montado sem inventar dado do lead "
                     "(formação ausente e janela de 24h fechada)")
+
+            # PARÂMETRO VAZIO É RECUSA DA META, NÃO DEGRADAÇÃO. Um `{{n}}` em branco devolve
+            # (#131008) "Parameter of type text is missing text value" e a mensagem INTEIRA
+            # não sai. Barrar aqui troca um erro remoto e opaco por um motivo local e
+            # acionável — que, depois do Risco 3, fica gravado na própria ação.
+            vazios = [i + 1 for i, v in enumerate(parametros) if not str(v or "").strip()]
+            if vazios:
+                return recusa(f"template '{etapa}' com parâmetro(s) {vazios} em branco — a "
+                              f"Meta recusaria com #131008. Recebidos: {parametros!r}")
             # Só para a Message local — o que SAI é o template aprovado. Um template
             # que nat_copy não conhece (os do agente) vem com o texto já renderizado em
             # `corpo_livre`; sem ele a conversa ficaria com um balão vazio na tela do SDR.
