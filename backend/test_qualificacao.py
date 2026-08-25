@@ -30,6 +30,7 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         ETAPA_Q_CONCLUIDO, ETAPA_Q_ESCOLHENDO_SLOT, ETAPA_Q_OFERTANDO_AGENDA,
                         ETAPA_Q_TRANSFERIDO, ETAPAS_QUALIFICACAO_ATIVAS,
                         ETAPAS_QUALIFICACAO_VALIDAS, NatConfig, NatQualificacaoState,
+                        ORIGENS_QUALIFICACAO_VALIDAS,
                         ORIGEM_LP)
 
 falhas = []
@@ -372,7 +373,24 @@ checa("massa: sem cópia da regra (nenhum def novo)",
 # ==========================================================================================
 print("\n3) Máquina de etapas — só código muda etapa")
 
-checa("as 9 etapas do CHECK batem com o modelo", len(ETAPAS_QUALIFICACAO_VALIDAS), 9)
+# Modelo e banco em LOCKSTEP. Era `len(...) == 9`, um número mágico que não dizia contra o
+# quê. Agora compara com a tupla que a migração usa para montar o CHECK — se alguém
+# acrescentar etapa no modelo sem migrar (ou migrar sem tocar no modelo), o INSERT falharia
+# em produção e este teste falha antes.
+from migrate_espontaneo import ETAPAS as _ETAPAS_DO_CHECK, ORIGENS as _ORIGENS_DO_CHECK
+
+checa("as etapas do modelo batem com o CHECK da migração",
+      ETAPAS_QUALIFICACAO_VALIDAS, frozenset(_ETAPAS_DO_CHECK))
+checa("e são 13 depois do espontâneo", len(ETAPAS_QUALIFICACAO_VALIDAS), 13)
+checa("as origens também", ORIGENS_QUALIFICACAO_VALIDAS, frozenset(_ORIGENS_DO_CHECK))
+
+# As esp_* existem no banco mas NÃO são ativas ainda, e a ausência é o que impede o webhook
+# de entregar a mensagem a um fluxo sem missão — o lead ficaria mudo. Entram junto com as
+# missões, no Bloco A. Este teste é o alarme de quem tentar ligar uma coisa sem a outra.
+_ESP = {e for e in ETAPAS_QUALIFICACAO_VALIDAS if e.startswith("esp_")}
+checa("as 4 etapas do espontâneo estão no CHECK", len(_ESP), 4)
+checa("mas NENHUMA é ativa enquanto não houver missão",
+      sorted(_ESP & ETAPAS_QUALIFICACAO_ATIVAS), [])
 checa("etapas ativas não incluem concluido", ETAPA_Q_CONCLUIDO in ETAPAS_QUALIFICACAO_ATIVAS,
       False)
 checa("etapas ativas não incluem transferido",

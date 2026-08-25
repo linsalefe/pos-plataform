@@ -334,6 +334,11 @@ class NatConfig(Base):
                                   server_default="false")
     qualificacao_start_at = Column(DateTime, nullable=True)
 
+    # Terceiro eixo, independente dos outros dois: ligar o espontâneo não pode depender de
+    # ligar o fluxo da LP, nem o contrário. Nasce DESLIGADO.
+    espontaneo_enabled = Column(Boolean, nullable=False, default=False,
+                                server_default="false")
+
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
@@ -610,9 +615,26 @@ ETAPA_Q_CONCLUIDO = "concluido"
 ETAPA_Q_TRANSFERIDO = "transferido_humano"
 ETAPA_Q_ENCERRADO = "encerrado"
 
+# ------------------------------------------------------------------------------------------
+# FLUXO ESPONTÂNEO (migrate_espontaneo.py, 25/08/2026)
+# ------------------------------------------------------------------------------------------
+# Quem escreveu no WhatsApp sem ter preenchido formulário nenhum. Mora nas MESMAS tabela e
+# coluna do fluxo da LP porque é o mesmo agente com outra porta de entrada — `origem` é o que
+# distingue, e as duas origens nunca coexistem no mesmo contato (a regra de admissão exige
+# ausência de lead na Exact). Ver o cabeçalho de migrate_espontaneo.py.
+#
+# São 4 e não 6: o espontâneo é mais curto de propósito. Quem escreveu primeiro já demonstrou
+# interesse, e cada pergunta a mais é uma chance de abandono antes do link.
+ETAPA_ESP_CONFIRMANDO_INTERESSE = "esp_confirmando_interesse"
+ETAPA_ESP_COLETANDO_CURSO = "esp_coletando_curso"
+ETAPA_ESP_COLETANDO_FORMACAO = "esp_coletando_formacao"
+ETAPA_ESP_LINK_ENVIADO = "esp_link_enviado"
+
 ETAPAS_QUALIFICACAO_VALIDAS = frozenset({
     ETAPA_Q_AGUARDANDO_FORMACAO, ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
     ETAPA_Q_AGUARDANDO_MOTIVACAO, ETAPA_Q_OFERTANDO_AGENDA, ETAPA_Q_ESCOLHENDO_SLOT,
+    ETAPA_ESP_CONFIRMANDO_INTERESSE, ETAPA_ESP_COLETANDO_CURSO,
+    ETAPA_ESP_COLETANDO_FORMACAO, ETAPA_ESP_LINK_ENVIADO,
     ETAPA_Q_CONCLUIDO, ETAPA_Q_TRANSFERIDO, ETAPA_Q_ENCERRADO,
 })
 
@@ -622,13 +644,22 @@ ETAPAS_QUALIFICACAO_VALIDAS = frozenset({
 ETAPAS_QUALIFICACAO_ATIVAS = frozenset({
     ETAPA_Q_AGUARDANDO_FORMACAO, ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
     ETAPA_Q_AGUARDANDO_MOTIVACAO, ETAPA_Q_OFERTANDO_AGENDA, ETAPA_Q_ESCOLHENDO_SLOT,
+    # As `esp_*` NÃO estão aqui ainda, e a ausência é deliberada: esta constante significa
+    # "o agente é DONO do inbound e vai responder". O fluxo espontâneo tem etapa no banco
+    # (o CHECK já as aceita) mas ainda não tem missão nem handler — declará-las ativas faria
+    # o webhook entregar a mensagem a um fluxo que não sabe responder, e o lead ficaria mudo.
+    # Entram junto com as missões, na implementação do Bloco A.
 })
 
 # De qual gatilho o lead veio. Decide de onde a formação é lida: `lp` tem os extras do
 # formulário no nosso banco; `exact` só tem o `description`, que é texto livre.
 ORIGEM_LP = "lp"
 ORIGEM_EXACT = "exact"
-ORIGENS_QUALIFICACAO_VALIDAS = frozenset({ORIGEM_LP, ORIGEM_EXACT})
+# Inbound de número desconhecido, sem formulário e sem lead na Exact. A coluna `origem` foi
+# alargada para VARCHAR(20) na migração: 'espontaneo' tem exatamente 10 chars e o limite
+# antigo não deixava margem para a próxima.
+ORIGEM_ESPONTANEO = "espontaneo"
+ORIGENS_QUALIFICACAO_VALIDAS = frozenset({ORIGEM_LP, ORIGEM_EXACT, ORIGEM_ESPONTANEO})
 
 
 class NatQualificacaoState(Base):
@@ -686,6 +717,73 @@ class NatQualificacaoState(Base):
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class NatAgendamentoToken(Base):
+    """O link personalizado que a Nat manda no chat do lead espontâneo.
+
+    `hub.cenatdata.online/agendar/<token>` — página pública, sem autenticação. Toda a
+    identificação da pessoa está DESTE lado: o browser não manda telefone nenhum.
+
+    ------------------------------------------------------------------------------------
+    POR QUE UM TOKEN OPACO, E NÃO O wa_id NA URL
+    ------------------------------------------------------------------------------------
+    A URL é pública. Com o telefone (ou um id sequencial) nela, qualquer um agenda no nome
+    de outra pessoa — e um id sequencial é enumerável em minutos. `secrets.token_urlsafe(32)`
+    dá 256 bits, que não se adivinha.
+
+    ------------------------------------------------------------------------------------
+    UM TOKEN VIVO POR CONTATO, E DUAS COLUNAS PARA DIZER POR QUE MORREU
+    ------------------------------------------------------------------------------------
+    `uq_token_vivo` é um índice único parcial sobre `contact_wa_id` onde
+    `usado_em IS NULL AND revogado_em IS NULL`. Ele faz duas coisas:
+
+      * dá sentido à regra "a Nat não repete o link mais de 1x" — pedir de novo devolve O
+        MESMO token, não um novo;
+      * é a trava contra a corrida real: dois cliques simultâneos no mesmo link não podem
+        virar dois leads na Exact, e `LeadsAdd` não tem idempotência nenhuma para desfazer.
+
+    `revogado_em` existe por causa de um furo do primeiro desenho: com o índice olhando só
+    `usado_em`, um token que VENCESSE sem clique trancaria o contato para sempre. Aposentar
+    marcando `usado_em` resolveria o índice e mentiria no relatório — link abandonado viraria
+    link usado. Duas colunas, dois fatos.
+
+    ------------------------------------------------------------------------------------
+    DOIS FUSOS NESTA TABELA, E ESTÁ ESCRITO DE PROPÓSITO
+    ------------------------------------------------------------------------------------
+    `expira_em` e `usado_em` são NAIVE EM SÃO PAULO, como `nat_scheduled_actions.run_at`.
+    `criado_em` vem de `DEFAULT NOW()` e é UTC — auditoria, nunca comparado com os outros.
+
+    Quem compara `expira_em` compara com `nat_guard._agora_sp()`, NUNCA com o `NOW()` do
+    Postgres: ele está 3h à frente, e todo token nasceria com 3h a menos de vida.
+
+    Sem FK para contacts nem agendamentos: mesma regra das outras tabelas escritas de dentro
+    do webhook — uma FK só acrescenta um modo de falha capaz de derrubar o lote de mensagens.
+    """
+    __tablename__ = "nat_agendamento_token"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    token = Column(Text, unique=True, nullable=False)
+
+    # wa_id do INBOUND, verbatim. Única fonte do telefone que vai para o LeadsAdd — e o que
+    # torna o fluxo espontâneo imune ao 9º dígito: tudo nasce da grafia que chegou, não de
+    # uma montada a partir de cadastro. Ver app/telefone.py.
+    contact_wa_id = Column(String(20), nullable=False, index=True)
+
+    # O que a Nat já coletou no chat. Tudo opcional: a página pede o que faltar.
+    nome = Column(Text, nullable=True)
+    curso = Column(Text, nullable=True)       # subSource JÁ RESOLVIDO contra a allowlist
+    formacao = Column(Text, nullable=True)
+    atuacao = Column(Text, nullable=True)
+
+    expira_em = Column(DateTime, nullable=False)
+    usado_em = Column(DateTime, nullable=True)
+    revogado_em = Column(DateTime, nullable=True)
+
+    # Id da NOSSA tabela agendamentos, solto de propósito (sem FK).
+    agendamento_id = Column(BigInteger, nullable=True)
+
+    criado_em = Column(DateTime, server_default=func.now())
 
 
 class ExactStageEvent(Base):
