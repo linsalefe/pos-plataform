@@ -20,6 +20,7 @@ from app import nat_copy
 from app.models import AutoWelcomeConfig, Channel, Contact, Message
 from app.nat_guard import _agora_sp, nat_pode_atuar
 from app.nomes import primeiro_nome
+from app.telefone import variantes_wa_id
 from app.whatsapp import (send_interactive_buttons, send_template_message,
                           send_text_message)
 
@@ -36,10 +37,32 @@ async def janela_aberta(contact_wa_id: str, db: AsyncSession) -> bool:
 
     Comparação em horário naive de SP, igual ao que messages.timestamp guarda (ver
     nat_guard._agora_sp: o banco está em UTC e um now() do Postgres ficaria 3h à frente).
+
+    ------------------------------------------------------------------------------------
+    TOLERANTE AO 9º DÍGITO — o 8º ponto de comparação, e o que mais doía
+    ------------------------------------------------------------------------------------
+    Era `Message.contact_wa_id == contact_wa_id`. O agente ENVIA para a grafia de 13 dígitos
+    (montada do telefone do lead) e o WhatsApp ENTREGA o inbound sem o 9º dígito para todo
+    DDD fora de 11–28 — 59% das threads do Hub, ver `app/telefone.py`. Com igualdade, o
+    inbound do próprio lead ficava invisível aqui.
+
+    E a consequência não era "não achou": era o **caminho errado**. Sem inbound, esta função
+    concluía "janela FECHADA", o sender ia para o ramo de template aprovado, e a fala livre
+    do LLM (`qualif_conversa`) não tem template — recusa com "não pode ser montado sem
+    inventar dado do lead". O agente abria a conversa, a pessoa respondia, e ele calava.
+
+    MEDIDO em 25/08, os dois casos lado a lado no mesmo minuto:
+
+        5517997379129  inbound gravado com 13 dígitos  -> janela aberta  -> respondeu ✅
+        558388046720   inbound gravado com 12 dígitos  -> "fechada"      -> calou   ❌
+
+    A regra é a de sempre: nada muda na ESCRITA (a Message continua sendo gravada na grafia
+    do envio), só a BUSCA passa a aceitar as duas formas.
     """
+    vs = variantes_wa_id(contact_wa_id) or (contact_wa_id,)
     res = await db.execute(
         select(Message.timestamp)
-        .where(Message.contact_wa_id == contact_wa_id, Message.direction == "inbound")
+        .where(Message.contact_wa_id.in_(vs), Message.direction == "inbound")
         .order_by(Message.timestamp.desc())
         .limit(1)
     )

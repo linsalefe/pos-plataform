@@ -47,6 +47,7 @@ Casos:
  12. o agendador: AcaoAdiada -> `pendente` + run_at empurrado; sem consumir tentativa
  13. o agendador: executado LIMPA o motivo de um adiamento anterior
  14. passo 4.5: gatilho que NÃO enfileirou não carimba "o agente assumiu"
+ 15. janela de 24h enxerga o inbound na grafia de 12 dígitos (o 8º ponto de comparação)
 """
 import asyncio
 import json
@@ -477,6 +478,42 @@ async def teste_14_carimbo_nao_mente():
           "banco caiu" in (lead.welcome_error or ""), str(lead.welcome_error))
 
 
+async def teste_15_janela_tolerante_ao_9o_digito():
+    print("\n15) janela de 24h enxerga o inbound na grafia de 12 dígitos")
+    # 25/08, o caso real: o agente abriu, a pessoa respondeu, e ele CALOU. `janela_aberta`
+    # comparava com `==`; o envio vai para 13 dígitos e o WhatsApp entrega o inbound com 12
+    # para todo DDD fora de 11-28 (59% das threads). Sem inbound visível a função concluía
+    # "janela fechada", o sender ia para o ramo de TEMPLATE, e `qualif_conversa` — fala livre
+    # do LLM — não tem template aprovado. O agente não ficava sem achar: ia para o caminho
+    # errado.
+    from app import nat_sender
+    from sqlalchemy.dialects import postgresql
+
+    class DB:
+        def __init__(self):
+            self.sql = None
+
+        async def execute(self, stmt):
+            self.sql = str(stmt.compile(dialect=postgresql.dialect(),
+                                        compile_kwargs={"literal_binds": True}))
+            r = MagicMock()
+            r.scalar_one_or_none.return_value = AGORA - timedelta(minutes=2)
+            return r
+
+    for numero in (WA, WA_12):
+        db = DB()
+        aberta = await nat_sender.janela_aberta(numero, db)
+        check(f"{numero}: janela ABERTA", aberta is True, str(aberta))
+        check(f"  busca as duas grafias", WA in db.sql and WA_12 in db.sql,
+              [l for l in db.sql.split("\n") if "IN (" in l][:1])
+
+    # A escrita NÃO muda: a Message continua nascendo na grafia do envio. É a regra do
+    # app/telefone.py — tolerância é de leitura, nunca de gravação.
+    fonte = open("app/nat_sender.py", encoding="utf-8").read()
+    check("a Message ainda é gravada em contact_wa_id (grafia do envio)",
+          "contact_wa_id=contact_wa_id" in fonte)
+
+
 async def main():
     print("=" * 90)
     print("RISCO 3 — nenhuma ação `executado` sem envio, e o contato que o agente não criava")
@@ -487,7 +524,7 @@ async def main():
               teste_8_teto_no_envio, teste_9_envio_recusado_por_outro_motivo,
               teste_10_fora_do_horario, teste_11_scheduler_skipped,
               teste_12_scheduler_adiada, teste_13_executado_limpa_o_motivo,
-              teste_14_carimbo_nao_mente):
+              teste_14_carimbo_nao_mente, teste_15_janela_tolerante_ao_9o_digito):
         await t()
 
     print("\n" + "=" * 90)

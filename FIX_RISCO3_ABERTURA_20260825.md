@@ -257,7 +257,7 @@ caminhos. Idempotente por consequência: na segunda passada nenhum deles casa ma
 
 ## 5. Testes
 
-`backend/test_risco3_abertura.py` — **14/14**:
+`backend/test_risco3_abertura.py` — **15/15**:
 
 | | caso | o que trava |
 |---|---|---|
@@ -275,6 +275,7 @@ caminhos. Idempotente por consequência: na segunda passada nenhum deles casa ma
 | 12 | agendador: `AcaoAdiada` | `pendente` + `run_at` empurrado + `attempts` intacto |
 | 13 | agendador: executar | **limpa** o motivo de um adiamento anterior |
 | 14 | passo 4.5 | gatilho que falhou carimba `failed`, não "assumiu" |
+| 15 | janela de 24h com inbound de 12 dígitos | vê as duas grafias; a escrita continua na do envio |
 
 **Não-regressão, 15 suites:** `test_gatilho_abertura` 8/8 · `test_welcome_guardrail` 17/17 ·
 `test_qualificacao` ok · `test_nat_flow` 13/13 · `test_agendamento` 33/33 · `test_espontaneo` ok ·
@@ -287,6 +288,38 @@ horário o handler **cria uma linha nova**. Ele agora adia a mesma — a versão
 `agendar`, que começa cancelando o pendente do par `(kind, contato)`, ou seja, **cancelava a
 própria ação em execução**, e só não estragava nada porque o `_finalizar` logo depois a
 reescrevia para `executado`.
+
+---
+
+---
+
+## 5b. ADENDO — o agente abria, a pessoa respondia, e ele calava
+
+Encontrado **em produção**, num teste manual, depois do deploy. `nat_sender.janela_aberta`
+comparava `Message.contact_wa_id == contact_wa_id`: era o **8º ponto de comparação estrita**,
+o único que o commit da chave tolerante (`ce13ecc`, "os 7 pontos") não pegou.
+
+O agente ENVIA para a grafia de 13 dígitos (montada do telefone do lead) e o WhatsApp ENTREGA
+o inbound **sem o 9º dígito** para todo DDD fora de 11–28 — 59% das threads do Hub. Com
+igualdade, o inbound do próprio lead ficava invisível.
+
+**E o estrago não era "não achou": era o caminho errado.** Sem inbound, a função concluía
+"janela FECHADA", o sender ia para o ramo de **template aprovado**, e a fala livre do LLM
+(`qualif_conversa`) não tem template — recusa com *"não pode ser montado sem inventar dado do
+lead"*. Os dois casos lado a lado, no mesmo minuto de 25/08:
+
+```
+17:27:47  5517997379129  inbound gravado com 13 digitos -> janela aberta -> respondeu  ✅
+17:27:36  558388046720   inbound gravado com 12 digitos -> "fechada"     -> calou      ❌
+```
+
+A abertura funcionava para todos; a **conversa** funcionava só para a minoria cujo inbound
+chega na mesma grafia do envio. Corrigido com `variantes_wa_id`, mantendo a regra do
+`app/telefone.py`: tolerância é de LEITURA, a Message continua sendo gravada na grafia do
+envio. Caso 15 do suite tranca as duas metades.
+
+Vale o registro de método: este bug não apareceu em nenhuma das 15 suites nem no monitor. Ele
+só existe quando um humano de DDD 83 responde — e foi um teste manual que o produziu.
 
 ---
 
