@@ -280,3 +280,55 @@ Bloco B não pode ser implementado antes de:
 2. **`Espontaneo WhatsApp` criado na Exact** (§6.2) — irreversível.
 
 Nada de Bloco B foi codado.
+
+---
+
+## 10. Bloco B implementado — e a SEQUÊNCIA acordada do dia (25/08, 01h)
+
+Bloco B está **commitado (`53666c4`) e NÃO deployado**, por decisão: nada dele precisa estar
+vivo hoje, e variável nova antes das 09h só aumenta a superfície de dúvida na estreia do
+agente.
+
+**Confirmado que o processo no ar não conhece o Bloco B** — não é só o que o git diz:
+
+```
+processo no ar desde   2026-08-25 03:06:26 UTC   (deploy do "humano assume")
+GET /api/agendamento/espontaneo/xyz     404   ← rota não registrada
+GET /api/agendamento/slots              200   ← o que já existia segue de pé
+openapi.json: rotas 'espontaneo' registradas: NENHUMA
+```
+
+A migração JÁ rodou e isso é seguro com o processo velho: o CHECK do banco aceita 13 etapas
+e o processo só escreve as 6 antigas; `espontaneo_enabled` existe na tabela e não no modelo
+carregado, e o SQLAlchemy só seleciona coluna declarada. Banco à frente do código é a direção
+segura da assimetria — o contrário é que quebra.
+
+### A ordem do dia, acordada
+
+| # | o quê | gate |
+|---|---|---|
+| 1 | **relatório 09h04** (+09h23, 09h42, 10h06) | automático, 4 verificações agendadas |
+| 2 | teste do usuário pela LP | `ZZ TESTE` / nome dele — fora das métricas |
+| 3 | **Risco 3** — `abrir()` nunca mais `executado` sem envio | depois do relatório |
+| 4 | **deploy do Bloco B** | depois da primeira hora validada |
+| 5 | **Bloco A** — 4 missões + admissão de 6 regras | depois do deploy |
+
+### Fila, na ordem
+
+1. **Risco 3.** Teto estourado → REAGENDA sem consumir. Lead anterior ao corte e contato
+   inexistente → `skipped` com motivo **gravado no banco**. Nunca `executado` sem envio.
+   Testes dos três caminhos.
+2. **Isolar `test_espontaneo.py` num banco de teste.** Aceito por ora pela justificativa do
+   `rowcount` — a claim de uso único e o índice único parcial não são testáveis em dublê de
+   memória —, mas escrever no banco de produção não pode virar hábito. Fila atrás do Risco 3.
+3. **Bloco A.** As 4 missões, a admissão de 6 regras, e as `esp_*` entrando em
+   `ETAPAS_QUALIFICACAO_ATIVAS` **junto** com as missões (dois testes já são o alarme de quem
+   tentar ligar uma coisa sem a outra).
+4. **Sprint global do `format_phone`** — NAT velha, boas-vindas, `ai_engine`,
+   `twilio_routes`. 59% do tráfego vive nessa fronteira.
+
+### `Espontaneo WhatsApp` — o usuário cria hoje de manhã
+
+Quando avisar, valido com `GET /Sources` que ele nasceu sob `Landing Page` (id 140648) e
+acrescento a `AGENDAMENTO_SUBSOURCES`. Até lá o booking do espontâneo devolve **400**, que é
+a falha correta: `LeadsAdd` cria subSource que não existe e **não há endpoint para remover**.
