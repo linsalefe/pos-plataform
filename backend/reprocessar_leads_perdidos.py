@@ -68,6 +68,31 @@ from app.qualificacao_gatilho import agendar_abertura, wa_id_de
 
 SERVICO = "cenat-backend.service"
 
+# ------------------------------------------------------------------------------------------
+# TRIAGEM MANUAL — 25/08/2026. Quem NÃO recebe a abertura do agente, e por quê.
+# ------------------------------------------------------------------------------------------
+# Cruzamento dos 41 candidatos contra `messages` das últimas 48h. A distinção que decidiu a
+# lista foi entre DISPARO EM MASSA e CONVERSA:
+#
+#   às 15:18–15:19 saíram 43 templates para 43 contatos distintos em dois minutos ("Ola X, é
+#   o <curso> do CENAT ✨ Tentei realizar uma nova tentativa de contato"). Isso é campanha, e
+#   35 dos 41 leads têm SÓ isso. Tratar esse template como "lead já em atendimento" esvaziaria
+#   a lista por um motivo falso — o lead recebeu um disparo, ninguém falou com ele.
+#
+# Sai quem tem conversa DE VERDADE: texto individual digitado por SDR, dois ou mais inbound,
+# ou template individual (fora dos minutos de massa). Ficam inclusive os leads cujo único
+# "inbound" é autorresposta do próprio celular deles ("não estou disponível no momento") —
+# isso não é resposta.
+EXCLUIDOS: dict[int, str] = {
+    51532753: "Vera Rosa — inbound próprio + template individual às 14:45, SDR já atuando",
+    51537537: "Isabela Guarino — 2 inbound dela, incluindo pergunta sobre 2ª pós",
+    51542856: "Bruna Rosa — já passou pela NAT velha em 24/08 e clicou 'Prefiro outro horário'",
+    51542913: "Michelle Bittencourt — 4 inbound e 4 respostas digitadas pelo SDR às 15:21",
+    51543599: "Cibelle Ferrari — negociando ('Boa tarde, só amanhã, hoje tá corrido'), fica com o SDR",
+    51543658: "Andréa Corrêa — negociando ('ainda estou resolvendo com a equipe'), fica com o SDR",
+    51543683: "Escola Municipal Profª Amélia Guimarães — instituição, não pessoa; tratamento manual do SDR",
+}
+
 # Fração do teto por hora que este backfill pode ocupar. A outra metade fica para os leads
 # orgânicos, que são os que têm pressa.
 FRACAO_DO_TETO = 0.5
@@ -151,7 +176,8 @@ async def main(executar: bool, por_hora: int | None):
         print(f"\ncorte de admissão : {cfg.qualificacao_start_at} (UTC)")
         print(f"teto do agente    : {teto}/h  →  este backfill usa {ritmo}/h "
               f"(1 a cada {passo.total_seconds()/60:.0f} min)")
-        print(f"leads perdidos    : {len(leads)}\n")
+        print(f"leads perdidos    : {len(leads)}   "
+              f"({len(EXCLUIDOS)} excluídos na triagem manual)\n")
 
         # Um humano pode ter duas linhas (formulário preenchido duas vezes). `agendar` já
         # cancela o pendente anterior do mesmo (kind, contato), mas contar aqui evita
@@ -159,11 +185,22 @@ async def main(executar: bool, por_hora: int | None):
         vistos, fila = set(), []
         for lead in leads:
             wa = wa_id_de(lead.phone1 or "")
+            if lead.exact_id in EXCLUIDOS:
+                # O telefone entra em `vistos` JUNTO: excluir é decisão sobre a PESSOA, não
+                # sobre a linha. Quem preencheu o formulário duas vezes tem duas linhas com
+                # exact_id diferente e o mesmo número — sem isto, a segunda escapa da
+                # exclusão e a pessoa recebe a abertura da qual acabou de ser tirada.
+                # Aconteceu com a Bruna Rosa (51542856 excluída, 51542892 entrou).
+                vistos.add(wa)
+                print(f"  ⛔ {lead.exact_id} {(lead.name or '')[:34]:<34} "
+                      f"{EXCLUIDOS[lead.exact_id]}")
+                continue
             if wa and wa in vistos:
                 print(f"  ↩️  {lead.exact_id} {(lead.name or '')[:34]:<34} duplicata de {wa}")
                 continue
             vistos.add(wa)
             fila.append(lead)
+        print()
 
         grade = _grade(_agora_sp() + ATRASO_INICIAL, passo, len(fila))
         for i, lead in enumerate(fila):

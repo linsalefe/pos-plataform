@@ -185,8 +185,43 @@ venv/bin/python reprocessar_leads_perdidos.py              # LISTA, não escreve
 venv/bin/python reprocessar_leads_perdidos.py --executar   # enfileira de verdade
 ```
 
-**41 leads distintos** (42 linhas, 1 duplicata: Bruna Rosa preencheu duas vezes). Todos dentro
-do `start_at`, todos ainda abríveis.
+**34 leads**, depois de triagem manual. Partindo de 42 linhas: 1 duplicata (Bruna Rosa
+preencheu duas vezes) e **7 excluídos**, gravados em `EXCLUIDOS` no próprio script, com o
+motivo de cada um.
+
+### A distinção que decidiu a lista: disparo em massa ≠ conversa
+
+O critério ingênuo — "qualquer outbound sem `nat_etapa` é atendimento humano" — tirava **40
+dos 41**. E tirava errado: às 15:18–15:19 saíram **43 templates para 43 contatos distintos em
+dois minutos** ("Ola X, é o *curso* do CENAT ✨ Tentei realizar uma nova tentativa de
+contato"). É campanha, não atendimento — o lead recebeu um disparo, ninguém falou com ele.
+35 dos 41 tinham só isso.
+
+Sai quem tem conversa de verdade: texto individual digitado por SDR, dois ou mais inbound, ou
+template individual (fora dos minutos de massa). **Ficam** os leads cujo único "inbound" é
+autorresposta do próprio celular deles — *"Assim que puder respondo"*, *"não estou disponível
+no momento"* — que não é resposta.
+
+| exact_id | quem | por que sai |
+|---|---|---|
+| 51532753 | Vera Rosa | inbound próprio + template individual às 14:45 |
+| 51537537 | Isabela Guarino | 2 inbound dela, incluindo pergunta sobre 2ª pós |
+| 51542856 | Bruna Rosa | passou pela NAT velha em 24/08 e clicou "Prefiro outro horário" |
+| 51542913 | Michelle Bittencourt | 4 inbound e 4 respostas digitadas pelo SDR às 15:21 |
+| 51543599 | Cibelle Ferrari | negociando: *"Boa tarde, só amanhã, hoje tá corrido"* |
+| 51543658 | Andréa Corrêa | negociando: *"ainda estou resolvendo com a equipe"* |
+| 51543683 | Escola Municipal Profª Amélia | instituição, não pessoa — tratamento manual |
+
+**Excluir vale para a PESSOA, não para a linha.** Na primeira versão a exclusão era por
+`exact_id`, e a Bruna Rosa voltou pela linha duplicada dela (51542856 excluída, 51542892
+entrou — mesmo telefone). O telefone de um excluído entra em `vistos` junto.
+
+### Três Beatrizes, e a que importa
+
+Ficou a dúvida se a Beatriz `5512996755533` era quem recebeu o template da ementa às 15:47.
+**Não é.** Ela tem exatamente UMA mensagem na vida: o disparo em massa das 15:18. Quem
+recebeu às 15:47:39 é `5511988816237`, que nem está entre os candidatos. A terceira é a
+Beatriz Gang Mizrahi (`5521999424621`), que fica na lista.
 
 Critério: `welcome_status IS NULL` **e** `register_date >= qualificacao_start_at`. O primeiro é a
 marca de quem nunca teve a abertura decidida; o segundo evita produzir `skipped` em massa com
@@ -198,10 +233,12 @@ deixar o handler empurrar cada retardatário para as 09h do dia seguinte — tod
 refazendo a concentração que o espaçamento evita:
 
 ```
-  26. 51543006  Talita                              25/08 18:27
-  27. 51543054  Stela                               26/08 09:00   ← salta a janela
-  28. 51543064  Daniela Carvalho Moura Bittencourt  26/08 09:06
+  23. 51543054  Stela                               25/08 18:27
+  24. 51543064  Daniela Carvalho Moura Bittencourt  26/08 09:00   ← salta a janela
+  25. 51543496  Marilda Barreto                     26/08 09:06
 ```
+
+23 leads hoje até 18:27, 11 a partir de 26/08 09:00.
 
 **Trava de deploy.** O script se **recusa** a enfileirar se o processo no ar for anterior à
 última edição em `app/`:
@@ -259,6 +296,7 @@ reescrevia para `executado`.
    já rodou, e banco à frente do código é a direção segura: com o CHECK largo, o processo velho
    simplesmente nunca escreve `skipped`.
 2. **Rodar o backfill** depois do restart, com `--executar`. A trava confere sozinha.
+   Os 7 excluídos e a Cibelle/Andréa **ficam com os SDRs** — não voltam por este caminho.
 3. **QueuePool esgotado, incidente separado.** Às 18:18 UTC, dezenas de
    `sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached` — e o ciclo do
    agendador das 18:19 fechou com `{'erro': 1}`. Cheira a conexão vazando; **não investigado
