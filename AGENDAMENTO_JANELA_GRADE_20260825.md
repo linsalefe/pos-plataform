@@ -254,10 +254,82 @@ botão de 3↔4 sem precisar mexer em código.
 
 ## 6. Decisão sua
 
-1. **Janela 3 ou 4 dias?** Com 3, sexta a partir das 15:15 cai no fallback até sábado à
-   meia-noite. Com 4, o zero some. Recomendo **4**.
+1. **Janela 3 ou 4 dias?** Medido contra a chegada real dos leads no §7: com 3, **5,3% dos
+   leads (~9/semana) veem oferta ZERO**, e o sábado — maior dia da LP — enxerga só a segunda,
+   o pior dia de retry. Com 4 o zero some, e o 4º dia **não custa nada** para quarta e quinta
+   (o D+3 delas é fim de semana). Recomendo **4**, com número.
 2. **Retry em 49% incomoda?** É o preço medido de ofertar o comercial inteiro. Se
    `Boxes are occupied` começar a aparecer no log, a saída não é encolher a grade de volta —
    é rever com as consultoras os blocos que mais custam. A terça da Amorim (`10:10–13:30`)
    sozinha responde por boa parte do buraco.
 3. **17:45 mesmo assim?** §1. Sai zero-retry e morre na sexta.
+
+---
+
+## 7. Adendo — 3 vs 4 dias, medido contra a chegada real dos leads
+
+A pergunta "qual o melhor" não se responde pela grade, e sim por **quando o lead chega**.
+Medido em `exact_leads.register_date` (UTC de verdade, FINDINGS §3 — convertido para SP),
+120 dias, **2 933 leads**. O recorte `Landing Page` tem só 76 leads / 8 dias (o source nasceu
+em 17/08) — pequeno demais para decidir sozinho, mas **concorda** com a base inteira.
+
+### 7.1 Chegada por dia da semana
+
+| | seg | ter | qua | qui | sex | **sáb** | **dom** |
+|---|---|---|---|---|---|---|---|
+| base inteira (2 933) | 13,9% | 19,0% | 16,5% | 14,7% | 12,6% | **11,5%** | **11,9%** |
+| Landing Page (76) | 7,9% | 14,5% | 17,1% | 10,5% | 14,5% | **22,4%** | 13,2% |
+
+**23,4% da base chega no fim de semana** — e na LP o sábado é o **maior dia isolado** (22,4%).
+Faz sentido: é tráfego pago de página, não horário comercial.
+
+### 7.2 O que cada janela entrega, ponderado pela chegada real
+
+| janela | leads com oferta **ZERO** | média de slots ofertados | média com retry |
+|---|---|---|---|
+| **3 dias** | **155 (5,3%)** | 20,6 | 10,7 |
+| **4 dias** | **0 (0,0%)** | 28,8 | 14,8 |
+| 5 dias | 0 (0,0%) | 36,4 | 18,5 |
+
+**5,3% dos leads — ~9 por semana — abririam a LP e não veriam horário nenhum** com janela de 3.
+
+### 7.3 O argumento decisivo: o 4º dia é de graça na metade da semana
+
+| chegada | leads | slots 3 → 4 | retry 3 → 4 |
+|---|---|---|---|
+| segunda | 13,9% | 27,5 → **39,5** | 11,4 → 18,4 |
+| terça | 19,0% | 27,9 → **39,9** | 15,6 → 23,6 |
+| **quarta** | 16,5% | 27,6 → **27,6** | 17,3 → 17,3 |
+| **quinta** | 14,7% | 16,3 → **16,3** | 10,7 → 10,7 |
+| **sexta** | 12,6% | **4,5 → 15,5** | 3,1 → 7,1 · **155 secos com 3** |
+| **sábado** | 11,5% | **11,0 → 23,0** | 4,0 → 7,0 |
+| domingo | 11,9% | 23,0 → **35,0** | 7,0 → 14,0 |
+
+Repare em **quarta e quinta: não muda nada.** O 4º dia delas é sábado e domingo, que não têm
+grade. Ou seja, **o 4º dia não "oferta mais longe" para 31% dos leads — ele simplesmente não
+existe.** O custo só é pago exatamente nos dias que estão passando fome.
+
+E a propriedade que fecha o caso: com janela de 4, **nenhuma chegada em dia útil é ofertada
+além da sexta da mesma semana** (seg→qui, ter→sex, qua e qui param no fim de semana). O único
+dia útil cuja oferta atravessa o fim de semana é a **sexta** — que é precisamente o resgate.
+
+### 7.4 O sábado é o pior atendido, e é o maior dia da LP
+
+Com janela de 3, quem chega no sábado enxerga **só a segunda**: 11 horários e apenas **4 com
+retry** — a segunda é o pior dia de cobertura da semana (36%), por causa dos blocos
+`12:00–13:30` e `15:00–16:00` da Rodrigues. Com 4, o sábado passa a enxergar segunda **e**
+terça: 23 horários, 7 com retry.
+
+Juntando: na LP, **22,4% dos leads (o maior dia) recebem hoje a oferta mais magra e de pior
+cobertura da semana.** Isso, e não o buraco da sexta, é o argumento mais forte para o 4.
+
+### 7.5 Por que não 5
+
+5 dias não resgata ninguém a mais (o zero já morreu no 4) e começa a ofertar reunião para a
+semana seguinte em chegada de dia útil — que é justamente o que matar o horizonte de 14 dias
+queria evitar. **4 é a menor janela sem zona morta**, e é esse o critério.
+
+### Recomendação
+
+`AGENDAMENTO_JANELA_DIAS=4`. Não é "um dia a mais": é o menor valor que elimina a oferta zero,
+e ele é **gratuito para 31% dos leads** (quarta e quinta não mudam em nada).
