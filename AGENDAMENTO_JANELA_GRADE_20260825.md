@@ -3,7 +3,7 @@
 Duas mudanças no que o `/slots` oferta, com os números recalculados contra os blocos
 recorrentes **reais** das duas consultoras, lidos hoje.
 
-**Estado: implementado, testado, NÃO ativado.** Falta o restart do serviço.
+**Estado: ATIVADO em 24/08/2026 23:10 (SP)** com `AGENDAMENTO_JANELA_DIAS=4` — ver §7 (por que 4) e §8 (validação no ar).
 
 ---
 
@@ -232,23 +232,19 @@ caso 33 trava o lado do backend.
 
 ---
 
-## 5. Falta ativar
+## 5. Ativação
 
 ```bash
-sudo systemctl restart <serviço>
+sudo systemctl restart cenat-backend.service
 ```
 
-Log de boot esperado:
+O que conferir: `/health` **200**, `GET /slots` com `fallback:false`, no máximo
+**`janela_dias` dias** em `dias`, e todos os horários dentro de `09:00–17:15`.
 
-```
-✅ agendamento: 2 consultora(s) em rotação — Victória Amorim, Victória Rodrigues
-```
+Feito em 24/08 23:10 — resultado no §8.
 
-Conferir depois: `GET /slots` com `fallback:false`, no máximo **3 dias** em `dias`, e os
-horários dentro de `09:00–17:15`.
-
-`.env` já tem `AGENDAMENTO_JANELA_DIAS=3` — igual ao padrão do código, escrito lá para ser o
-botão de 3↔4 sem precisar mexer em código.
+**O botão fica no `.env`**, em `AGENDAMENTO_JANELA_DIAS`: trocar 3↔4↔5 é uma linha mais
+restart, sem tocar em código nem no `consultoras.json`.
 
 ---
 
@@ -333,3 +329,39 @@ queria evitar. **4 é a menor janela sem zona morta**, e é esse o critério.
 
 `AGENDAMENTO_JANELA_DIAS=4`. Não é "um dia a mais": é o menor valor que elimina a oferta zero,
 e ele é **gratuito para 31% dos leads** (quarta e quinta não mudam em nada).
+
+---
+
+## 8. ATIVADO — 24/08/2026 23:10 (SP)
+
+`AGENDAMENTO_JANELA_DIAS=4` no `.env`, `sudo systemctl restart cenat-backend.service`.
+
+| verificação | resultado |
+|---|---|
+| serviço | `active` · `Application startup complete` |
+| `/health` | **200** |
+| `janela_dias` carregado nas duas consultoras | **4** |
+| `/slots` | **200**, `fallback:false`, `duracao_min:45` |
+| dias ofertados | **3** — 25, 26 e 27/08 (a segunda 24 já tinha esgotado às 23:10; `hoje + D+3` = 27) |
+| grade nova no ar | `09:00` e `17:15` presentes no dia 27 ✅ |
+| horários fora de `09:00–17:15` | nenhum ✅ |
+
+### O que a primeira leitura ao vivo mostrou
+
+| dia | teórico | ofertado | com retry |
+|---|---|---|---|
+| ter 25/08 | 12 | 5 | **0 (0%)** |
+| qua 26/08 | 12 | 5 | **0 (0%)** |
+| qui 27/08 | 12 | 11 | 5 (45%) |
+| **total** | 36 | **21** | **5 (23%)** |
+
+**A ocupação real removeu 41% dos horários teóricos**, e a cobertura de retry ao vivo ficou em
+**23%** — não nos 49% do §3.1. Não é erro de conta: os 49% são **capacidade** (agenda vazia), e
+os dois primeiros dias da janela já estão vendidos.
+
+Isso é estrutural da janela curta e vale registrar: **dia próximo já está tomado**. Com o
+horizonte de 14 dias havia dia distante e vazio para inflar a média de retry; com 4 dias, não
+há. Consequência prática: **um 409 num slot de D+1 ou D+2 tende a ser terminal** — não existe
+segunda consultora para tentar. Se isso aparecer no log com frequência, o caminho é rever os
+blocos recorrentes com as consultoras (a terça `10:10–13:30` da Amorim é o maior deles), não
+encurtar a grade de volta.

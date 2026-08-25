@@ -322,30 +322,38 @@ Amorim tem a manhã inteira bloqueada. Sexta é o melhor: 8 dos 12 com retry (66
 Janelas **idênticas** para as duas — não é preciso grade por dia da semana, porque o `/slots`
 subtrai os blocos reais de cada uma ao vivo.
 
-### 2.7.1 A janela é curta de propósito: hoje + D+1 + D+2
+### 2.7.1 A janela é curta de propósito: hoje + D+1 + D+2 + D+3
 
 `AGENDAMENTO_JANELA_DIAS` conta **dias corridos de calendário, hoje incluído**. O horizonte de
 14 dias morreu em 25/08/2026. Dentro de hoje, a antecedência mínima de 2h continua valendo.
 
-Fim de semana não tem grade, e a janela **não se estica** para compensar:
+Fim de semana não tem grade, e a janela **não se estica** para compensar. O valor em vigor é
+**4**, e ele não é gosto — foi medido contra a chegada real de 2 933 leads
+(`AGENDAMENTO_JANELA_GRADE_20260825.md` §7):
 
-| cadastro | dias úteis alcançados | slots ofertados |
+| cadastro | com janela 3 | com janela **4 (em vigor)** |
 |---|---|---|
-| segunda 09h | seg, ter, qua | 32 |
-| terça 09h | ter, qua, qui | 33 |
-| quinta 09h | qui, sex | 21 |
-| sexta 09h | sex | 9 |
-| **sexta 15h** | sex | **1** (só o 17:15) |
-| **sexta 15:15 em diante** | nenhum | **0 → `fallback:true`** |
-| sábado | seg (D+2) | 11 |
-| domingo | seg, ter | 23 |
+| segunda | seg, ter, qua — 32 slots | seg…qui — **40** |
+| terça | ter, qua, qui — 33 | ter…sex — **40** |
+| **quarta** | qua, qui, sex — 33 | **igual** (o D+3 é sábado) |
+| **quinta** | qui, sex — 21 | **igual** (o D+3 é domingo) |
+| **sexta ≥ 15:15** | **0 → `fallback:true`** | seg — **11** |
+| sábado | seg — 11 | seg, ter — **23** |
+| domingo | seg, ter — 23 | seg, ter, qua — **35** |
 
-⚠️ **O buraco conhecido:** de sexta 15:15 até a meia-noite de sábado (~9 h/semana) a janela não
-alcança dia útil nenhum, o `/slots` volta vazio com `fallback:true` e a LP cai no "deixe seu
-contato". É o degrade correto e já existia (feriado, agenda lotada, todas fora de rotação) — o
-que mudou é que agora ele tem causa **previsível e semanal**. Com o horizonte de 14 dias isso
-nunca acontecia. `AGENDAMENTO_JANELA_DIAS=4` fecha esse buraco (sexta passa a enxergar a
-segunda) sem tocar em código; é uma linha do `.env` mais restart.
+⚠️ **Por que 4 e não 3.** Com 3, de sexta 15:15 até a meia-noite de sábado a janela não alcança
+dia útil nenhum: **5,3% dos leads (~9/semana) abririam a LP com oferta ZERO**. E o sábado — o
+**maior dia isolado** da LP (22,4% das chegadas) — enxergaria só a segunda, que é o pior dia de
+cobertura de retry da semana (36%).
+
+E o 4º dia é **de graça para 31% dos leads**: o D+3 de quarta e quinta cai no fim de semana,
+que não tem grade, então a oferta desses dois dias não muda em nada. Com 4, nenhuma chegada em
+dia útil é ofertada além da sexta da mesma semana — o único dia útil que atravessa o fim de
+semana é a sexta, que é justamente o resgate.
+
+**Baixar para 3 devolve a zona morta.** 5 não resgata ninguém a mais (o zero já morreu no 4) e
+passa a ofertar para a semana seguinte em chegada de dia útil — o que matar o horizonte de 14
+dias queria evitar. **4 é a menor janela sem zona morta**, e é esse o critério.
 
 Contar dias corridos em vez de dias úteis é decisão: a promessa ao lead é "a gente fala com
 você nos próximos dias", e uma janela que anda para trás no fim de semana faria a oferta de
@@ -616,7 +624,7 @@ Chaves de `janelas`: `0` = segunda … `6` = domingo (padrão `date.weekday()`).
 herdado de `GRADE_PADRAO` — na prática só `janelas` varia, porque duração (45 min) e
 antecedência (2h) são política do produto, não da pessoa. A **janela** (`janela_dias`) nem mora
 aqui: é `AGENDAMENTO_JANELA_DIAS`, uma linha para o produto inteiro (precedência: `janela_dias`
-explícito na config > env > padrão 3). O `sales_rep_email` de dentro da grade é **ignorado** e
+explícito na config > env > padrão 3; o valor em vigor é 4). O `sales_rep_email` de dentro da grade é **ignorado** e
 sobrescrito pelo `email` da consultora: duas fontes para o mesmo dado é convite para divergirem.
 
 ⚠️ `horizonte_dias` é **chave morta** desde 25/08/2026. Deixá-la na config não faz nada além de
@@ -838,7 +846,7 @@ delas é segredo; o token da Exact é `EXACT_SPOTTER_TOKEN`, que **não** perten
 | `AGENDAMENTO_SOURCE` | `"Landing Page"` | `Rd Marketing` (o source antigo, de propósito) |
 | `AGENDAMENTO_SUBSOURCES` | `"PosMulheridades,Pos TEA V3,…"` | as 3 origens antigas |
 | `AGENDAMENTO_SUBSOURCE_PADRAO` | `"PosMulheridades"` | `PosPraticasDialogicasTurma1` |
-| `AGENDAMENTO_JANELA_DIAS` | `3` (hoje + D+1 + D+2) | `3` |
+| `AGENDAMENTO_JANELA_DIAS` | **`4`** (hoje + D+1 + D+2 + D+3) | `3` |
 | `AGENDAMENTO_CONSULTORAS_PATH` | `/home/ubuntu/pos-plataform/backend/consultoras.json` | — |
 | `AGENDAMENTO_CONSULTORAS` | JSON inline (tem precedência sobre o `_PATH`) | consultora única |
 | `AGENDAMENTO_GRADE_PATH` / `_JSON` | grade global, sem consultoras | `GRADE_PADRAO` |
@@ -986,7 +994,8 @@ Padrão (quando a LP não manda `origem`): `PosMulheridades`.
 
 Grade idêntica para as duas — **seg–sex, 09:00–18:30**, reuniões de 45 min, 12 horários/dia:
 `09:00 · 09:45 · 10:30 · 11:15 · 12:00 · 12:45 · 13:30 · 14:15 · 15:00 · 15:45 · 16:30 · 17:15`.
-Antecedência mínima 2h, **janela de 3 dias corridos** (hoje + D+1 + D+2), `type_meeting: web`.
+Antecedência mínima 2h, **janela de 4 dias corridos** (hoje + D+1 + D+2 + D+3),
+`type_meeting: web`.
 Capacidade 88 vagas/semana, união de 59 horários/semana; 49% deles têm retry (as duas livres).
 Ver 2.7 para os buracos por colisão e 2.7.1 para o que a janela curta alcança.
 
@@ -1030,9 +1039,11 @@ Log de boot esperado:
   decisão de código**.
 - **RD Marketing.** A conversão das origens antigas via API ficou pendente, conforme combinado.
   Nada foi tocado.
-- **Janela de 3 vs 4 dias.** Com 3, sexta a partir das 15:15 não alcança dia útil nenhum e a LP
-  cai no fallback até sábado à meia-noite (~9 h/semana). `AGENDAMENTO_JANELA_DIAS=4` fecha o
-  buraco ao custo de ofertar mais longe. Uma linha do `.env` + restart (2.7.1).
+- **Retry ao vivo é bem menor que os 49% de capacidade.** Medido no ar em 24/08 23:10: dos 36
+  horários teóricos da janela, a ocupação real removeu 41%, e dos 21 que sobraram **só 23%
+  tinham as duas livres** — nos dois primeiros dias, **zero**. Faz sentido e é estrutural: dia
+  próximo já está vendido. Com o horizonte de 14 dias havia dia distante e vazio para inflar a
+  média; com janela curta, não há. **Um 409 num slot de D+1 ou D+2 tende a ser terminal.**
 - **Cobertura de retry em 49%.** É o preço medido de ofertar o comercial inteiro (2.7). Se
   `Boxes are occupied` começar a aparecer no log com frequência, a saída não é encolher a grade
   de volta: é rever os blocos recorrentes com as consultoras. A terça da Amorim
@@ -1081,4 +1092,5 @@ Log de boot esperado:
 | 18/08 | passo 4 opcional (`ChangeFunnel`), desligado (§15) |
 | 18/08 | source `Landing Page` + as 12 primeiras origens (§16) |
 | 18/08 | 13ª origem: `Pos Enfermagem em Saude Mental` (§17) |
-| 25/08 | janela de 3 dias corridos (o horizonte de 14 dias morreu) + grade no comercial inteiro 09:00–18:30, com os números recalculados contra os blocos reais (`AGENDAMENTO_JANELA_GRADE_20260825.md`) |
+| 25/08 | janela de dias corridos (o horizonte de 14 dias morreu) + grade no comercial inteiro 09:00–18:30, com os números recalculados contra os blocos reais (`AGENDAMENTO_JANELA_GRADE_20260825.md`) |
+| 25/08 | `AGENDAMENTO_JANELA_DIAS=4` **no ar**, escolhido contra a chegada real de 2 933 leads (§7 do mesmo doc): com 3, 5,3% dos leads veriam oferta zero |
