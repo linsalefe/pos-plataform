@@ -357,6 +357,17 @@ checa("INVERSO: nat_sender não importa a trava nem `silenciar`",
       ("_silenciar_agente_apos_envio_manual" in _fonte_nat) or ("silenciar" in _fonte_nat),
       False)
 
+# O disparo em massa REUSA a trava, não uma cópia. Duas implementações da regra "humano
+# falou, agente cala" divergiriam, e o lado que divergisse é o que deixa o robô responder
+# por cima.
+_fonte_bulk = open("app/exact_routes.py", encoding="utf-8").read()
+checa("massa: bulk_send_template importa a trava de routes.py",
+      "from app.routes import _silenciar_agente_apos_envio_manual" in _fonte_bulk, True)
+checa("massa: e a chama por contato dentro do laço",
+      "_silenciar_agente_apos_envio_manual(wa_id, current_user, db)" in _fonte_bulk, True)
+checa("massa: sem cópia da regra (nenhum def novo)",
+      _fonte_bulk.count("async def _silenciar_agente_apos_envio_manual"), 0)
+
 
 # ==========================================================================================
 print("\n3) Máquina de etapas — só código muda etapa")

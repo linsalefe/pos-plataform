@@ -3,7 +3,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.auth import get_current_user
 from app.database import get_db
-from app.models import ExactLead, CourseAlias
+# A trava vive em `routes.py` porque foi lá que nasceu, com as rotas /send/*.
+# Importada e não duplicada: duas cópias da regra "humano falou, agente cala"
+# divergiriam, e o lado que divergisse é o que deixa o robô respondendo por cima.
+from app.routes import _silenciar_agente_apos_envio_manual
+from app.models import ExactLead, CourseAlias, User
 from app.exact_spotter import sync_exact_leads, get_auto_welcome_config
 # Movida para modulo neutro (quebra o import circular com exact_spotter).
 # Re-export: quem ja importava daqui continua funcionando, comportamento identico.
@@ -231,10 +235,11 @@ async def resend_welcome(exact_id: int, db: AsyncSession = Depends(get_db)):
 #
 # Disparo em massa sem login é risco de suspensão da conta WhatsApp, não de conveniência: um
 # POST anônimo daqui manda template para a lista de leads que quiser.
-@router.post("/bulk-send-template", dependencies=[Depends(get_current_user)])
+@router.post("/bulk-send-template")
 async def bulk_send_template(
     request: dict,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Envio em massa com mapeamento dinâmico de variáveis.
@@ -393,6 +398,16 @@ async def bulk_send_template(
                     status="sent",
                 )
                 db.add(msg)
+                # NUNCA DUAS VOZES NA MESMA THREAD — a mesma regra de routes.py /send/*.
+                # O disparo em massa não é um SDR conversando 1:1, mas o efeito no lead é
+                # idêntico: um template cai na conversa que o agente está conduzindo, e a
+                # resposta a ele volta para o agente, que não sabe do template. Quem dispara
+                # é humano e está logado, então o motivo é o mesmo `outbound_manual_sdr`.
+                #
+                # Por contato, dentro do laço: um disparo para 300 leads pode ter 2 em
+                # qualificação, e silenciar em bloco no fim exigiria carregar a lista inteira
+                # só para descobrir isso. `silenciar` é no-op barato para quem não tem estado.
+                await _silenciar_agente_apos_envio_manual(wa_id, current_user, db)
                 sent += 1
             else:
                 failed += 1
