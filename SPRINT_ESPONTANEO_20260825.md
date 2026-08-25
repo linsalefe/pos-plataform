@@ -205,3 +205,78 @@ assinatura do descarte se acontecer.
   banco, e mexer no modelo antes da migração o tornaria uma afirmação falsa.
 - Régua de cadência para `origem='espontaneo'` + `esp_link_enviado`: **registrada como
   entrada futura**, não implementada, como o sprint pede.
+
+---
+
+## 9. Bloco B detalhado — referência salva e o elo VERIFICADO (25/08, madrugada)
+
+`docs/referencia-obrigado.html` — a `obrigado.html` que roda hoje na LP de
+`Pos Grupos e Oficinas T2`, salva como referência. **Não é servida por nós** (repositório de
+outro time, Netlify): editá-la não muda nada em produção. Tirei os data-URI de favicon
+(~9 KB de base64 que não ensinam nada e poluem o diff) e anexei ao fim um comentário com os
+quatro padrões que a página nova herda e os três que ela **não** herda:
+
+- **não herda o Pixel do Facebook nem o DashCENAT** — a página do token não é peça de
+  campanha, é a continuação de uma conversa. Disparar `Lead` ali contaria o mesmo lead duas
+  vezes no relatório de mídia;
+- **não herda o campo de telefone editável** — no token ele é read-only;
+- **não herda o `?lead=`** — a identificação é o token opaco.
+
+### O elo pós-booking: o gatilho 4.5 cobre PELA METADE
+
+A spec manda verificar. Verifiquei — `_gatilho_do_agente` (`app/agendamento/agendar.py:501`):
+
+| o que a spec pede | coberto? | onde |
+|---|---|---|
+| **lembrete T-30** | ✅ **sim, sem alteração** | `agendar_lembrete` enfileira `KIND_LEMBRETE_REUNIAO` com `agendamento_id` no payload. O handler (`qualificacao_fluxo.lembrete_reuniao`) relê **por id**, não por estado, e envia para o `contact_wa_id` da ação |
+| estado → `concluido` | ❌ **não** | nada em `_gatilho_do_agente` toca `nat_qualificacao_state` |
+| confirmação no chat | ❌ **não, e não existe hoje** | ver abaixo |
+
+**A confirmação no chat é código novo, não reuso.** `_concluir` — o caminho em que o próprio
+agente marca a reunião — também **não manda mensagem**: ali a confirmação é a própria resposta
+do LLM naquele turno da conversa. No espontâneo o booking acontece **fora do chat**, então não
+existe turno nenhum para carregar a confirmação. Tem que nascer.
+
+**Condição para o lembrete funcionar:** `fluxo.agendar` precisa receber
+`telefone = wa_id do token`. `agendar_lembrete` faz `format_phone(reuniao.telefone)`, que é
+**no-op** para um wa_id de 12 ou 13 dígitos — então a chave da ação bate com a thread. Se em
+vez disso passássemos um telefone digitado, o `format_phone` prefixaria `55` e a chave
+divergiria da thread, que é o defeito de 25/08 outra vez.
+
+### ⚠️ Duas coisas que a spec não previu, e que eu vi ao verificar
+
+**1. `agendar_abertura` vai disparar à toa em todo booking espontâneo.**
+`_gatilho_do_agente` chama `agendar_abertura` **incondicionalmente**. Para o espontâneo o
+contato já tem estado, então `abrir()` cai em `"já tem estado — abertura ignorada"`. Não
+quebra nada, mas gasta uma linha em `nat_scheduled_actions` e um ciclo do agendador por
+booking.
+
+**2. E isso envenena o monitor.** A seção 2b de `monitor_qualificacao.py` cruza ações
+`iniciar_qualificacao` **executadas** contra estados existentes e chama de "perdida" a que não
+tem estado correspondente — a assinatura do descarte silencioso do Risco 3. Um booking
+espontâneo produziria exatamente essa assinatura **como falso positivo**, e o alerta que
+existe para pegar lead descartado passaria a gritar por causa de lead atendido.
+
+**Consequência de ordem:** o Risco 3 (que vou consertar depois do relatório das 10h06)
+precisa ficar pronto **antes** do espontâneo ir ao ar, porque a correção dele — `skipped` com
+motivo gravado em vez de `executado` mudo — é justamente o que dá ao monitor como distinguir
+"descartado pelo teto" de "já tinha estado, tudo certo". A ordem que você já definiu está
+certa; agora há um segundo motivo para ela.
+
+### O que reusar, confirmado no código
+
+| peça | onde | serve como está? |
+|---|---|---|
+| rate limit por IP | `agendamento/routes.py` `_limitar` | ✅ sim |
+| grade / slots | `GET /api/agendamento/slots` | ✅ sim — janela de 4 dias e grade 09:00–18:30 já valem |
+| booking completo | `agendar.fluxo.agendar(...)` | ✅ sim — aceita `telefone`, `slot_id`, `origem` (= subSource) |
+| e-mail em `description` | `extras.montar_descricao` | ✅ sim |
+| telefone legível/mascarado | `nat_flow.telefone_legivel` | ⚠️ formata, mas **não mascara** — a máscara `(85) 9****-5219` é nova |
+
+### Ainda BLOQUEADO
+
+Bloco B não pode ser implementado antes de:
+1. **o seu ok na migração** (§6.1) — `nat_agendamento_token` não existe no banco;
+2. **`Espontaneo WhatsApp` criado na Exact** (§6.2) — irreversível.
+
+Nada de Bloco B foi codado.
