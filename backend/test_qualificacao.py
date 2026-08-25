@@ -13,6 +13,7 @@ O que estes testes provam:
   5. gatilho e lembrete são idempotentes
   6. um dono por mensagem: com estado ativo, o fluxo velho não roda
   7. o guard falha fechado em todas as travas
+  8. o 9º dígito: os quatro formatos do mesmo telefone casam (2b)
 """
 import asyncio
 import json
@@ -146,6 +147,100 @@ checa("dia mais curto que a amostra volta inteiro",
       [h["hora"] for h in fluxo._espalhados(DOZE[:4], 6)],
       ["09:00", "09:45", "10:30", "11:15"])
 checa("dia vazio não explode", fluxo._espalhados([], 6), [])
+
+
+# ==========================================================================================
+print("\n2b) O 9º dígito — o mesmo humano escrito de quatro jeitos")
+
+from app import telefone as tel
+from app.models import Contact
+
+# Os QUATRO formatos do mesmo número colapsam no mesmo par. É a igualdade que importa:
+# a Exact guarda 5586994169303, o WhatsApp entrega 558694169303, e antes disto o agente
+# tratava os dois como pessoas diferentes.
+PAR = ("5586994169303", "558694169303")
+for formato in ("5586994169303", "558694169303", "86994169303", "8694169303"):
+    checa(f"variantes de {formato}", tel.variantes_wa_id(formato), PAR)
+
+checa("a ordem é estável (13 dígitos primeiro)", tel.variantes_wa_id("8694169303")[0],
+      "5586994169303")
+checa("os quatro formatos dão a MESMA chave de conjunto",
+      len({tel.chave_telefone(f) for f in
+           ("5586994169303", "558694169303", "86994169303", "8694169303")}), 1)
+
+# Fixo NÃO ganha um 9 — 86 2234-5678 com 9 na frente é o celular de OUTRA pessoa.
+checa("fixo não vira celular", tel.variantes_wa_id("8622345678"), ("558622345678",))
+# Estrangeiro passa inteiro: não sabemos ler o plano de numeração de lá.
+checa("estrangeiro intocado", tel.variantes_wa_id("447834239129"), ("447834239129",))
+checa("estrangeiro não gera chave de conjunto", tel.chave_telefone("447834239129"), "")
+checa("lixo não casa com nada", (tel.variantes_wa_id(""), tel.variantes_wa_id(None),
+                                 tel.chave_telefone("abc")), ((), (), ""))
+
+
+class _Scalars(list):
+    def first(self):
+        return self[0] if self else None
+
+
+class _DbFiltrante:
+    """Dublê que executa o `IN` de verdade: lê os binds do statement e filtra.
+
+    Um mock que devolve tudo passaria mesmo se o código tivesse voltado para `==`. Este
+    filtra, então o teste falha se a tolerância sumir.
+    """
+
+    def __init__(self, linhas):
+        self.linhas = linhas
+
+    async def execute(self, stmt):
+        # `in_` compila para um bind expansível, cujo valor é a LISTA inteira.
+        valores = set()
+        for bruto in stmt.compile().params.values():
+            valores.update(bruto) if isinstance(bruto, (list, tuple)) else valores.add(bruto)
+        casadas = [o for o in self.linhas
+                   if getattr(o, "contact_wa_id", None) in valores
+                   or getattr(o, "wa_id", None) in valores]
+        r = MagicMock()
+        r.scalars.return_value = _Scalars(casadas)
+        r.all.return_value = casadas
+        r.scalar_one_or_none.return_value = casadas[0] if casadas else None
+        return r
+
+
+def _est(wa, id=1):
+    e = NatQualificacaoState(contact_wa_id=wa, exact_lead_id=1, origem=ORIGEM_LP,
+                             etapa=ETAPA_Q_AGUARDANDO_ANO)
+    e.id = id
+    return e
+
+
+# O DEFEITO, nos dois sentidos. O estado nasce da chave montada do telefone do lead
+# (13 dígitos, qualificacao_gatilho.wa_id_de) e o inbound chega com 12 — ou o contrário.
+achado = asyncio.run(fluxo.estado_de("558694169303", _DbFiltrante([_est("5586994169303")])))
+checa("estado gravado com 13 dígitos é achado pelo inbound de 12",
+      achado.contact_wa_id if achado else None, "5586994169303")
+
+achado = asyncio.run(fluxo.estado_de("5586994169303", _DbFiltrante([_est("558694169303")])))
+checa("e o caminho inverso também", achado.contact_wa_id if achado else None,
+      "558694169303")
+
+achado = asyncio.run(fluxo.estado_de("5511918330251", _DbFiltrante([_est("5586994169303")])))
+checa("número de OUTRA pessoa continua não casando", achado, None)
+
+# Duas threads do mesmo humano: escolha determinística, e nada de MultipleResultsFound.
+duas = _DbFiltrante([_est("558694169303", id=9), _est("5586994169303", id=2)])
+achado = asyncio.run(fluxo.estado_de("8694169303", duas))
+checa("com as duas threads, escolhe a de 13 dígitos, sem levantar",
+      achado.contact_wa_id if achado else None, "5586994169303")
+
+# O `abrir()` abortava com "não existe em contacts" — mentira: existia, na outra grafia.
+c = Contact(wa_id="558694169303", name="Raimundo Nonato")
+c.id = 1
+achado = asyncio.run(fluxo._contato_de("5586994169303", _DbFiltrante([c])))
+checa("contato é achado na grafia gêmea", achado.name if achado else None,
+      "Raimundo Nonato")
+checa("contato inexistente continua None",
+      asyncio.run(fluxo._contato_de("5511918330251", _DbFiltrante([c]))), None)
 
 
 # ==========================================================================================
@@ -416,8 +511,13 @@ with patch.object(guard, "_carregar_config", new=boom):
 
 async def envia(cfg, estado, envios=0):
     db = _db()
-    db.execute = AsyncMock(return_value=MagicMock(
-        scalar_one_or_none=MagicMock(return_value=estado)))
+    # O guard passou a buscar o estado com `IN (variantes)` + `.scalars().first()` para
+    # tolerar o 9º dígito (ver 2b). O dublê precisa responder as DUAS APIs, senão ele
+    # devolve None calado e o teste "libera" vira "bloqueia" por defeito do teste.
+    res = MagicMock()
+    res.scalar_one_or_none = MagicMock(return_value=estado)
+    res.scalars = MagicMock(return_value=_Scalars([estado] if estado is not None else []))
+    db.execute = AsyncMock(return_value=res)
     with patch.object(guard, "_carregar_config", new=AsyncMock(return_value=cfg)), \
          patch.object(guard, "contar_envios_ultima_hora", new=AsyncMock(return_value=envios)):
         return await guard.qualificacao_pode_atuar(MagicMock(wa_id="5583999998888"), db)

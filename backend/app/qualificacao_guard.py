@@ -47,6 +47,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.telefone import variantes_wa_id
 from app.models import (ETAPAS_QUALIFICACAO_ATIVAS, Contact, Message, NatConfig,
                         NatQualificacaoState)
 from app.nat_guard import _agora_sp
@@ -165,9 +166,15 @@ async def qualificacao_pode_atuar(contact: Contact, db: AsyncSession) -> tuple[b
         if not wa_id:
             return bloqueia("contato sem wa_id")
 
+        # Mesma tolerância ao 9º dígito de `qualificacao_fluxo.estado_de` — a REGRA mora em
+        # `app/telefone.py`, e a consulta é repetida aqui em vez de importada porque
+        # `qualificacao_fluxo` já importa este módulo (importar de volta seria ciclo).
+        # Ordenado: o mesmo humano pode ter duas linhas, e `scalar_one_or_none` levantaria.
+        vs = variantes_wa_id(wa_id)
         estado = (await db.execute(
-            select(NatQualificacaoState).where(
-                NatQualificacaoState.contact_wa_id == wa_id))).scalar_one_or_none()
+            select(NatQualificacaoState)
+            .where(NatQualificacaoState.contact_wa_id.in_(vs or ("",)))
+            .order_by(NatQualificacaoState.id))).scalars().first()
         if estado is None:
             return bloqueia(f"{wa_id} não tem estado do agente")
         if estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:

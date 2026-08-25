@@ -262,3 +262,85 @@ no cadastro). Tem que nascer certo na primeira vez.
    É o caminho sem mudança de infra.
 
 Com esses quatro respondidos eu sigo para a migração (que é o próximo CHECKPOINT do sprint).
+
+---
+
+## CORREÇÃO 1 APLICADA — 24/08/2026 23:30 (SP), antes das 09h
+
+Só a chave tolerante no agente de qualificação. **O fluxo espontâneo não foi começado.**
+
+### `app/telefone.py` (novo)
+
+`variantes_wa_id()` devolve as formas em que o mesmo humano pode estar gravado — sempre com
+DDI, sempre com a de 13 dígitos primeiro. Os **quatro** formatos colapsam no mesmo par:
+
+```
+5586994169303 ─┐
+ 558694169303 ─┤
+  86994169303 ─┼─→ ("5586994169303", "558694169303")
+   8694169303 ─┘
+```
+
+`chave_telefone()` reduz a **DDD + últimos 8 dígitos**, para casar conjuntos (é o que a
+admissão do espontâneo vai usar contra `exact_leads`, com custo constante em vez de varrer
+8 636 telefones).
+
+**Nada foi convertido, nada migrou.** Só a BUSCA mudou: `== wa_id` virou `IN (variantes)`.
+Reescrever `contact_wa_id` em 6 451 threads vivas com UNIQUE no caminho é risco
+desproporcional para um problema de leitura — e ninguém sabe qual das duas formas entrega
+mensagem, então eleger uma canônica poderia quebrar o envio, que hoje funciona.
+
+**Fixo não ganha um 9.** `86 2234-5678` com um 9 na frente é o celular de outra pessoa; a
+variante só nasce quando o número local começa em 6–9. Estrangeiro (`447834239129`,
+`245956444415` — os dois existem na base) passa inteiro, sem variante.
+
+### Os 7 pontos de comparação corrigidos
+
+Eram 2 no meu recon. São **7** — o `abrir()` sozinho tinha quatro.
+
+| arquivo:linha | o que era | efeito do defeito |
+|---|---|---|
+| `qualificacao_fluxo.py:152` `estado_de` | `== contact_wa_id` | o agente não achava o próprio estado |
+| `qualificacao_fluxo.py:180` `_historico` | `== contact_wa_id` | o modelo via **metade** do diálogo — sem o template que ele mesmo mandou |
+| `qualificacao_fluxo.py:230` `_nome` | `Contact.wa_id ==` | lead sem nome no contexto |
+| `qualificacao_fluxo.py:316` `_notificar` | `Contact.wa_id ==` | aviso ia para a gestão em vez do SDR dono |
+| `qualificacao_fluxo.py:427` `abrir` | `Contact.wa_id ==` | **abertura abortada** com "não existe em contacts" — mentira: existia, na outra grafia |
+| `qualificacao_fluxo.py:636` agendamento | `Contact.wa_id ==` | agendava com nome "Lead" |
+| `qualificacao_guard.py:170` `pode_atuar` | `== wa_id` | o agente era barrado no envio |
+
+`scalar_one_or_none()` virou escolha ordenada em toda busca de linha única: com as duas
+threads existindo, ele levantaria `MultipleResultsFound`.
+
+### Verificado contra dados de produção
+
+```
+busca 5586994169303 → contato 5586994169303 / Raimundo Nonato Coêlho Júnior · histórico 3 msg
+busca  558694169303 → contato 5586994169303 / Raimundo Nonato Coêlho Júnior · histórico 3 msg
+busca 5548988036257 → contato 5548988036257 / Bruna Da Rosa Gonçalves       · histórico 2 msg
+busca  554888036257 → contato 5548988036257 / Bruna Da Rosa Gonçalves       · histórico 2 msg
+```
+
+As duas grafias resolvem no mesmo humano, e o histórico vem **unificado** — as 3 mensagens do
+Raimundo estavam partidas em duas threads (inbound na de 12, template na de 13, clique na de
+12).
+
+### Testes e ativação
+
+16 checagens novas em `test_qualificacao.py` §2b: os quatro formatos, ordem estável, chave de
+conjunto única, fixo que não vira celular, estrangeiro intocado, lixo que não casa, o defeito
+**nos dois sentidos**, número de outra pessoa que continua não casando, duas threads com
+escolha determinística sem levantar, e o contato achado na grafia gêmea.
+
+O dublê de banco **executa o `IN` de verdade** (lê os binds do statement e filtra) — um mock
+que devolvesse tudo passaria mesmo se o código voltasse para `==`.
+
+Dois testes do guard falharam quando o `IN` entrou, e o motivo importa: o dublê deles só
+respondia `scalar_one_or_none`, então devolvia `None` calado e "libera" virava "bloqueia" por
+defeito do teste, não do código. Dublê corrigido para responder as duas APIs.
+
+**15 suítes offline verdes. Restart feito 23:30, `/health` 200, `/slots` 200.**
+
+### Fica para a sprint global (prioridade logo após o espontâneo)
+
+`format_phone` continua ingênuo em `nat_guard._resolver_lead_e_wa_id` (que ainda varre os
+8 636 leads em laço), `nat_flow`, boas-vindas, `ai_engine:363` e `twilio_routes:335`.

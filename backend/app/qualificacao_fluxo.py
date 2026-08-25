@@ -57,6 +57,7 @@ from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
                            proximo_horario_util)
 from app.nat_scheduler import registrar_handler
 from app.nat_sender import send_nat_message
+from app.telefone import variantes_wa_id
 from app.nomes import primeiro_nome
 
 # Quantas mensagens da conversa vão para o modelo. 10 cobre o vaivém das 4 perguntas com
@@ -148,10 +149,42 @@ CAMPOS = {"formacao", "ano_conclusao", "atuacao", "motivacao"}
 # LEITURA
 # ==========================================================================================
 
+def _mais_relevante(linhas, variantes: tuple[str, ...], de):
+    """Escolhe UMA linha quando o mesmo humano tem duas. Determinístico.
+
+    A ordem de `variantes_wa_id` manda (a forma de 13 dígitos primeiro) e o `id` desempata.
+    Sem isto, `scalar_one_or_none()` levantaria `MultipleResultsFound` no dia em que as duas
+    threads existirem — e elas já existem para 340 pessoas.
+    """
+    if not linhas:
+        return None
+    ordem = {v: i for i, v in enumerate(variantes)}
+    return sorted(linhas, key=lambda o: (ordem.get(de(o), 99), o.id))[0]
+
+
+async def _contato_de(wa_id: str, db: AsyncSession) -> Contact | None:
+    """O contato, achando também a thread gêmea sem o 9º dígito. Ver `app/telefone.py`."""
+    vs = variantes_wa_id(wa_id)
+    if not vs:
+        return None
+    res = await db.execute(select(Contact).where(Contact.wa_id.in_(vs)))
+    return _mais_relevante(list(res.scalars()), vs, lambda c: c.wa_id)
+
+
 async def estado_de(contact_wa_id: str, db: AsyncSession) -> NatQualificacaoState | None:
+    """O estado do agente para este humano — nas DUAS grafias do telefone dele.
+
+    Era `== contact_wa_id`. Com igualdade, o estado nascido da chave montada a partir do
+    telefone do lead (13 dígitos, via `qualificacao_gatilho.wa_id_de`) nunca era encontrado
+    pelo inbound, que chega com 12 para todo DDD fora de 11–28 — 59% das threads do Hub.
+    O agente calava sem erro nenhum. Ver `app/telefone.py`.
+    """
+    vs = variantes_wa_id(contact_wa_id)
+    if not vs:
+        return None
     res = await db.execute(select(NatQualificacaoState).where(
-        NatQualificacaoState.contact_wa_id == contact_wa_id))
-    return res.scalar_one_or_none()
+        NatQualificacaoState.contact_wa_id.in_(vs)))
+    return _mais_relevante(list(res.scalars()), vs, lambda e: e.contact_wa_id)
 
 
 async def agente_e_dono(contact_wa_id: str, db: AsyncSession) -> bool:
@@ -175,9 +208,12 @@ async def _historico(contact_wa_id: str, db: AsyncSession) -> list:
     Template outbound vira um marcador: o corpo renderizado já está em `content`, mas
     reapresentá-lo cru faria o modelo repetir a saudação. Mídia idem — o modelo não a vê.
     """
+    # `in_` e não `==`: as duas grafias do telefone são a MESMA conversa, e ler só uma
+    # delas daria ao modelo metade do diálogo — inclusive sem o template que ele mesmo
+    # mandou, que sai para a grafia de 13 dígitos.
     res = await db.execute(
         select(Message.direction, Message.content, Message.message_type)
-        .where(Message.contact_wa_id == contact_wa_id)
+        .where(Message.contact_wa_id.in_(variantes_wa_id(contact_wa_id) or ("",)))
         .order_by(Message.timestamp.desc()).limit(MAX_HISTORICO))
     linhas = list(res.all())[::-1]
     saida = []
@@ -226,9 +262,8 @@ async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
 
 
 async def _nome(estado: NatQualificacaoState, db: AsyncSession) -> str:
-    res = await db.execute(select(Contact.name).where(
-        Contact.wa_id == estado.contact_wa_id))
-    return primeiro_nome((res.scalar_one_or_none() or ""))
+    contato = await _contato_de(estado.contact_wa_id, db)
+    return primeiro_nome((contato.name if contato else "") or "")
 
 
 def _espalhados(horarios: list[dict], n: int) -> list[dict]:
@@ -312,9 +347,8 @@ async def _notificar(estado: NatQualificacaoState, titulo: str, corpo: str,
     """Avisa o SDR dono; sem dono, a gestão. Nunca levanta — aviso não derruba fluxo."""
     from app.nat_flow import telefone_legivel, usuario_existe
     try:
-        res = await db.execute(select(Contact.assigned_to).where(
-            Contact.wa_id == estado.contact_wa_id))
-        dono = res.scalar_one_or_none()
+        contato = await _contato_de(estado.contact_wa_id, db)
+        dono = contato.assigned_to if contato else None
         destinatario = dono if await usuario_existe(dono, db) else GESTOR_USER_ID
         if not await usuario_existe(destinatario, db):
             print(f"❌ Agente: sem destinatário para avisar sobre {estado.contact_wa_id}")
@@ -424,7 +458,11 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
         print(f"↩️  Agente: abertura de {wa_id} não admitida ({motivo})")
         return
 
-    contato = (await db.execute(select(Contact).where(Contact.wa_id == wa_id))).scalar_one_or_none()
+    # Tolerante ao 9º dígito: `wa_id` aqui vem de `qualificacao_gatilho.wa_id_de`, montado
+    # do telefone do LEAD (13 dígitos), e a linha de `contacts` costuma existir na grafia do
+    # INBOUND (12). Com igualdade, a abertura era abortada com "não existe em contacts" para
+    # a maior parte dos leads — e o log dizia que o contato não existia, o que era mentira.
+    contato = await _contato_de(wa_id, db)
     if contato is None:
         print(f"↩️  Agente: {wa_id} não existe em contacts — abertura ignorada")
         return
@@ -632,8 +670,7 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
         await _ofertar_agenda(estado, db)
         return
 
-    contato = (await db.execute(select(Contact).where(
-        Contact.wa_id == estado.contact_wa_id))).scalar_one_or_none()
+    contato = await _contato_de(estado.contact_wa_id, db)
     try:
         r = await fluxo.agendar(
             db, nome=(contato.name if contato else "") or "Lead", email=None,
