@@ -30,7 +30,8 @@ import {
   Lock,
   PhoneCall,
   PhoneOff,
-  CheckCircle2
+  CheckCircle2,
+  UserCheck
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import api from '@/lib/api';
@@ -93,6 +94,15 @@ interface NatEstado {
   tentativas_contato: number;
   max_tentativas_contato: number;
   pode_marcar_sem_contato: boolean;
+  // AGENTE de pré-qualificação — outro fluxo, outra tabela (nat_qualificacao_state).
+  // Um contato pode estar fora da NAT (em_fluxo=false) e mesmo assim ter o agente
+  // conduzindo, então estes dois campos são independentes de todos os de cima.
+  // `pode_assumir_conversa` é decidido pelo BACKEND, pela MESMA constante
+  // (ETAPAS_QUALIFICACAO_ATIVAS) que o webhook usa para dar a precedência ao agente.
+  // Replicar a lista de etapas aqui daria dois lugares para ela divergir — e o lado que
+  // diverge é o que decide se o SDR consegue calar o robô.
+  qualificacao_etapa: string | null;
+  pode_assumir_conversa: boolean;
 }
 
 interface Message {
@@ -140,6 +150,7 @@ export default function ConversationsPage() {
   const [showCRM, setShowCRM] = useState(true);
   const [natEstado, setNatEstado] = useState<NatEstado | null>(null);
   const [assumindo, setAssumindo] = useState(false);
+  const [assumindoConversa, setAssumindoConversa] = useState(false);
   const [marcandoSemContato, setMarcandoSemContato] = useState(false);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showSdrMenu, setShowSdrMenu] = useState(false);
@@ -363,6 +374,25 @@ export default function ConversationsPage() {
       loadNatEstado(selectedWaId);
     } finally {
       setAssumindo(false);
+    }
+  };
+
+  // Cala o AGENTE e devolve a thread ao humano. NÃO é o assumirLigacao: aquele para o SLA
+  // da NAT (nat_flow_state), este tira o agente da conversa (nat_qualificacao_state).
+  // Nada é enviado ao lead — quem clica é quem vai escrever.
+  const assumirConversa = async () => {
+    if (!selectedWaId || assumindoConversa) return;
+    setAssumindoConversa(true);
+    try {
+      const res = await api.post(`/nat/${selectedWaId}/assumir-conversa`);
+      setNatEstado((atual) => (atual ? { ...atual, ...res.data } : atual));
+    } catch (err) {
+      console.error('Erro ao assumir conversa:', err);
+      // O motivo mais provável é o agente já ter saído sozinho (o lead respondeu, o SDR
+      // digitou antes e a trava automática agiu). Recarregar mostra a verdade.
+      loadNatEstado(selectedWaId);
+    } finally {
+      setAssumindoConversa(false);
     }
   };
 
@@ -1187,6 +1217,25 @@ export default function ConversationsPage() {
                         ? <Loader2 className="w-4 h-4 animate-spin" />
                         : <PhoneCall className="w-4 h-4" />}
                       {assumindo ? 'Assumindo…' : 'Assumir ligação'}
+                    </button>
+                  )}
+
+                  {/* AGENTE — humano assume, agente silencia.
+                      Aparece só enquanto o agente é dono do inbound (etapa ativa). Depois
+                      de clicado some, porque `pode_assumir_conversa` passa a false.
+                      A trava automática do backend faz o mesmo quando o SDR simplesmente
+                      digita — este botão é para quem quer calar o agente ANTES de escrever. */}
+                  {natEstado?.pode_assumir_conversa && (
+                    <button
+                      onClick={assumirConversa}
+                      disabled={assumindoConversa}
+                      className="flex items-center gap-1.5 px-3 py-2 mr-1 rounded-xl bg-violet-600 text-white text-[12px] font-semibold hover:bg-violet-700 disabled:opacity-60 transition-all duration-200 shadow-sm"
+                      title="Silenciar a Nat e assumir esta conversa. Nada é enviado ao lead."
+                    >
+                      {assumindoConversa
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <UserCheck className="w-4 h-4" />}
+                      {assumindoConversa ? 'Assumindo…' : 'Assumir conversa'}
                     </button>
                   )}
 

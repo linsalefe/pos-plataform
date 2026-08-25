@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import nat_copy
 from app.auth import get_current_admin, get_current_user
 from app.database import get_db
+from app.models import ETAPAS_QUALIFICACAO_ATIVAS
 from app.models import (ETAPA_AGUARDANDO_LIGACAO, ETAPA_ENCERRADO, ETAPA_SEM_CONTATO,
                         KIND_RETRY_CONTATO, KIND_SLA_CHECK, NatConfig, NatContactAttempt,
                         NatFlowState, User)
@@ -90,6 +91,29 @@ async def _payload(state: NatFlowState, db: AsyncSession) -> dict:
     }
 
 
+async def _qualificacao(wa_id: str, db: AsyncSession) -> dict:
+    """O que a tela precisa saber sobre o AGENTE — que é outro fluxo, com outra tabela.
+
+    Vai junto de `/estado` em vez de virar endpoint próprio porque a tela já faz essa
+    chamada para todo contato que o atendente abre; um segundo GET dobraria o tráfego do
+    painel para responder à mesma pergunta ("quem é o dono desta conversa?").
+
+    `pode_assumir_conversa` é decidido AQUI, pela mesma constante que o webhook usa para
+    dar a precedência ao agente (`ETAPAS_QUALIFICACAO_ATIVAS`). Replicar a lista de etapas
+    no TSX criaria dois lugares para ela divergir — e o lado que diverge é o que decide se
+    o SDR vê ou não o botão que cala o robô.
+    """
+    from app.qualificacao_fluxo import estado_de
+
+    estado = await estado_de(wa_id, db)
+    if estado is None:
+        return {"qualificacao_etapa": None, "pode_assumir_conversa": False}
+    return {
+        "qualificacao_etapa": estado.etapa,
+        "pode_assumir_conversa": estado.etapa in ETAPAS_QUALIFICACAO_ATIVAS,
+    }
+
+
 VAZIO = {
     "em_fluxo": False, "etapa": None, "transferido_em": None, "assumido_por": None,
     "assumido_por_nome": None, "assumido_em": None, "escalonamento_nivel": 0,
@@ -108,9 +132,14 @@ async def estado_do_fluxo(wa_id: str, db: AsyncSession = Depends(get_db),
     navegador de erro para o comportamento mais normal que existe.
     """
     state = await _estado(wa_id, db)
+    # O agente vive em OUTRA tabela e é independente do fluxo de botões: um contato pode
+    # estar fora da NAT (`em_fluxo=false`) e mesmo assim ter o agente conduzindo. Por isso o
+    # bloco da qualificação entra nos DOIS caminhos — hoje, com `nat_flow_state` vazia, o
+    # caminho de cima é o único que roda na prática.
+    qualif = await _qualificacao(wa_id, db)
     if state is None:
-        return VAZIO
-    return await _payload(state, db)
+        return {**VAZIO, **qualif}
+    return {**await _payload(state, db), **qualif}
 
 
 @router.post("/{wa_id}/assumir")
@@ -233,6 +262,50 @@ async def _tentativa_recente(wa_id: str, agora: datetime,
         return None
     idade = (agora - ultima.created_at).total_seconds()
     return ultima if 0 <= idade < JANELA_IDEMPOTENCIA_SEGUNDOS else None
+
+
+@router.post("/{wa_id}/assumir-conversa")
+async def assumir_conversa(wa_id: str, db: AsyncSession = Depends(get_db),
+                           current_user: User = Depends(get_current_user)):
+    """O botão "Assumir conversa": cala o AGENTE e devolve a thread ao humano.
+
+    NÃO é o `/assumir`. São dois fluxos, duas tabelas e dois efeitos, e confundi-los seria
+    caro:
+
+        /assumir            nat_flow_state  · para o SLA da NAT · exige aguardando_ligacao
+        /assumir-conversa   nat_qualificacao_state · cala o agente · exige etapa ATIVA
+
+    Um contato pode precisar dos dois, de nenhum, ou de só um — hoje, com a NAT desligada e
+    `nat_flow_state` vazia, na prática só este roda.
+
+    **Não manda nada ao lead.** Ver `qualificacao_fluxo.silenciar`: o SDR clica porque vai
+    escrever ele mesmo, e uma despedida automática logo antes seria a segunda voz que esta
+    sprint existe para impedir.
+
+    IDEMPOTENTE, e pelo mesmo motivo do `/assumir`: clicar duas vezes não é erro. A segunda
+    chamada encontra a etapa já fora das ativas, `silenciar` devolve None, e a resposta diz
+    `ja_assumido` sem sobrescrever quem assumiu primeiro — que é o dado que o relatório usa.
+
+    404 quando não há estado nenhum: aí o botão nem deveria ter aparecido, e um 200 mudo
+    esconderia uma tela dessincronizada.
+    """
+    from app.qualificacao_fluxo import MOTIVO_ASSUMIDO_SDR, estado_de, silenciar
+
+    estado = await estado_de(wa_id, db)
+    if estado is None:
+        raise HTTPException(404, "Este contato não está com o agente de qualificação.")
+
+    anterior = await silenciar(wa_id, MOTIVO_ASSUMIDO_SDR, db,
+                               quem_id=current_user.id, quem_nome=current_user.name)
+    if anterior is None:
+        return {"ja_assumido": True, "etapa_anterior": None,
+                **await _qualificacao(wa_id, db)}
+
+    await db.commit()
+    print(f"✋ Agente: {wa_id} assumido por {current_user.name} (id={current_user.id}) — "
+          f"saiu de {anterior}, nada foi enviado ao lead")
+    return {"ja_assumido": False, "etapa_anterior": anterior,
+            **await _qualificacao(wa_id, db)}
 
 
 @router.post("/{wa_id}/sem-contato")

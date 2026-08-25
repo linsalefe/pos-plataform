@@ -201,8 +201,52 @@ async def get_channel(channel_id: int, db: AsyncSession) -> Channel:
 # a dependência de request vaze para a assinatura. Aqui não há chamador interno hoje, mas a
 # forma é a mesma nos quatro endpoints de disparo — um padrão só, e o que já existia em
 # /{exact_id}/resend-welcome.
-@router.post("/send/text", dependencies=[Depends(get_current_user)])
-async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db)):
+async def _silenciar_agente_apos_envio_manual(wa_id: str, quem, db: AsyncSession) -> None:
+    """SDR digitou num contato que o agente estava conduzindo → o agente cala.
+
+    NUNCA DUAS VOZES NA MESMA THREAD. Sem isto, o SDR responde "oi, sou o Thobias" e a
+    próxima mensagem do lead ainda é processada pelo agente, que responde por cima — o lead
+    vê duas pessoas conduzindo a mesma conversa, e nenhuma sabe da outra.
+
+    A TRAVA VIVE NAS ROTAS `/send/*`, E ISSO É A DEFINIÇÃO DE "MANUAL"
+    -----------------------------------------------------------------
+    Distinguir SDR de agente por TEXTO seria adivinhação. Por ROTA é fato:
+
+        app/routes.py  /send/text · /send/template · /send/media   humano, com login
+        app/nat_sender.py:191                                      agente e NAT, sempre
+                                                                   carimbando `nat_etapa`
+
+    `nat_sender` é o ÚNICO ponto por onde envio do agente passa, e ele não chama isto. Então
+    a mensagem do próprio agente jamais dispara a trava — não por uma checagem que possa
+    esquecer um caso, mas porque o código nunca é alcançado por aquele caminho. É a diferença
+    entre uma regra que pode falhar e uma que não tem como.
+
+    Os outros escritores de outbound do projeto NÃO estão aqui, de propósito:
+    `exact_spotter` (boas-vindas automática), `exact_routes.bulk_send_template` (disparo em
+    massa) e o job de `scheduled_messages`. Nenhum é um SDR conversando 1:1, que é o gatilho
+    que o produto pediu. O disparo em massa é o caso limítrofe — ver o CHECKPOINT.
+
+    NÃO PODE DERRUBAR O ENVIO
+    -------------------------
+    A mensagem do SDR já foi para a Meta quando chegamos aqui: falhar agora significaria
+    devolver erro para um envio que ACONTECEU, e o SDR mandaria de novo. Por isso savepoint
+    (um IntegrityError deixaria a transação abortada e o `commit` do envio falharia junto) e
+    `except` largo. O pior caso é o agente continuar ativo, que é o estado de hoje.
+    """
+    try:
+        async with db.begin_nested():
+            from app.qualificacao_fluxo import MOTIVO_OUTBOUND_MANUAL, silenciar
+            await silenciar(wa_id, MOTIVO_OUTBOUND_MANUAL, db,
+                            quem_id=getattr(quem, "id", None),
+                            quem_nome=getattr(quem, "name", None))
+    except Exception as e:
+        print(f"⚠️  Falha ao silenciar o agente em {wa_id} depois de envio manual "
+              f"({type(e).__name__}: {e}). O agente segue ativo.")
+
+
+@router.post("/send/text")
+async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db),
+                    current_user: User = Depends(get_current_user)):
     channel = await get_channel(req.channel_id, db)
     result = await send_text_message(req.to, req.text, channel.phone_number_id, channel.whatsapp_token)
 
@@ -227,13 +271,19 @@ async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db)):
             status="sent",
         )
         db.add(message)
+        # Depois do add e ANTES do commit: a mesma transação que registra a fala do humano
+        # registra o silêncio do agente. Separar em dois commits abriria a janela em que a
+        # mensagem existe e o agente ainda é dono — que é exatamente a janela em que o lead
+        # responde e leva resposta dobrada.
+        await _silenciar_agente_apos_envio_manual(wa_id, current_user, db)
         await db.commit()
 
     return result
 
 
-@router.post("/send/template", dependencies=[Depends(get_current_user)])
-async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get_db)):
+@router.post("/send/template")
+async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get_db),
+                        current_user: User = Depends(get_current_user)):
     # ⛔ TRAVA ÚNICA: o template de boas-vindas não sai por envio manual. Sem isto, um SDR
     # poderia abrir "Nova conversa", colar o telefone de um lead antigo e mandar a boas-vindas.
     await bloquear_se_boas_vindas(req.template_name, db)
@@ -272,18 +322,20 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
             status="sent",
         )
         db.add(message)
+        await _silenciar_agente_apos_envio_manual(wa_id, current_user, db)
         await db.commit()
 
     return result
 
 
-@router.post("/send/media", dependencies=[Depends(get_current_user)])
+@router.post("/send/media")
 async def send_media(
     file: UploadFile = File(...),
     to: str = Form(...),
     channel_id: int = Form(...),
     type: str = Form(...),  # image, document, audio
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     channel = await get_channel(channel_id, db)
     file_bytes = await file.read()
@@ -330,6 +382,7 @@ async def send_media(
             status="sent",
         )
         db.add(message)
+        await _silenciar_agente_apos_envio_manual(wa_id, current_user, db)
         await db.commit()
 
     return result

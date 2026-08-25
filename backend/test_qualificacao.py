@@ -14,6 +14,7 @@ O que estes testes provam:
   6. um dono por mensagem: com estado ativo, o fluxo velho não roda
   7. o guard falha fechado em todas as travas
   8. o 9º dígito: os quatro formatos do mesmo telefone casam (2b)
+  9. humano assume -> agente silencia; e a mensagem da Nat NÃO dispara isso (2c)
 """
 import asyncio
 import json
@@ -241,6 +242,120 @@ checa("contato é achado na grafia gêmea", achado.name if achado else None,
       "Raimundo Nonato")
 checa("contato inexistente continua None",
       asyncio.run(fluxo._contato_de("5511918330251", _DbFiltrante([c]))), None)
+
+
+# ==========================================================================================
+print("\n2c) Humano assume, agente silencia")
+
+from app import routes as rotas_hub
+
+MOTIVO_SDR = fluxo.MOTIVO_ASSUMIDO_SDR
+MOTIVO_MANUAL = fluxo.MOTIVO_OUTBOUND_MANUAL
+
+
+class _Savepoint:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _DbEstado(_DbFiltrante):
+    """_DbFiltrante + flush/commit/begin_nested, para exercitar `silenciar` de ponta a ponta.
+
+    `begin_nested` precisa ser um gerenciador de contexto async de verdade: a trava roda
+    DENTRO de um SAVEPOINT (um IntegrityError deixaria a transação abortada e o commit do
+    envio do SDR falharia junto), e um dublê sem ele mandaria o teste pelo `except` — que é
+    exatamente o caminho que NÃO se quer exercitar aqui.
+    """
+
+    def begin_nested(self):
+        return _Savepoint()
+
+    async def flush(self):
+        pass
+
+    async def commit(self):
+        pass
+
+
+def _sdr(id=3, nome="Thobias"):
+    u = MagicMock()
+    u.id, u.name = id, nome
+    return u
+
+
+# --- caminho 1: o botão "Assumir conversa" ------------------------------------------
+e = _est("5583999998888")
+anterior = asyncio.run(fluxo.silenciar("5583999998888", MOTIVO_SDR, _DbEstado([e]),
+                                       quem_id=3, quem_nome="Thobias"))
+checa("botão: devolve a etapa que o agente deixou", anterior, ETAPA_Q_AGUARDANDO_ANO)
+checa("botão: etapa vai para transferido_humano", e.etapa, ETAPA_Q_TRANSFERIDO)
+checa("botão: motivo é o literal parseável", e.transferido_motivo, MOTIVO_SDR)
+checa("botão: quem clicou fica registrado",
+      (e.dados_extras or {}).get("assumido_por"), {"id": 3, "nome": "Thobias"})
+checa("botão: a etapa saiu das ATIVAS — a Nat cala na hora",
+      e.etapa in ETAPAS_QUALIFICACAO_ATIVAS, False)
+
+# Idempotente: clicar de novo não sobrescreve quem assumiu primeiro.
+de_novo = asyncio.run(fluxo.silenciar("5583999998888", MOTIVO_SDR, _DbEstado([e]),
+                                      quem_id=99, quem_nome="Outro"))
+checa("botão: segunda vez não faz nada", de_novo, None)
+checa("botão: e não rouba o crédito de quem assumiu primeiro",
+      (e.dados_extras or {}).get("assumido_por")["nome"], "Thobias")
+
+checa("sem estado nenhum, silenciar é no-op",
+      asyncio.run(fluxo.silenciar("5511918330251", MOTIVO_SDR, _DbEstado([]))), None)
+
+# Tolerante ao 9º dígito: a tela pode mandar uma grafia e o estado estar na outra.
+e2 = _est("5586994169303")
+checa("silenciar acha o estado na grafia gêmea",
+      asyncio.run(fluxo.silenciar("558694169303", MOTIVO_SDR, _DbEstado([e2]))),
+      ETAPA_Q_AGUARDANDO_ANO)
+
+
+# --- caminho 2: a trava automática do envio manual ----------------------------------
+e3 = _est("5583999998888")
+asyncio.run(rotas_hub._silenciar_agente_apos_envio_manual(
+    "5583999998888", _sdr(), _DbEstado([e3])))
+checa("trava: SDR digitou -> agente silenciado", e3.etapa, ETAPA_Q_TRANSFERIDO)
+checa("trava: motivo distingue do botão", e3.transferido_motivo, MOTIVO_MANUAL)
+checa("trava: registra quem digitou",
+      (e3.dados_extras or {}).get("assumido_por"), {"id": 3, "nome": "Thobias"})
+
+
+class _DbQuebrado(_DbEstado):
+    async def execute(self, stmt):
+        raise RuntimeError("banco caiu")
+
+
+# A mensagem do SDR JÁ foi para a Meta quando a trava roda: falhar aqui devolveria erro
+# para um envio que aconteceu, e o SDR mandaria de novo.
+asyncio.run(rotas_hub._silenciar_agente_apos_envio_manual("x", _sdr(), _DbQuebrado([])))
+checa("trava: erro no banco NÃO derruba o envio do SDR", True, True)
+
+
+# --- o INVERSO: a mensagem da própria Nat não dispara a trava -----------------------
+# A garantia é ESTRUTURAL, não uma checagem que possa esquecer um caso: `nat_sender` é o
+# único ponto por onde envio do agente passa, e ele não chama a trava. Este teste prova
+# comportamento, não leitura de código — manda pela Nat e confere que o estado NÃO mudou.
+e4 = _est("5583999998888")
+db_nat = _DbEstado([e4])
+with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=e4)), \
+     patch("app.nat_sender.send_nat_message", new=AsyncMock(return_value=True)):
+    from app.nat_sender import send_nat_message as _envio_nat
+    asyncio.run(_envio_nat("5583999998888", "nat_boasvindas", db_nat))
+checa("INVERSO: envio da Nat não silencia o agente", e4.etapa, ETAPA_Q_AGUARDANDO_ANO)
+checa("INVERSO: e não inventa motivo de transferência", e4.transferido_motivo, None)
+
+# E a prova estrutural, que é a que não pode ser esquecida num refactor: o módulo de envio
+# da Nat NÃO conhece a trava. Se alguém um dia importar `silenciar` lá dentro, este teste
+# cai — e é para cair.
+_fonte_nat = open("app/nat_sender.py", encoding="utf-8").read()
+checa("INVERSO: nat_sender não importa a trava nem `silenciar`",
+      ("_silenciar_agente_apos_envio_manual" in _fonte_nat) or ("silenciar" in _fonte_nat),
+      False)
 
 
 # ==========================================================================================

@@ -385,6 +385,68 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession)
                      f"Motivo: {motivo}", db)
 
 
+# ==========================================================================================
+# HUMANO ASSUME, AGENTE SILENCIA
+# ==========================================================================================
+
+MOTIVO_ASSUMIDO_SDR = "assumido_sdr"
+MOTIVO_OUTBOUND_MANUAL = "outbound_manual_sdr"
+
+
+async def silenciar(contact_wa_id: str, motivo: str, db: AsyncSession, *,
+                    quem_id: int | None = None, quem_nome: str | None = None) -> str | None:
+    """Tira o agente da conversa AGORA. Devolve a etapa que ele deixou, ou None.
+
+    Duas portas chamam isto:
+      * o botão "Assumir conversa" (`nat_routes.assumir_conversa`), quando o SDR decide;
+      * a trava automática (`routes._silenciar_agente_apos_envio_manual`), quando o SDR
+        simplesmente digita — que é como a maioria vai acontecer, porque ninguém lembra de
+        clicar num botão antes de responder.
+
+    É PARENTE DE `_fallback`, MAS NÃO É ELE, e a diferença é o ponto da sprint:
+
+        _fallback   o agente desistiu -> manda uma despedida ao lead e avisa o SDR
+        silenciar   o humano chegou   -> NÃO manda NADA e NÃO avisa NINGUÉM
+
+    Mandar a despedida aqui seria o defeito que esta sprint existe para impedir: o SDR digita
+    "oi, sou o Thobias" e o lead recebe, logo depois, "vou te passar para um humano". Duas
+    vozes na mesma thread, uma delas dizendo que vai fazer o que a outra acabou de fazer.
+    E notificar tampouco: quem seria notificado é justamente quem acabou de agir.
+
+    IDEMPOTENTE e SILENCIOSA no caso comum: sem estado, ou em etapa que já não é ativa,
+    devolve None sem tocar em nada. É o que permite chamá-la de dentro de todo envio manual
+    sem transformar cada mensagem de SDR numa escrita no banco.
+
+    Tolerante ao 9º dígito por vir de `estado_de` — o wa_id da tela e o do estado podem estar
+    em grafias diferentes (ver `app/telefone.py`).
+
+    QUEM assumiu vai para `dados_extras`, não para coluna nova. `transferido_motivo` guarda o
+    motivo literal e parseável que o produto pediu (`assumido_sdr`), e enfiar o nome junto
+    ("assumido_sdr por Fulano") tornaria a coluna impossível de agrupar em relatório. Coluna
+    nova exigiria migração numa tabela que ESTÁ EM PRODUÇÃO com o agente no ar — atrito
+    desproporcional para um campo de auditoria. Se virar consulta frequente, promove-se a
+    coluna depois.
+    """
+    estado = await estado_de(contact_wa_id, db)
+    if estado is None or estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
+        return None
+
+    anterior = estado.etapa
+    estado.etapa = ETAPA_Q_TRANSFERIDO
+    estado.transferido_em = _agora_sp()
+    estado.transferido_motivo = motivo
+    if quem_id is not None or quem_nome:
+        extras = dict(estado.dados_extras or {})
+        extras["assumido_por"] = {"id": quem_id, "nome": quem_nome}
+        estado.dados_extras = extras
+    await db.flush()
+
+    print(f"🤝 Agente silenciado em {estado.contact_wa_id}: {anterior} → "
+          f"{ETAPA_Q_TRANSFERIDO} (motivo={motivo}"
+          + (f", por {quem_nome}" if quem_nome else "") + ")")
+    return anterior
+
+
 def _guardar_dado(estado: NatQualificacaoState, extraido: dict | None) -> None:
     """Grava o que o LLM extraiu. Campo conhecido vira coluna; o resto vira JSONB."""
     if not extraido:
