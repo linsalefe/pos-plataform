@@ -203,7 +203,7 @@ auditoria: UTC. Um único `datetime.utcnow()` usado nos dois lugares erra num de
 
 Corolário do lado de cá: **nada neste projeto chama `date.today()` ou `datetime.now()` sem
 fuso** — inclusive teste. Um E2E já falhou por isso: rodando 00:0x UTC, `date.today()` dava um
-dia a mais que `agora_sp().date()` e o horizonte da grade saiu curto (FINDINGS §12).
+dia a mais que `agora_sp().date()` e a janela da grade saiu curta (FINDINGS §12).
 
 ### 2.5 `scheduleAdd` é irreversível → remarcação sai pelo WhatsApp
 
@@ -285,24 +285,75 @@ de ser "livre ou ocupado" e passa a ser "livre **para quem**".
   consultora livre. **O `BoxesAdd` continua sendo o lock — agora são N locks independentes, um
   por agenda, e perder um não é perder o horário.**
 
-**A grade comum foi validada contra os blocos reais.** A primeira proposta foi descartada: ela
-tinha sido montada para Rodrigues + Marina, e com a entrada da Amorim passou a bater em quatro
-blocos recorrentes dela. A grade atual usa uma **rede comum** (09:00 + múltiplos de 45 min)
-para que os horários das duas coincidam — assim a união fica limpa na tela e o retry vale para
-o mesmo horário, em vez de gerar opções em horários quebrados:
+**A grade deixou de ser desenhada à mão (25/08/2026).** Até então ela era recortada para caber
+nas lacunas dos blocos recorrentes das duas (`10:30–12:00` + `15:45–18:00`, 5 horários/dia).
+Hoje ela é o **horário comercial inteiro** — seg–sex `09:00–18:30`, passo de 45 min, 12
+horários/dia (`09:00 … 17:15`; o rabo `18:00–18:30` é curto demais para um slot) — e quem
+recorta a colisão é `disponibilidade`, por consultora e ao vivo.
 
-```
-seg–sex   10:30–12:00  +  15:45–18:00
-→ 10:30 · 11:15 · 15:45 · 16:30 · 17:15      (5 horários/dia, 47 vagas/semana)
-```
+O motivo é que janela desenhada à mão é uma **foto**: envelhece na primeira vez que a
+consultora mexe na agenda, e envelhece em silêncio (`Boxes are occupied` no visitante). E com
+duas agendas diferentes, a interseção das lacunas custava capacidade.
 
-| opção | união/sem | com retry | capacidade |
-|---|---|---|---|
-| **A — escolhida** | 25 | **22 (88%)** | 47/sem |
-| B (`09:45–12:00` + `15:00–18:00`) | 34 | 23 (67%) | 57/sem |
+Medido contra os blocos reais lidos em 25/08/2026 (`GET /Boxes`, −45/+45 d):
+
+| | grade recortada (até 24/08) | comercial inteiro (hoje) |
+|---|---|---|
+| horários/dia (teórico) | 5 | **12** |
+| união/semana | 25 | **59** |
+| capacidade | 47 vagas/sem | **88 vagas/sem** |
+| com retry (as duas livres) | 22 (**88%**) | 29 (**49%**) |
+
+**O que a colisão custa agora é retry, não erro.** Um horário em que só uma está livre continua
+sendo oferecido — é a união — mas se o `BoxesAdd` dela recusar não há segunda tentativa. Um
+único slot da semana some da união inteira: **segunda 15:00** (Amorim `15:00–15:45` e Rodrigues
+`15:00–16:00` ao mesmo tempo).
+
+Os buracos por colisão, por consultora:
+
+| | slots que a colisão come |
+|---|---|
+| **Amorim** | `09:00` e `09:45` seg–qui (bloco 09:00–10:10) · `09:00` sex (08:00–09:10) · `13:30` e `14:15` todo dia (13:30–14:30) · `15:00` todo dia (15:00–15:45) · **terça `10:30` a `14:15` inteiros** (10:10–13:30) |
+| **Rodrigues** | segunda `12:00` e `12:45` (12:00–13:30) · segunda `15:00` e `15:45` (15:00–16:00) |
+
+Isso deixa a **terça** como o pior dia: 12 horários na união, mas só 3 com retry (25%) — a
+Amorim tem a manhã inteira bloqueada. Sexta é o melhor: 8 dos 12 com retry (66%).
 
 Janelas **idênticas** para as duas — não é preciso grade por dia da semana, porque o `/slots`
 subtrai os blocos reais de cada uma ao vivo.
+
+### 2.7.1 A janela é curta de propósito: hoje + D+1 + D+2
+
+`AGENDAMENTO_JANELA_DIAS` conta **dias corridos de calendário, hoje incluído**. O horizonte de
+14 dias morreu em 25/08/2026. Dentro de hoje, a antecedência mínima de 2h continua valendo.
+
+Fim de semana não tem grade, e a janela **não se estica** para compensar:
+
+| cadastro | dias úteis alcançados | slots ofertados |
+|---|---|---|
+| segunda 09h | seg, ter, qua | 32 |
+| terça 09h | ter, qua, qui | 33 |
+| quinta 09h | qui, sex | 21 |
+| sexta 09h | sex | 9 |
+| **sexta 15h** | sex | **1** (só o 17:15) |
+| **sexta 15:15 em diante** | nenhum | **0 → `fallback:true`** |
+| sábado | seg (D+2) | 11 |
+| domingo | seg, ter | 23 |
+
+⚠️ **O buraco conhecido:** de sexta 15:15 até a meia-noite de sábado (~9 h/semana) a janela não
+alcança dia útil nenhum, o `/slots` volta vazio com `fallback:true` e a LP cai no "deixe seu
+contato". É o degrade correto e já existia (feriado, agenda lotada, todas fora de rotação) — o
+que mudou é que agora ele tem causa **previsível e semanal**. Com o horizonte de 14 dias isso
+nunca acontecia. `AGENDAMENTO_JANELA_DIAS=4` fecha esse buraco (sexta passa a enxergar a
+segunda) sem tocar em código; é uma linha do `.env` mais restart.
+
+Contar dias corridos em vez de dias úteis é decisão: a promessa ao lead é "a gente fala com
+você nos próximos dias", e uma janela que anda para trás no fim de semana faria a oferta de
+sexta ser mais longa que a de segunda sem ninguém ter pedido.
+
+**Não há calendário de feriados.** Feriado nacional dentro da janela é ofertado normalmente e o
+box é criado — isso já era verdade com 14 dias, mas com 3 o efeito é maior: um feriado pode
+consumir metade da oferta. Se virar problema recorrente, é sprint própria.
 
 ⚠️ **Um bug que já aconteceu aqui:** a subtração dos nossos agendamentos em voo era **global**,
 escrita quando havia uma consultora só. Com duas, um horário reservado com a Amorim sumia
@@ -557,15 +608,19 @@ vale ter histórico de quando mudou, e não contém segredo (e-mails internos, n
 [
   { "email": "comercial@cenatcursos.com.br",
     "nome_exibicao": "Victória Amorim",
-    "grade": { "janelas": { "0": [["10:30","12:00"], ["15:45","18:00"]], /* 1..4 */ } } }
+    "grade": { "janelas": { "0": [["09:00","18:30"]], /* 1..4 iguais */ } } }
 ]
 ```
 
 Chaves de `janelas`: `0` = segunda … `6` = domingo (padrão `date.weekday()`). O que não vier é
-herdado de `GRADE_PADRAO` — na prática só `janelas` varia, porque duração (45 min), antecedência
-(2h) e horizonte (14 dias) são política do produto, não da pessoa. O `sales_rep_email` de dentro
-da grade é **ignorado** e sobrescrito pelo `email` da consultora: duas fontes para o mesmo dado
-é convite para divergirem.
+herdado de `GRADE_PADRAO` — na prática só `janelas` varia, porque duração (45 min) e
+antecedência (2h) são política do produto, não da pessoa. A **janela** (`janela_dias`) nem mora
+aqui: é `AGENDAMENTO_JANELA_DIAS`, uma linha para o produto inteiro (precedência: `janela_dias`
+explícito na config > env > padrão 3). O `sales_rep_email` de dentro da grade é **ignorado** e
+sobrescrito pelo `email` da consultora: duas fontes para o mesmo dado é convite para divergirem.
+
+⚠️ `horizonte_dias` é **chave morta** desde 25/08/2026. Deixá-la na config não faz nada além de
+um aviso no boot — quem a escreveu acha que está ofertando 14 dias e vai ver 3.
 
 **Config por arquivo e não por JSON inline** porque o `.env` é `EnvironmentFile` do systemd
 além de ser lido pelo dotenv, e o parser do systemd é mais restrito — uma linha com JSON entre
@@ -574,8 +629,9 @@ aspas pode impedir o serviço de subir, derrubando o Hub, o webhook da Meta e a 
 Depois de editar: **restart**. A config é cacheada em singleton preguiçoso, e recarregar exige
 reiniciar o processo.
 
-**Antes de mudar janelas, confira os blocos reais** da consultora — a grade precisa viver nas
-lacunas, senão o `BoxesAdd` bate neles:
+**A grade não precisa mais fugir dos blocos** (2.7) — a subtração ao vivo cuida disso. Mas vale
+conferir os blocos reais antes de mudar janelas, porque é o que decide quanta **cobertura de
+retry** a mudança custa:
 
 ```bash
 curl -s "https://api.exactspotter.com/v3/Boxes?\$top=500&\$filter=salesRepEmail%20eq%20'EMAIL'%20and%20start%20ge%20'2026-08-01T00:00:00Z'" -H "$H"
@@ -782,6 +838,7 @@ delas é segredo; o token da Exact é `EXACT_SPOTTER_TOKEN`, que **não** perten
 | `AGENDAMENTO_SOURCE` | `"Landing Page"` | `Rd Marketing` (o source antigo, de propósito) |
 | `AGENDAMENTO_SUBSOURCES` | `"PosMulheridades,Pos TEA V3,…"` | as 3 origens antigas |
 | `AGENDAMENTO_SUBSOURCE_PADRAO` | `"PosMulheridades"` | `PosPraticasDialogicasTurma1` |
+| `AGENDAMENTO_JANELA_DIAS` | `3` (hoje + D+1 + D+2) | `3` |
 | `AGENDAMENTO_CONSULTORAS_PATH` | `/home/ubuntu/pos-plataform/backend/consultoras.json` | — |
 | `AGENDAMENTO_CONSULTORAS` | JSON inline (tem precedência sobre o `_PATH`) | consultora única |
 | `AGENDAMENTO_GRADE_PATH` / `_JSON` | grade global, sem consultoras | `GRADE_PADRAO` |
@@ -794,7 +851,8 @@ da allowlist, então um valor que *contenha* vírgula quebraria (nunca foi preci
 
 Config inválida **nunca derruba o processo**: grade ilegível cai no padrão e grita no log, JSON
 de consultoras inválido cai na consultora única, `FUNIL_DESTINO` ilegível desliga o passo 4 com
-aviso. Derrubar o backend inteiro por causa de uma vírgula num env seria pior — ele serve o
+aviso, `JANELA_DIAS` não-inteiro ou menor que 1 volta para 3 (uma janela de 0 apagaria o
+`/slots` inteiro em silêncio). Derrubar o backend inteiro por causa de uma vírgula num env seria pior — ele serve o
 Hub, o webhook da Meta e a NAT.
 
 ### 4.3 Tabela `agendamentos`
@@ -926,9 +984,11 @@ Padrão (quando a LP não manda `origem`): `PosMulheridades`.
 | Victória Amorim | `comercial@cenatcursos.com.br` | 415967 |
 | Victória Rodrigues | `processoseletivo@cenatcursos.com.br` | 430634 |
 
-Grade idêntica para as duas — **seg–sex, 10:30–12:00 e 15:45–18:00**, reuniões de 45 min:
-`10:30 · 11:15 · 15:45 · 16:30 · 17:15`. Antecedência mínima 2h, horizonte 14 dias, `type_meeting: web`.
-Capacidade 47 vagas/semana; 88% dos horários têm retry (as duas livres).
+Grade idêntica para as duas — **seg–sex, 09:00–18:30**, reuniões de 45 min, 12 horários/dia:
+`09:00 · 09:45 · 10:30 · 11:15 · 12:00 · 12:45 · 13:30 · 14:15 · 15:00 · 15:45 · 16:30 · 17:15`.
+Antecedência mínima 2h, **janela de 3 dias corridos** (hoje + D+1 + D+2), `type_meeting: web`.
+Capacidade 88 vagas/semana, união de 59 horários/semana; 49% deles têm retry (as duas livres).
+Ver 2.7 para os buracos por colisão e 2.7.1 para o que a janela curta alcança.
 
 Fora de rotação: **Marina** (`executivadecarreiras@`, id 448892) está ativa em `/Sellers` mas
 não está no `consultoras.json` — agenda praticamente vazia, 0 reuniões em 90 dias.
@@ -970,9 +1030,13 @@ Log de boot esperado:
   decisão de código**.
 - **RD Marketing.** A conversão das origens antigas via API ficou pendente, conforme combinado.
   Nada foi tocado.
-- **Grade opção B** (`09:45–12:00` + `15:00–18:00`) fica registrada como alternativa: +21% de
-  capacidade (57 vagas/sem) ao custo de derrubar o retry de 88% para 67%. Trocar é editar o
-  `consultoras.json` e reiniciar.
+- **Janela de 3 vs 4 dias.** Com 3, sexta a partir das 15:15 não alcança dia útil nenhum e a LP
+  cai no fallback até sábado à meia-noite (~9 h/semana). `AGENDAMENTO_JANELA_DIAS=4` fecha o
+  buraco ao custo de ofertar mais longe. Uma linha do `.env` + restart (2.7.1).
+- **Cobertura de retry em 49%.** É o preço medido de ofertar o comercial inteiro (2.7). Se
+  `Boxes are occupied` começar a aparecer no log com frequência, a saída não é encolher a grade
+  de volta: é rever os blocos recorrentes com as consultoras. A terça da Amorim
+  (`10:10–13:30`) sozinha responde por boa parte do buraco.
 
 **Dívida técnica:**
 
@@ -1017,3 +1081,4 @@ Log de boot esperado:
 | 18/08 | passo 4 opcional (`ChangeFunnel`), desligado (§15) |
 | 18/08 | source `Landing Page` + as 12 primeiras origens (§16) |
 | 18/08 | 13ª origem: `Pos Enfermagem em Saude Mental` (§17) |
+| 25/08 | janela de 3 dias corridos (o horizonte de 14 dias morreu) + grade no comercial inteiro 09:00–18:30, com os números recalculados contra os blocos reais (`AGENDAMENTO_JANELA_GRADE_20260825.md`) |

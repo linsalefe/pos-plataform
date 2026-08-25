@@ -129,6 +129,24 @@ ctx = llm.montar_contexto({"Curso": "TEA", "Formação": None, "Vazio": "",
 checa("contexto OMITE campo vazio (não vira 'não informado')", "Formação" in ctx, False)
 checa("contexto lista horários", "  - ter 10:30" in ctx, True)
 
+# --- a amostra de horários do dia cobre a tarde ---------------------------------------
+# Isto era `[:6]` e virou defeito em 25/08/2026, quando a grade passou de 5 para 12
+# horários por dia (09:00–18:30): os seis PRIMEIROS de doze são todos antes das 13:00, e o
+# agente deixaria de oferecer tarde — sem erro nenhum, com a tarde inteira livre.
+DOZE = [{"hora": h} for h in ["09:00", "09:45", "10:30", "11:15", "12:00", "12:45",
+                              "13:30", "14:15", "15:00", "15:45", "16:30", "17:15"]]
+amostra = [h["hora"] for h in fluxo._espalhados(DOZE, 6)]
+checa("6 de 12 saem espalhados, não os 6 primeiros", amostra,
+      ["09:00", "10:30", "12:00", "14:15", "15:45", "17:15"])
+checa("o primeiro e o último do dia sempre entram",
+      (amostra[0], amostra[-1]), ("09:00", "17:15"))
+checa("tem pelo menos um horário depois do almoço",
+      any(h >= "13:00" for h in amostra), True)
+checa("dia mais curto que a amostra volta inteiro",
+      [h["hora"] for h in fluxo._espalhados(DOZE[:4], 6)],
+      ["09:00", "09:45", "10:30", "11:15"])
+checa("dia vazio não explode", fluxo._espalhados([], 6), [])
+
 
 # ==========================================================================================
 print("\n3) Máquina de etapas — só código muda etapa")

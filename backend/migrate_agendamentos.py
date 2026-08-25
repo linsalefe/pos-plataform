@@ -44,7 +44,7 @@ NOTAS DE SCHEMA
     e não tem por que ser indexada.
 
   * Índice `(slot_inicio)` — é a consulta de disponibilidade, que subtrai os slots já tomados
-    por nós dentro do horizonte de 14 dias.
+    por nós dentro da janela ofertada (hoje + D+1 + D+2 desde 25/08/2026).
 
   * `origem_ip` VARCHAR(45): comprimento de um IPv6 em texto. Guardado para investigar abuso
     na LP pública, não para rate limit (esse é em memória, ver `agendamento/routes.py`).

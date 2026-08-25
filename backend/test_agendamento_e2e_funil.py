@@ -35,9 +35,10 @@ ALVO = date(2027, 5, 19)       # quarta distante
 HORA_INICIO, HORA_FIM = "10:00", "10:45"
 
 
-def _horizonte_ate(alvo):
+def _janela_ate(alvo):
+    """Dias de HOJE até o alvo, inclusive, no fuso de SP. Ver test_agendamento_e2e.py."""
     from app.agendamento.horarios import agora_sp
-    return (alvo - agora_sp().date()).days
+    return (alvo - agora_sp().date()).days + 1
 
 
 def _preparar():
@@ -45,7 +46,7 @@ def _preparar():
     os.environ["AGENDAMENTO_CONSULTORAS"] = json.dumps([{
         "email": CONSULTORA, "nome_exibicao": "Consultora Teste",
         "grade": {"duracao_min": 45, "antecedencia_min_horas": 2,
-                  "horizonte_dias": _horizonte_ate(ALVO), "type_meeting": "web",
+                  "janela_dias": _janela_ate(ALVO), "type_meeting": "web",
                   "janelas": {"2": [[HORA_INICIO, HORA_FIM]]}}}])
     os.environ["AGENDAMENTO_FUNIL_DESTINO"] = str(STAGE_VENDAS)
 

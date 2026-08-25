@@ -5,7 +5,7 @@ Rodar: cd backend && venv/bin/python test_agendamento.py
 Nenhuma conexão: a Exact é mockada e o banco é dublê em memória. Nada é criado na agenda
 real, nenhum lead é cadastrado.
 
-   1. grade: 6 slots por dia útil, nada no fim de semana, antecedência respeitada
+   1. grade: 12 slots por dia útil, nada no fim de semana, antecedência respeitada
    2. fuso: para_exact NÃO converte para UTC — é este teste que trava o erro de 3 horas
    3. slot_por_id recusa horário forjado que não está na grade
    4. disponibilidade subtrai bloco sobreposto; encostar não é sobrepor
@@ -37,11 +37,13 @@ real, nenhum lead é cadastrado.
   29. passo 4 é não-fatal: transferência falha e o agendamento continua válido
   30. allowlist com espaço no CSV; source configurável chega ao LeadsAdd
   31. validação de origens pega source inexistente e subSource fora do source
+  32. janela: hoje+D+1+D+2, fim de semana não estica, env e valor ruim
+  33. janela seca (sexta à tarde) -> /slots vazio e a LP cai no fallback
 """
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agendamento import agendar as fluxo
@@ -68,8 +70,22 @@ TELEFONE = "11999998888"
 for _v in ("AGENDAMENTO_CONSULTORAS", "AGENDAMENTO_CONSULTORAS_PATH",
            "AGENDAMENTO_GRADE_JSON", "AGENDAMENTO_GRADE_PATH",
            "AGENDAMENTO_FUNIL_DESTINO", "AGENDAMENTO_SUBSOURCES",
-           "AGENDAMENTO_SUBSOURCE_PADRAO"):
+           "AGENDAMENTO_SUBSOURCE_PADRAO", "AGENDAMENTO_JANELA_DIAS"):
     os.environ.pop(_v, None)
+
+# ------------------------------------------------------------------------------------------
+# E A SUÍTE TAMBÉM NÃO PODE DEPENDER DO DIA EM QUE RODA
+# ------------------------------------------------------------------------------------------
+# Com a janela de produção (3 dias corridos), `slots_candidatos()` volta VAZIA numa sexta
+# depois das 15:15 — e ~20 casos daqui pedem "o primeiro slot da grade" para exercitar o
+# FLUXO, que não tem nada a ver com janela. Rodar a suíte na sexta à tarde faria todos eles
+# quebrarem por um motivo que nenhum deles testa.
+#
+# Então o fluxo roda com uma janela larga o bastante para sempre alcançar um dia útil, e a
+# REGRA da janela é testada à parte, com relógio congelado (casos 32 e 33) — que é o único
+# jeito de afirmar "sábado enxerga só a segunda" sem esperar dar sábado.
+JANELA_DOS_TESTES = "7"
+os.environ["AGENDAMENTO_JANELA_DIAS"] = JANELA_DOS_TESTES
 
 
 class _DbFalso:
@@ -123,27 +139,34 @@ def _slot_valido():
 
 
 async def caso_1_grade():
+    """A grade é o comercial inteiro: 09:00–18:30 em passo de 45 min, seg–sex."""
     g = recarregar()
     qua = g.slots_do_dia(datetime(2026, 8, 19).date())
     sab = g.slots_do_dia(datetime(2026, 8, 22).date())
 
-    horas = [(s.inicio.strftime("%H:%M"), s.fim.strftime("%H:%M")) for s in qua]
-    assert horas == [("10:15", "11:00"), ("11:00", "11:45"), ("11:45", "12:30"),
-                     ("12:30", "13:15"), ("16:00", "16:45"), ("16:45", "17:30")], horas
+    horas = [s.inicio.strftime("%H:%M") for s in qua]
+    assert horas == ["09:00", "09:45", "10:30", "11:15", "12:00", "12:45",
+                     "13:30", "14:15", "15:00", "15:45", "16:30", "17:15"], horas
+    # 18:00–18:45 estouraria as 18:30: o rabo de 30 min não vira slot.
+    assert qua[-1].fim == datetime(2026, 8, 19, 18, 0), qua[-1].fim
     assert sab == [], f"fim de semana não devia ter slot: {sab}"
 
-    # Nenhum slot encosta nos blocos reais de comercial@ (09:00-10:10, 13:30-14:30,
-    # 15:00-15:45). Se encostasse, o BoxesAdd recusaria com "Boxes are occupied".
-    for s in qua:
-        for bi, bf in [("09:00", "10:10"), ("13:30", "14:30"), ("15:00", "15:45")]:
-            assert not (s.inicio.strftime("%H:%M") < bf and bi < s.fim.strftime("%H:%M")), \
-                f"slot {s.id} colide com o bloco {bi}-{bf}"
+    # ATENÇÃO, e é mudança de 25/08/2026: a grade AGORA COLIDE com os blocos recorrentes de
+    # propósito — 09:00, 13:30, 14:15 e 15:00 batem nos blocos de comercial@. Quem recorta é
+    # `disponibilidade`, por consultora e ao vivo (caso 4). O teste que exigia grade sem
+    # colisão morreu junto com a grade desenhada à mão; o que sobrevive é a garantia de que
+    # a colisão é REMOVIDA antes de virar oferta, e isso o caso 4 trava.
+    colidem = {s.inicio.strftime("%H:%M") for s in qua
+               for bi, bf in [("09:00", "10:10"), ("13:30", "14:30"), ("15:00", "15:45")]
+               if s.inicio.strftime("%H:%M") < bf and bi < s.fim.strftime("%H:%M")}
+    assert colidem == {"09:00", "09:45", "13:30", "14:15", "15:00"}, colidem
 
     agora = datetime(2026, 8, 19, 11, 0)
     cand = g.slots_candidatos(agora=agora)
     assert all(s.inicio >= agora + timedelta(hours=2) for s in cand), "antecedência furada"
-    assert cand[0].inicio == datetime(2026, 8, 19, 13, 0) or cand[0].inicio.hour >= 13, cand[0].id
-    print(f"  1. 6 slots por dia útil, 0 no sábado, {len(cand)} candidatos com 2h de antecedência")
+    assert cand[0].inicio == datetime(2026, 8, 19, 13, 30), cand[0].id
+    print(f"  1. 12 slots por dia útil (09:00–17:15), 0 no sábado, "
+          f"{len(cand)} candidatos com 2h de antecedência")
 
 
 async def caso_2_fuso_nao_converte():
@@ -1205,6 +1228,125 @@ async def caso_31_validacao_de_origens():
             os.environ.pop(v, None)
 
 
+async def caso_32_janela_de_tres_dias():
+    """A janela conta DIAS CORRIDOS com hoje dentro, e não estica no fim de semana.
+
+    Relógio congelado do começo ao fim: é o único jeito de afirmar "sábado enxerga só a
+    segunda" sem esperar dar sábado. Nenhum destes asserts depende do dia em que a suíte roda.
+    """
+    from app.agendamento.grade import JANELA_DIAS_PADRAO, Grade, _carregar_cfg
+
+    def _dias(agora, **env):
+        anterior = os.environ.get("AGENDAMENTO_JANELA_DIAS")
+        for k, v in env.items():
+            os.environ[k] = v
+        try:
+            g = Grade(_carregar_cfg())
+            return g, sorted({s.inicio.date() for s in g.slots_candidatos(agora=agora)})
+        finally:
+            if anterior is None:
+                os.environ.pop("AGENDAMENTO_JANELA_DIAS", None)
+            else:
+                os.environ["AGENDAMENTO_JANELA_DIAS"] = anterior
+
+    seg, ter, qua = date(2026, 8, 24), date(2026, 8, 25), date(2026, 8, 26)
+    qui, sex, sab, dom = date(2026, 8, 27), date(2026, 8, 28), date(2026, 8, 29), date(2026, 8, 30)
+    assert seg.weekday() == 0 and dom.weekday() == 6, "as datas do caso saíram do lugar"
+
+    # Segunda de manhã: hoje + D+1 + D+2. Quinta está FORA — o horizonte de 14 dias morreu.
+    g, vistos = _dias(datetime(2026, 8, 24, 9, 0), AGENDAMENTO_JANELA_DIAS="3")
+    assert g.janela_dias == 3, g.janela_dias
+    assert vistos == [seg, ter, qua], vistos
+    assert qui not in vistos, "ofertou D+3"
+
+    # Antecedência de 2h continua valendo DENTRO de hoje: às 09:00 o primeiro é 11:15.
+    hoje = [s for s in g.slots_candidatos(agora=datetime(2026, 8, 24, 9, 0))
+            if s.inicio.date() == seg]
+    assert hoje[0].inicio == datetime(2026, 8, 24, 11, 15), hoje[0].id
+    assert len(hoje) == 9, len(hoje)
+
+    # Sexta de manhã: sábado e domingo não têm grade, e a janela NÃO se estica até segunda.
+    _, vistos = _dias(datetime(2026, 8, 28, 9, 0), AGENDAMENTO_JANELA_DIAS="3")
+    assert vistos == [sex], vistos
+
+    # Sexta 16:00: o último slot é 17:15 e precisa de 2h. Janela SECA — é o caso 33.
+    _, vistos = _dias(datetime(2026, 8, 28, 16, 0), AGENDAMENTO_JANELA_DIAS="3")
+    assert vistos == [], vistos
+
+    # Sábado: D+2 é a segunda, e é só ela. Domingo: segunda + terça.
+    _, vistos = _dias(datetime(2026, 8, 29, 10, 0), AGENDAMENTO_JANELA_DIAS="3")
+    assert vistos == [seg + timedelta(days=7)], vistos
+    _, vistos = _dias(datetime(2026, 8, 30, 10, 0), AGENDAMENTO_JANELA_DIAS="3")
+    assert vistos == [seg + timedelta(days=7), ter + timedelta(days=7)], vistos
+
+    # Janela de 1 dia = só hoje.
+    _, vistos = _dias(datetime(2026, 8, 24, 9, 0), AGENDAMENTO_JANELA_DIAS="1")
+    assert vistos == [seg], vistos
+
+    # Env ruim NÃO derruba e NÃO apaga a grade: cai no padrão, como toda config deste módulo.
+    for ruim in ("zero", "0", "-3", ""):
+        g, vistos = _dias(datetime(2026, 8, 24, 9, 0), AGENDAMENTO_JANELA_DIAS=ruim)
+        assert g.janela_dias == JANELA_DIAS_PADRAO, (ruim, g.janela_dias)
+        assert vistos == [seg, ter, qua], (ruim, vistos)
+
+    # Config explícita vence o env — é o que deixa um E2E alcançar data distante sem tocar
+    # no ambiente do servidor.
+    os.environ["AGENDAMENTO_JANELA_DIAS"] = "3"
+    try:
+        g = Grade({**_carregar_cfg(), "janela_dias": 30})
+        assert g.janela_dias == 30, g.janela_dias
+    finally:
+        os.environ["AGENDAMENTO_JANELA_DIAS"] = JANELA_DOS_TESTES
+
+    # `horizonte_dias` é chave morta: ignorada, e com aviso (nunca em silêncio).
+    g = Grade({**_carregar_cfg(), "horizonte_dias": 14})
+    assert g.janela_dias == int(JANELA_DOS_TESTES), g.janela_dias
+
+    print("  32. janela: seg vê seg/ter/qua, sex vê só sex, sáb vê só seg, env ruim cai no padrão")
+
+
+async def caso_33_janela_seca_cai_no_fallback():
+    """Sexta 16:00 com janela de 3 dias: `/slots` volta vazio e a LP mostra o cadastro.
+
+    É o degrade que já existia (feriado, agenda lotada, todas fora de rotação) — o que muda é
+    que agora ele tem uma causa NOVA e previsível, toda sexta à tarde. Este caso existe para
+    garantir que o caminho continua respondendo 200 com `fallback:true`, e não um 500.
+    """
+    from app.agendamento import routes
+
+    try:
+        _com_duas()
+        os.environ["AGENDAMENTO_JANELA_DIAS"] = "3"
+        equipe_mod.recarregar()
+        disponibilidade.invalidar_cache()
+
+        req = MagicMock()
+        req.headers.get.return_value = "203.0.113.9"
+        routes._baldes.clear()
+
+        sexta_tarde = datetime(2026, 8, 28, 16, 0)
+        with patch("app.agendamento.grade.agora_sp", return_value=sexta_tarde), \
+             patch.object(client, "listar_boxes", AsyncMock(return_value=[])):
+            r = await routes.listar_slots(req, _DbFalso())
+
+        assert r["dias"] == {}, r
+        assert r["fallback"] is True, r
+        assert "horários" in r["mensagem"], r
+        # E o caminho vazio NÃO pode falar com a Exact: sem slot candidato não há período
+        # para consultar, e uma chamada aqui seria desperdício de rate limit toda sexta.
+        with patch("app.agendamento.grade.agora_sp", return_value=sexta_tarde), \
+             patch.object(client, "listar_boxes", AsyncMock()) as lb:
+            disponibilidade.invalidar_cache()
+            await disponibilidade.slots_livres(_DbFalso(), usar_cache=False)
+        lb.assert_not_awaited()
+    finally:
+        os.environ["AGENDAMENTO_JANELA_DIAS"] = JANELA_DOS_TESTES
+        _sem_consultoras()
+        disponibilidade.invalidar_cache()
+        routes._baldes.clear()
+    print("  33. janela seca -> 200 com fallback:true, sem nenhuma chamada à Exact")
+
+
 async def main():
     print("\nMódulo de agendamento — Exact mockada, banco dublê, nada real\n")
     await caso_1_grade()
@@ -1238,7 +1380,9 @@ async def main():
     await caso_29_passo4_nunca_desfaz()
     await caso_30_allowlist_com_espaco_e_source()
     await caso_31_validacao_de_origens()
-    print("\nOK: 31/31 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
+    await caso_32_janela_de_tres_dias()
+    await caso_33_janela_seca_cai_no_fallback()
+    print("\nOK: 33/33 passaram. Nenhum box criado, nenhum lead cadastrado.\n")
 
 
 if __name__ == "__main__":

@@ -43,35 +43,39 @@ HORA_INICIO = "14:00"
 HORA_FIM = "14:45"
 
 
-def _horizonte_ate(alvo):
-    """Dias de hoje até o alvo, contados NO FUSO DE SÃO PAULO.
+def _janela_ate(alvo):
+    """Dias de HOJE até o alvo, inclusive, contados NO FUSO DE SÃO PAULO.
 
     `date.today()` usa a hora do sistema, que aqui é UTC. A grade conta os dias a partir de
-    `agora_sp()`. Entre 21:00 e 00:00 de São Paulo os dois JÁ ESTÃO EM DIAS DIFERENTES, e o
-    horizonte sai um dia curto — o alvo simplesmente não aparece em `slots_candidatos()`, e
-    o teste morre com "esperava 1 slot, achei 0" sem nada a ver com o que ele testa.
+    `agora_sp()`. Entre 21:00 e 00:00 de São Paulo os dois JÁ ESTÃO EM DIAS DIFERENTES, e a
+    janela sai um dia curta — o alvo simplesmente não aparece em `slots_candidatos()`, e o
+    teste morre com "esperava 1 slot, achei 0" sem nada a ver com o que ele testa.
 
     É a mesma classe de erro que o módulo inteiro existe para evitar (FINDINGS §1), só que
     do lado do teste. Medido de verdade: rodando 00:0x UTC, `date.today()` dava 2026-08-18 e
     `agora_sp().date()` dava 2026-08-17.
+
+    O `+ 1` é a janela contando HOJE como dia 1 (grade.py: `range(janela_dias)`). E
+    `janela_dias` vai EXPLÍCITO na config de propósito: assim o `AGENDAMENTO_JANELA_DIAS=3`
+    do servidor não encurta a janela deste teste para três dias e some com o alvo.
     """
     from app.agendamento.horarios import agora_sp
-    return (alvo - agora_sp().date()).days
+    return (alvo - agora_sp().date()).days + 1
 
 
 def _preparar_grade():
     """Grade de um slot só, na quinta distante. Precisa vir ANTES de importar o módulo."""
     assert ALVO.weekday() == 3, f"{ALVO} não é quinta-feira"
-    horizonte = _horizonte_ate(ALVO)
+    janela = _janela_ate(ALVO)
     os.environ["AGENDAMENTO_GRADE_JSON"] = json.dumps({
         "sales_rep_email": "comercial@cenatcursos.com.br",
         "duracao_min": 45,
         "antecedencia_min_horas": 2,
-        "horizonte_dias": horizonte,
+        "janela_dias": janela,
         "type_meeting": "web",
         "janelas": {"3": [[HORA_INICIO, HORA_FIM]]},
     })
-    return horizonte
+    return janela
 
 
 async def _contar_leads(client, telefone: str) -> list[dict]:
@@ -93,7 +97,7 @@ async def main():
         print("Recusado: falta --sim-eu-quero. Este teste escreve na Exact de PRODUÇÃO.")
         return 1
 
-    horizonte = _preparar_grade()
+    janela = _preparar_grade()
 
     from sqlalchemy import delete, select
 
@@ -107,7 +111,7 @@ async def main():
     alvo = [s for s in g.slots_candidatos() if s.inicio.date() == ALVO]
     assert len(alvo) == 1, f"esperava 1 slot em {ALVO}, achei {len(alvo)}"
     slot = alvo[0]
-    print(f"\nE2E do fluxo de DUAS ETAPAS — horizonte {horizonte} dias, alvo {slot.id}\n")
+    print(f"\nE2E do fluxo de DUAS ETAPAS — janela {janela} dias, alvo {slot.id}\n")
 
     criados = []   # ids de lead para limpar no final, aconteça o que acontecer
     ags = []       # ids das nossas linhas em `agendamentos`

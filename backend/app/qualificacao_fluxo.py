@@ -231,6 +231,30 @@ async def _nome(estado: NatQualificacaoState, db: AsyncSession) -> str:
     return primeiro_nome((res.scalar_one_or_none() or ""))
 
 
+def _espalhados(horarios: list[dict], n: int) -> list[dict]:
+    """Até `n` horários do dia, ESPALHADOS da manhã à tarde, em ordem.
+
+    Isto era um `[:6]` — os seis primeiros — e funcionava enquanto a grade tinha 5 horários
+    por dia: cortar os seis primeiros de cinco não corta nada. Em 25/08/2026 a grade virou o
+    comercial inteiro (09:00–18:30, 12 horários/dia) e o corte passou a devolver
+    `09:00 09:45 10:30 11:15 12:00 12:45` — **o agente nunca mais ofereceria uma tarde**,
+    em silêncio, e quem só pode à tarde ouviria "não tenho horário" com a tarde inteira
+    livre.
+
+    Espalhar em vez de aumentar o `n`: o limite existe porque a lista vai inteira para o
+    prompt e uma parede de 12 horários por dia empurra o modelo a despejar tudo no
+    WhatsApp. Seis pontos cobrindo 09:00–17:15 dizem mais sobre o dia do que doze.
+
+    Extremos sempre entram — o primeiro e o último horário do dia são justamente os que
+    resolvem quem só pode cedo ou só pode tarde.
+    """
+    if len(horarios) <= n or n < 2:
+        return horarios[:n] if n < 2 else horarios
+    passo = (len(horarios) - 1) / (n - 1)
+    indices = sorted({round(i * passo) for i in range(n)})
+    return [horarios[i] for i in indices]
+
+
 async def _fatos(estado: NatQualificacaoState, db: AsyncSession, *,
                  com_slots: bool = False) -> tuple[str, dict]:
     """(contexto para o prompt, mapa slot_id → slot oferecido).
@@ -263,7 +287,7 @@ async def _fatos(estado: NatQualificacaoState, db: AsyncSession, *,
             por_dia = {}
         linhas = []
         for dia in sorted(por_dia)[:3]:          # 3 dias bastam para uma escolha
-            for h in por_dia[dia][:6]:           # e 6 horários por dia
+            for h in _espalhados(por_dia[dia], 6):
                 rotulo = f"{dia} {h['hora']} (id: {h['id']})"
                 linhas.append(rotulo)
                 ofertados[h["id"]] = rotulo

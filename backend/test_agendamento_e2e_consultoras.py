@@ -39,17 +39,17 @@ ALVO = date(2027, 4, 21)          # quarta distante
 HORA_INICIO, HORA_FIM = "10:00", "10:45"
 
 
-def _horizonte_ate(alvo):
-    """Dias até o alvo, contados NO FUSO DE SÃO PAULO. Ver test_agendamento_e2e.py."""
+def _janela_ate(alvo):
+    """Dias de HOJE até o alvo, inclusive, no fuso de SP. Ver test_agendamento_e2e.py."""
     from app.agendamento.horarios import agora_sp
-    return (alvo - agora_sp().date()).days
+    return (alvo - agora_sp().date()).days + 1
 
 
 def _preparar():
     """Duas consultoras, mesma janela de um slot só. Antes de importar o módulo."""
     assert ALVO.weekday() == 2, f"{ALVO} não é quarta"
     g = {"duracao_min": 45, "antecedencia_min_horas": 2,
-         "horizonte_dias": _horizonte_ate(ALVO), "type_meeting": "web",
+         "janela_dias": _janela_ate(ALVO), "type_meeting": "web",
          "janelas": {"2": [[HORA_INICIO, HORA_FIM]]}}
     os.environ["AGENDAMENTO_CONSULTORAS"] = json.dumps([
         {"email": CONSULTORA_A, "nome_exibicao": "Consultora A", "grade": g},
