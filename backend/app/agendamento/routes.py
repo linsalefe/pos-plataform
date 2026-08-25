@@ -25,16 +25,20 @@ Um processo, um contador. Se um dia houver dois workers, cada um terá o própri
 limite efetivo dobra — momento de trocar por Redis. Não usei `slowapi` porque o projeto não
 tem a dependência e o problema cabe em 20 linhas.
 """
+import os
 import time as _time
 from collections import defaultdict, deque
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import agendar as fluxo
 from app.agendamento import client, consultoras as equipe_mod, disponibilidade
 from app.agendamento import extras as extras_mod, origens
+from app.agendamento import token as tokens
+from app.models import Agendamento
 from app.database import get_db
 
 router = APIRouter(prefix="/api/agendamento", tags=["agendamento"])
@@ -272,5 +276,182 @@ async def criar_lead_sem_agendar(pedido: DadosLead, request: Request,
     # e igual ao resto do corpo (`agendamento_id`, `inicio`, `fim`). O `leadId` em camelCase é
     # aceito só na ENTRADA do /agendar, porque é o formato que o front tem em mãos. Devolver
     # as duas grafias aqui deixaria o contrato ambíguo sobre qual é a de verdade.
+    return {"ok": True, "lead_id": lead_id,
+            "aviso": "Recebemos seu contato. Nossa equipe fala com você em breve."}
+
+
+# ==========================================================================================
+# LEAD ESPONTÂNEO — a página do token
+# ==========================================================================================
+# `hub.cenatdata.online/agendar/<token>`. Página pública e sem login, servida pelo Next.js;
+# estas rotas são o backend dela.
+#
+# A DIFERENÇA PARA AS ROTAS DE CIMA, E É A RAZÃO DE EXISTIREM SEPARADAS:
+# no fluxo da LP o visitante DIGITA o telefone. Aqui ele não digita nada — o telefone vem do
+# token, do lado do servidor. Se viesse do corpo do POST, qualquer um agendaria no nome de
+# qualquer número, e a página é pública.
+
+# O subSource dedicado. Fica em env porque `LeadsAdd` CRIA o que não existe e não há endpoint
+# para remover (FINDINGS §11): enquanto o valor não estiver na allowlist, `origens.resolver`
+# levanta `OrigemInvalida` e o booking devolve 400. É falha FECHADA de propósito — melhor a
+# página recusar do que nascer cadastro errado e permanente na Exact.
+SUBSOURCE_ESPONTANEO = os.getenv("AGENDAMENTO_SUBSOURCE_ESPONTANEO", "Espontaneo WhatsApp")
+
+
+class PedidoEspontaneo(BaseModel):
+    """Só o que a página tem para dar. Telefone NÃO entra — ver o cabeçalho da seção."""
+    nome: str = Field(min_length=2, max_length=200)
+    email: str | None = Field(default=None, max_length=200)
+    slot: str | None = Field(default=None, min_length=10, max_length=40)
+
+    @field_validator("nome")
+    @classmethod
+    def _nome_limpo(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("nome vazio")
+        return v.strip()
+
+
+def _recusa_de(status: str) -> HTTPException:
+    """404 para o que nunca existiu, 410 para o que existiu e morreu.
+
+    A tela trata os dois igual (oferece retomar no WhatsApp), mas o código de status é
+    informação para quem lê log e para o próximo dev — e um `Gone` diz exatamente o que houve.
+    """
+    if status == tokens.EXPIRADO:
+        return HTTPException(410, "Este link expirou.")
+    return HTTPException(404, "Link inválido.")
+
+
+@router.get("/espontaneo/{segredo}")
+async def ler_token(segredo: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """O que a página precisa para se desenhar. NUNCA devolve o wa_id cru.
+
+    `usado` responde 200, e não 410, de propósito: quem já agendou tem que ver O SEU
+    AGENDAMENTO, não uma mensagem de erro. É a diferença entre "o link morreu" e "você já
+    fez isso, olha aí".
+    """
+    _limitar(request, LIMITE_LEITURA, "esp_ler")
+    r = await tokens.resolver(db, segredo)
+    if r.status in (tokens.INEXISTENTE, tokens.EXPIRADO):
+        raise _recusa_de(r.status)
+
+    t = r.token
+    corpo = {"status": r.status, "nome": t.nome, "curso": t.curso,
+             "telefone_mascarado": tokens.mascarar(t.contact_wa_id)}
+    if r.status == tokens.USADO:
+        ag = None
+        if t.agendamento_id:
+            ag = (await db.execute(select(Agendamento).where(
+                Agendamento.id == t.agendamento_id))).scalar_one_or_none()
+        corpo["agendamento"] = {
+            "inicio": ag.slot_inicio.strftime("%Y-%m-%dT%H:%M:%S") if ag else None,
+            "fim": ag.slot_fim.strftime("%Y-%m-%dT%H:%M:%S") if ag and ag.slot_fim else None,
+            "consultora_nome": equipe_mod.nome_de(ag.sales_rep_email or "") if ag else "",
+        }
+    return corpo
+
+
+@router.post("/espontaneo/{segredo}/agendar")
+async def agendar_por_token(segredo: str, pedido: PedidoEspontaneo, request: Request,
+                            db: AsyncSession = Depends(get_db)):
+    """Agenda usando o telefone DO TOKEN. O corpo não carrega telefone nenhum.
+
+    A CLAIM VEM ANTES DA EXACT. Dois cliques simultâneos no mesmo link são caso real (a
+    pessoa toca duas vezes, ou abre em duas abas), e a ordem decide o estrago:
+
+        agendar → consumir   os dois passam e nascem DOIS LEADS na Exact, sem desfazer
+        consumir → agendar   um ganha, o outro vê 409; e se o agendamento falhar, a claim
+                             é devolvida por `tokens.liberar`
+
+    Sujeira reversível é melhor que lead duplicado permanente. Ver `token.py`.
+    """
+    _limitar(request, LIMITE_ESCRITA, "esp_agendar")
+    if not pedido.slot:
+        raise HTTPException(400, "Escolha um horário.")
+
+    r = await tokens.resolver(db, segredo)
+    if not r.ok:
+        if r.status == tokens.USADO:
+            raise HTTPException(409, "Este link já foi usado para agendar.")
+        raise _recusa_de(r.status)
+
+    telefone = r.token.contact_wa_id
+    if not await tokens.consumir(db, segredo):
+        # Perdeu a corrida para outro clique. Não é erro do visitante.
+        raise HTTPException(409, "Este link já foi usado para agendar.")
+
+    try:
+        resultado = await fluxo.agendar(
+            db, nome=pedido.nome, email=pedido.email, telefone=telefone,
+            slot_id=pedido.slot, origem=SUBSOURCE_ESPONTANEO, origem_ip=_ip(request))
+    except Exception:
+        # Devolve a claim: sem isto, uma falha na Exact queimaria o link que a Nat acabou de
+        # mandar e a pessoa ficaria sem caminho nenhum.
+        await tokens.liberar(db, segredo)
+        await db.commit()
+        raise
+
+    await tokens.marcar_agendamento(db, segredo, resultado.agendamento_id)
+    await db.commit()
+
+    # O ELO COM O CHAT. Depois do commit e em try próprio: a reunião já existe na Exact, e
+    # falhar em confirmar não pode desfazê-la nem devolver erro para quem agendou.
+    try:
+        from app.qualificacao_fluxo import concluir_por_agendamento_externo
+        reuniao = (await db.execute(select(Agendamento).where(
+            Agendamento.id == resultado.agendamento_id))).scalar_one_or_none()
+        if reuniao is not None:
+            await concluir_por_agendamento_externo(telefone, reuniao, db)
+            await db.commit()
+    except Exception as e:
+        print(f"⚠️ /espontaneo/agendar: reunião {resultado.agendamento_id} criada, mas o "
+              f"fechamento do agente falhou ({type(e).__name__}: {e})")
+
+    print(f"📅 espontâneo: {telefone} agendou {resultado.slot.id} com "
+          f"{resultado.consultora_nome} (lead {resultado.lead_id}, "
+          f"agendamento {resultado.agendamento_id})")
+    return {
+        "ok": True,
+        "agendamento_id": resultado.agendamento_id,
+        "lead_id": resultado.lead_id,
+        "inicio": resultado.slot.inicio.strftime("%Y-%m-%dT%H:%M:%S"),
+        "fim": resultado.slot.fim.strftime("%Y-%m-%dT%H:%M:%S"),
+        "fuso": "America/Sao_Paulo",
+        "consultora_nome": resultado.consultora_nome,
+        "aviso": "Para remarcar ou cancelar, fale com a gente pelo WhatsApp.",
+    }
+
+
+@router.post("/espontaneo/{segredo}/lead")
+async def lead_por_token(segredo: str, pedido: PedidoEspontaneo, request: Request,
+                         db: AsyncSession = Depends(get_db)):
+    """Fallback sem grade: cadastra e um SDR liga. Mesmo espírito do `/lead` da LP.
+
+    Consome o token igual ao booking: o link é de uso único, e "deixei meu contato" também
+    é um desfecho. Sem isso a pessoa poderia cadastrar-se várias vezes com o mesmo link.
+    """
+    _limitar(request, LIMITE_ESCRITA, "esp_lead")
+    r = await tokens.resolver(db, segredo)
+    if not r.ok:
+        if r.status == tokens.USADO:
+            raise HTTPException(409, "Este link já foi usado.")
+        raise _recusa_de(r.status)
+
+    telefone = r.token.contact_wa_id
+    if not await tokens.consumir(db, segredo):
+        raise HTTPException(409, "Este link já foi usado.")
+
+    try:
+        lead_id = await fluxo.cadastrar_lead_sem_agendar(
+            db, nome=pedido.nome, email=pedido.email, telefone=telefone,
+            origem=SUBSOURCE_ESPONTANEO, origem_ip=_ip(request))
+    except Exception:
+        await tokens.liberar(db, segredo)
+        await db.commit()
+        raise
+
+    await db.commit()
+    print(f"👤 espontâneo: {telefone} cadastrado sem agendar (lead {lead_id})")
     return {"ok": True, "lead_id": lead_id,
             "aviso": "Recebemos seu contato. Nossa equipe fala com você em breve."}

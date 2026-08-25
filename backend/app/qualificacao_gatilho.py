@@ -70,6 +70,34 @@ async def agendar_abertura(db: AsyncSession, *, telefone: str, lead_id: int | No
         wa_id = wa_id_de(telefone)
         if not wa_id:
             return
+
+        # QUEM JÁ TEM ESTADO NÃO PRECISA DE ABERTURA — e enfileirar assim mesmo tem custo.
+        #
+        # `abrir()` já barra este caso ("já tem estado — abertura ignorada"), então isto não
+        # é correção de bug: é evitar lixo. O caminho que trouxe a necessidade foi o lead
+        # ESPONTÂNEO, em que o booking pela página chama `fluxo.agendar` para alguém que está
+        # em `esp_link_enviado` — a abertura nasceria condenada.
+        #
+        # E o lixo não é inofensivo: `monitor_qualificacao.py` §2b procura AÇÃO EXECUTADA SEM
+        # ESTADO CORRESPONDENTE, que é a assinatura do descarte silencioso (lead perdido pelo
+        # teto ou pelo corte). Uma abertura enfileirada para quem já tem estado produz
+        # exatamente essa assinatura como FALSO POSITIVO — o alerta que existe para pegar
+        # lead descartado passaria a gritar por lead atendido.
+        #
+        # A consulta é tolerante ao 9º dígito (ver app/telefone.py) porque a chave montada
+        # aqui vem do TELEFONE e o estado pode ter nascido da grafia do inbound.
+        from app.models import NatQualificacaoState
+        from app.telefone import variantes_wa_id
+        from sqlalchemy import select
+        vs = variantes_wa_id(wa_id)
+        if vs:
+            ja = (await db.execute(
+                select(NatQualificacaoState.etapa)
+                .where(NatQualificacaoState.contact_wa_id.in_(vs)))).scalars().first()
+            if ja is not None:
+                print(f"↩️  Agente: {wa_id} já tem estado ({ja}) — abertura NÃO enfileirada")
+                return
+
         from app.nat_scheduler import agendar as agendar_acao
         referencia = (nascido_em or _agora_sp()) + OFFSET_SP_PARA_UTC
         await agendar_acao(

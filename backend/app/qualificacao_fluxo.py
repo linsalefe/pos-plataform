@@ -761,6 +761,68 @@ async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession) -> 
           f"{f' (reunião {reuniao.id})' if reuniao is not None else ''}")
 
 
+async def concluir_por_agendamento_externo(contact_wa_id: str, reuniao,
+                                           db: AsyncSession) -> bool:
+    """A pessoa agendou pela PÁGINA do token. Fecha o estado e confirma no chat.
+
+    Devolve True se o agente falou. Nunca levanta: o agendamento já existe na Exact quando
+    chegamos aqui, e falhar em confirmar não pode desfazer uma reunião real.
+
+    ------------------------------------------------------------------------------------
+    POR QUE NÃO DEU PARA REUSAR `_concluir`
+    ------------------------------------------------------------------------------------
+    `_concluir` fecha o estado e agenda o lembrete, mas NÃO manda mensagem — no fluxo dele a
+    confirmação é a própria resposta do LLM naquele turno da conversa. Aqui não existe turno:
+    o booking aconteceu numa aba do navegador, e do lado do WhatsApp o silêncio seria a
+    última coisa que a pessoa veria depois de clicar no link que a Nat mandou.
+
+    O lembrete T-30 NÃO é agendado aqui: `agendamento/agendar.py::_gatilho_do_agente` já o
+    enfileira para todo agendamento que chega a `PASSO_AGENDADO`, venha de onde vier. Chamar
+    de novo seria inofensivo (`nat_scheduler.agendar` cancela o pendente antes de inserir),
+    mas duas fontes para a mesma ação é o tipo de coisa que diverge quando uma delas muda.
+
+    ------------------------------------------------------------------------------------
+    O TEXTO SAI DO BANCO, NUNCA DO MODELO
+    ------------------------------------------------------------------------------------
+    Data, hora e consultora vêm da linha de `agendamentos` que acabou de ser gravada. Um LLM
+    escrevendo "sua reunião é quinta às 15h" a partir do contexto erraria em silêncio, e o
+    erro só apareceria quando ninguém aparecesse na reunião.
+
+    O guard é `guard_de_abertura`, não `qualificacao_pode_atuar`: a etapa já é `concluido`,
+    que está fora das ativas, e o guard de envio recusaria a própria confirmação. Mesmo
+    motivo e mesma solução de `_fallback`.
+    """
+    try:
+        estado = await estado_de(contact_wa_id, db)
+        if estado is None:
+            return False
+        if estado.etapa == ETAPA_Q_CONCLUIDO and estado.agendamento_id == reuniao.id:
+            return False                      # reentrega: já fechamos este mesmo booking
+
+        estado.etapa = ETAPA_Q_CONCLUIDO
+        estado.agendamento_id = reuniao.id
+        await db.flush()
+
+        from app.agendamento import consultoras as equipe
+        consultora = equipe.nome_de(reuniao.sales_rep_email or "")
+        quando = reuniao.slot_inicio
+        texto = (f"Prontinho! ✅ Sua conversa está marcada para "
+                 f"{quando:%d/%m} às {quando:%H:%M} (horário de Brasília)"
+                 + (f", com {consultora}" if consultora else "") + ".\n\n"
+                 "Vou te lembrar 30 minutos antes. Se precisar remarcar, é só me falar "
+                 "por aqui.")
+        enviado = await send_nat_message(estado.contact_wa_id, guard.ETAPA_CONVERSA, db,
+                                         guard=guard.guard_de_abertura, corpo_livre=texto)
+        print(f"✅ Agente: {estado.contact_wa_id} agendou pela página "
+              f"(reunião {reuniao.id}, {quando:%d/%m %H:%M})"
+              f"{'' if enviado else ' — confirmação NÃO saiu'}")
+        return enviado
+    except Exception as e:
+        print(f"⚠️  Agente: falha ao confirmar no chat o agendamento externo de "
+              f"{contact_wa_id} ({type(e).__name__}: {e}). A reunião está de pé.")
+        return False
+
+
 # ==========================================================================================
 # BLOCO F — LEMBRETE T-30MIN
 # ==========================================================================================

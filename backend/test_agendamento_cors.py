@@ -162,8 +162,25 @@ async def caso_7_ordem_no_app_real():
         f"FALHOU: o mais externo é {externo.__name__}, não o do agendamento"
     classes = [mw.cls.__name__ for mw in m.app.user_middleware]
     assert "CORSMiddleware" in classes, classes
-    rotas = [r.path for r in m.app.routes if getattr(r, "path", "").startswith(PREFIXO)]
-    assert len(rotas) == 3, rotas
+    # A lista é EXPLÍCITA, não uma contagem. Era `len(rotas) == 3`, e um número mágico não
+    # diz o que está protegendo: toda rota sob este prefixo passa pelo middleware de CORS da
+    # LP, então acrescentar uma é decidir que ela pode ser chamada de um domínio externo.
+    # Quem adiciona rota tem que vir aqui e escrever o nome dela — é o atrito desejado.
+    #
+    # As `espontaneo/*` são servidas para a MESMA origem (a página do token roda em
+    # hub.cenatdata.online, atrás do mesmo nginx), então não dependem de CORS. Estarem sob o
+    # prefixo é herança do router, não requisito — e é inofensivo.
+    rotas = sorted(r.path for r in m.app.routes
+                   if getattr(r, "path", "").startswith(PREFIXO))
+    esperadas = sorted([
+        "/api/agendamento/slots",
+        "/api/agendamento/agendar",
+        "/api/agendamento/lead",
+        "/api/agendamento/espontaneo/{segredo}",
+        "/api/agendamento/espontaneo/{segredo}/agendar",
+        "/api/agendamento/espontaneo/{segredo}/lead",
+    ])
+    assert rotas == esperadas, f"rota nova sob {PREFIXO} sem passar por aqui: {rotas}"
     print(f"  7. no app real a ordem é {classes} — agendamento por fora")
 
 
