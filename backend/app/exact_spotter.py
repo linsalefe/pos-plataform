@@ -1,6 +1,6 @@
 import os
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models import (ExactLead, Contact, Channel, Message, AIConversationSummary,
@@ -326,8 +326,13 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             if contact.assigned_to is None and sdr_user_id is not None:
                 contact.assigned_to = sdr_user_id
 
-        # Salvar mensagem do template
-        from datetime import timezone, timedelta
+        # Salvar mensagem do template.
+        #
+        # `timezone` e `timedelta` vêm do TOPO do módulo, e isto não é estilo: um
+        # `from datetime import timedelta` AQUI torna `timedelta` local à função INTEIRA, e
+        # o passo 4.5 — 80 linhas acima — passa a levantar UnboundLocalError antes de
+        # qualquer atribuição. Foi exatamente o que derrubou o laço de boas-vindas do sync
+        # em 25/08: `local variable 'timedelta' referenced before assignment`.
         SP_TZ = timezone(timedelta(hours=-3))
 
         welcome_wamid = send_result["messages"][0]["id"]
@@ -521,9 +526,35 @@ async def sync_exact_leads(db: AsyncSession):
     await db.commit()
 
     # Boas-vindas para leads novos. Cada chamada decide e CARIMBA (inclusive quando pula).
+    #
+    # UM LEAD NÃO DERRUBA O LOTE. Sem este isolamento, a primeira exceção inesperada aqui
+    # aborta o `sync_exact_leads` inteiro — e o estrago é PERMANENTE, não passageiro: os
+    # leads já foram commitados no `db.commit()` logo acima, então na passada seguinte todos
+    # caem no ramo `existing` e nunca mais voltam a ser candidatos. Ficam com
+    # `welcome_status` NULL para sempre, invisíveis para a boas-vindas E para o agente.
+    #
+    # Foi o que aconteceu em 25/08: um UnboundLocalError no passo 4.5 (`timedelta`
+    # sombreado por um import local) matou o laço na PRIMEIRA iteração, e 42 leads do dia
+    # entraram no banco sem carimbo e sem abertura nenhuma.
+    #
+    # SAVEPOINT e não try/except puro, mesmo motivo de `_registrar_transicao`: um erro de
+    # banco deixaria a transação do asyncpg abortada e TODA operação seguinte da mesma
+    # sessão falharia com InFailedSQLTransaction — inclusive os carimbos dos leads restantes.
     welcome_results = []
     for lead_data in new_leads_to_contact:
-        welcome_results.append(await send_welcome_to_new_lead(lead_data, db, config))
+        try:
+            async with db.begin_nested():
+                welcome_results.append(await send_welcome_to_new_lead(lead_data, db, config))
+        except Exception as e:
+            # O lead segue com `welcome_status` NULL e NÃO volta na próxima passada (já é
+            # `existing`). Este log é a única trilha que resta — por isso vai o exact_id e o
+            # nome, que é o que permite recuperar o lead à mão.
+            print(f"❌ Boas-vindas ABORTOU no lead {lead_data.get('exact_id')} "
+                  f"({lead_data.get('name')!r}) — sem carimbo e sem abertura, NÃO será "
+                  f"retentado. {type(e).__name__}: {e}")
+            welcome_results.append({"exact_id": lead_data.get("exact_id"),
+                                    "name": lead_data.get("name", ""), "status": "failed",
+                                    "reason": "excecao_no_laco", "detail": f"{type(e).__name__}: {e}"})
 
     await db.commit()
 

@@ -56,8 +56,14 @@ def wa_id_de(telefone: str) -> str:
 
 
 async def agendar_abertura(db: AsyncSession, *, telefone: str, lead_id: int | None,
-                           origem: str = ORIGEM_LP, nascido_em=None) -> None:
+                           origem: str = ORIGEM_LP, nascido_em=None) -> bool:
     """Agenda a abertura do agente. NUNCA levanta — a LP não pode quebrar por causa disto.
+
+    Devolve True SÓ quando uma linha foi de fato inserida. Quem chama é que commita (ver
+    `nat_scheduler.agendar`), e as três saídas silenciosas daqui — sem telefone, contato já
+    com estado, exceção engolida — não deixam nada para salvar. Sem esse retorno o chamador
+    não tem como distinguir "enfileirei" de "decidi não enfileirar", e commitaria por um
+    efeito que não aconteceu.
 
     `nascido_em` é naive em SP (é o `agendamentos.created_at`); None usa agora. Vira UTC no
     payload.
@@ -69,7 +75,7 @@ async def agendar_abertura(db: AsyncSession, *, telefone: str, lead_id: int | No
     try:
         wa_id = wa_id_de(telefone)
         if not wa_id:
-            return
+            return False
 
         # QUEM JÁ TEM ESTADO NÃO PRECISA DE ABERTURA — e enfileirar assim mesmo tem custo.
         #
@@ -96,7 +102,7 @@ async def agendar_abertura(db: AsyncSession, *, telefone: str, lead_id: int | No
                 .where(NatQualificacaoState.contact_wa_id.in_(vs)))).scalars().first()
             if ja is not None:
                 print(f"↩️  Agente: {wa_id} já tem estado ({ja}) — abertura NÃO enfileirada")
-                return
+                return False
 
         from app.nat_scheduler import agendar as agendar_acao
         referencia = (nascido_em or _agora_sp()) + OFFSET_SP_PARA_UTC
@@ -105,7 +111,9 @@ async def agendar_abertura(db: AsyncSession, *, telefone: str, lead_id: int | No
             {"lead_id": lead_id, "origem": origem,
              "referencia_utc": referencia.isoformat()},
             db)
+        return True
     except Exception as e:
         # Falhar aqui não pode custar o lead nem o agendamento que acabaram de dar certo.
         print(f"⚠️  Agente: gatilho não agendado para {telefone!r} "
               f"({type(e).__name__}: {e})")
+        return False

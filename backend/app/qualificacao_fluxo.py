@@ -827,8 +827,11 @@ async def concluir_por_agendamento_externo(contact_wa_id: str, reuniao,
 # BLOCO F — LEMBRETE T-30MIN
 # ==========================================================================================
 
-async def agendar_lembrete(reuniao, db: AsyncSession) -> None:
+async def agendar_lembrete(reuniao, db: AsyncSession) -> bool:
     """Agenda o lembrete para `slot_inicio - 30min`. Idempotente por (kind, contato).
+
+    Devolve True só quando insere. Mesmo motivo de `agendar_abertura`: as saídas silenciosas
+    (sem reunião, reunião no passado, sem telefone) não deixam nada para o chamador commitar.
 
     Chamada dos DOIS nascimentos possíveis de uma reunião: o agente marcando (`_concluir`) e
     o obrigado.html marcando sozinho (`agendamento/agendar.py`). `nat_scheduler.agendar`
@@ -842,17 +845,18 @@ async def agendar_lembrete(reuniao, db: AsyncSession) -> None:
     from app.nat_scheduler import agendar as agendar_acao
 
     if reuniao is None or not reuniao.slot_inicio:
-        return
+        return False
     quando = reuniao.slot_inicio - ANTECEDENCIA_LEMBRETE
     if quando <= _agora_sp():
         print(f"↩️  Agente: reunião {reuniao.id} é cedo demais para lembrete "
               f"({reuniao.slot_inicio:%d/%m %H:%M})")
-        return
+        return False
     wa_id = format_phone(reuniao.telefone or "")
     if not wa_id:
-        return
+        return False
     await agendar_acao(KIND_LEMBRETE_REUNIAO, wa_id, quando,
                        {"agendamento_id": reuniao.id}, db)
+    return True
 
 
 @registrar_handler("lembrete_reuniao")

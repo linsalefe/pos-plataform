@@ -499,22 +499,58 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
 
 
 async def _gatilho_do_agente(db: AsyncSession, ag: Agendamento) -> None:
-    """Enfileira a abertura do agente e, quando há reunião, o lembrete. Nunca levanta."""
+    """Enfileira a abertura do agente e, quando há reunião, o lembrete. Nunca levanta.
+
+    ESTE É O DONO DO COMMIT DAS DUAS AÇÕES, e é o ponto onde elas existiam só na memória.
+
+    `nat_scheduler.agendar` é primitiva por desenho: dá `flush()` para materializar o id do
+    BIGSERIAL e NÃO commita, porque quem chama é que decide a fronteira da transação (ver o
+    comentário em nat_scheduler.py:150). Só que nenhum dos dois caminhos da landing page
+    commitava depois — `cadastrar_lead_sem_agendar` e `agendar` terminam devolvendo o
+    resultado ao endpoint, e a sessão do `get_db` fecha SEM commit. O `async with` do
+    sessionmaker então dá rollback, e a linha desaparece.
+
+    O flush já tinha impresso "⏰ agendado (id=N)". Em 25/08 isso encheu o log de 31
+    aberturas anunciadas com sucesso — id=27 a id=57 — para uma tabela que passou o dia
+    inteiro com ZERO linhas (`pg_stat_user_tables`: 57 inserts, 0 live tuples). A Nat não
+    abriu para ninguém que veio pela LP, e o log jurava o contrário.
+
+    O commit vem DEPOIS das duas chamadas, não entre elas: abertura e lembrete nascem do
+    mesmo evento e não há estado intermediário que valha a pena persistir sozinho.
+
+    E só commita se ALGUMA das duas devolveu True. As duas têm saídas silenciosas legítimas
+    — contato que já tem estado, reunião cedo demais — e nesses casos não há linha nenhuma
+    para salvar: commitar assim mesmo fecharia a transação do chamador por um efeito que
+    não aconteceu.
+
+    Engole a própria exceção, como o resto da função: o visitante já viu "agendado" na tela
+    e a reunião já está na agenda da consultora. Um erro aqui não pode desfazer isso.
+    """
+    enfileirou = False
     try:
         from app.qualificacao_gatilho import agendar_abertura
-        await agendar_abertura(db, telefone=ag.telefone, lead_id=ag.lead_id,
-                               nascido_em=ag.created_at)
+        enfileirou = await agendar_abertura(db, telefone=ag.telefone, lead_id=ag.lead_id,
+                                            nascido_em=ag.created_at) or enfileirou
     except Exception as e:
         print(f"⚠️ agendamento #{ag.id}: gatilho do agente não enfileirado "
               f"({type(e).__name__}: {e})")
-    if ag.passo != PASSO_AGENDADO:
+    if ag.passo == PASSO_AGENDADO:
+        try:
+            from app.qualificacao_fluxo import agendar_lembrete
+            enfileirou = await agendar_lembrete(ag, db) or enfileirou
+        except Exception as e:
+            print(f"⚠️ agendamento #{ag.id}: lembrete não agendado "
+                  f"({type(e).__name__}: {e})")
+
+    if not enfileirou:
         return
     try:
-        from app.qualificacao_fluxo import agendar_lembrete
-        await agendar_lembrete(ag, db)
+        await db.commit()
     except Exception as e:
-        print(f"⚠️ agendamento #{ag.id}: lembrete não agendado "
-              f"({type(e).__name__}: {e})")
+        # Ruidoso de propósito: sem este commit as ações somem, e some em SILÊNCIO — o
+        # `agendar` já imprimiu que enfileirou. Perder isto aqui é perder a abertura.
+        print(f"❌ agendamento #{ag.id}: COMMIT das ações do agente FALHOU — abertura e "
+              f"lembrete PERDIDOS ({type(e).__name__}: {e})")
 
 
 async def _compensar_box(db: AsyncSession, ag: Agendamento, *, motivo: str) -> None:
