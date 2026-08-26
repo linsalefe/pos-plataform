@@ -60,7 +60,30 @@ MODELO = "gpt-5-mini"
 # não pode segurar o lote de mensagens de todos os outros leads.
 TIMEOUT_SEGUNDOS = 10.0
 MAX_TENTATIVAS = 2          # a primeira e UMA repetição; depois, fallback
-MAX_TOKENS = 400
+
+# TETO DE SAÍDA. Margem, não conserto — e vale registrar por quê, porque a hipótese que
+# motivou este número estava ERRADA e o próximo a olhar merece o dado, não o palpite.
+#
+# Em 26/08 a oferta de agenda falhou duas vezes seguidas e o suspeito nº1 foi truncagem:
+# no gpt-5 `max_completion_tokens` é compartilhado entre raciocínio e saída, e a oferta é a
+# mensagem mais longa que o agente escreve. MEDIDO com chamada real, grade de 13 slots:
+#
+#     reasoning_effort="minimal"  ->  racio 0 tokens, sempre. O raciocínio não come nada.
+#     saída observada              ->  203-328 tokens (missão antiga, lista completa)
+#     saída observada              ->  117-173 tokens (missão do P3-B, teto de 5)
+#     teto 400, 9 rodadas          ->  9/9 sucessos, nenhum finish_reason="length"
+#
+# Ou seja: 400 NÃO era o gargalo e a causa daquela falha continua indeterminada — é o P0-E
+# que vai nomeá-la na próxima ocorrência. O que 400 era é APERTADO: 328/400 = 82% de uso no
+# pior caso medido antes do P3-B, e uma missão que cresça um pouco volta a raspar o teto.
+#
+# 1000 é margem barata: cobra-se pelos tokens gerados, não pelo teto, então um limite mais
+# alto que não é usado custa zero. E a latência não muda — 1,4s a 4,2s medidos, iguais em
+# 400, 1000 e 1500. Some uma classe inteira de falha da lista de suspeitos do próximo
+# incidente pelo preço de nenhum.
+#
+# TIMEOUT_SEGUNDOS fica em 10: o pior caso medido é 4,2s, com folga de mais do dobro.
+MAX_TOKENS = 1000
 
 ACOES_VALIDAS = frozenset({"nenhuma", "ofertar_agenda", "agendar_slot", "transferir_humano"})
 
