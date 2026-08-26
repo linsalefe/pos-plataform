@@ -1007,14 +1007,54 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
         return
 
     contato = await _contato_de(estado.contact_wa_id, db)
+    nome = (contato.name if contato else "") or "Lead"
     try:
-        r = await fluxo.agendar(
-            db, nome=(contato.name if contato else "") or "Lead", email=None,
-            telefone=estado.contact_wa_id, slot_id=slot_id,
-            origem=None,
-            # SEMPRE com lead_id: é o que impede a pessoa de virar um segundo lead no funil.
-            lead_id=estado.exact_lead_id,
-            extras=None, origem_ip=None)
+        # ----------------------------------------------------------------------------------
+        # P0-A — `agendar` PRECISA DE UMA TRANSAÇÃO QUE ELE POSSUA (26/08/2026)
+        # ----------------------------------------------------------------------------------
+        # Era `fluxo.agendar(db, ...)`, com a sessão DO WEBHOOK, de dentro do
+        # `async with db.begin_nested()` de `main.py`. E `agendar._marcar` faz `db.commit()`
+        # a cada passo — de propósito, e a razão está no docstring dele: sem o commit por
+        # passo, um processo morto no meio do fluxo perderia a linha inteira, e a FAXINA
+        # nunca saberia que existe um box nosso pendurado na agenda real da consultora.
+        #
+        # O commit é certo. O que estava errado era a transação que ele recebia: commitar
+        # fecha o savepoint do webhook, e a instrução seguinte levanta
+        # `InvalidRequestError: Can't operate on closed transaction inside context manager`.
+        # Aí o `_fallback` morre no MESMO erro e o savepoint reverte até a etapa
+        # `transferido_humano` que ele acabou de escrever.
+        #
+        # MEDIDO em 25/08 com a Fabiana (5517997379129): 3 mensagens, 3 exceções, 3
+        # rollbacks, ZERO notificações, ZERO mensagens. E não era bug raro — era bug de
+        # 100% dos agendamentos feitos pelo agente; teve uma vítima só porque só uma pessoa
+        # chegou até aqui.
+        #
+        # A SESSÃO PRÓPRIA é a opção que NÃO TOCA no `_marcar`: o caminho da LP — que é o de
+        # maior volume e o que traz dinheiro — continua byte por byte o que era, e o agente
+        # passa a rodar o mesmo fluxo com a mesma durabilidade por passo. As alternativas
+        # custavam mais: tornar o commit condicional apagaria a durabilidade justo no
+        # caminho do agente (box órfão INVISÍVEL para a faxina), e enfileirar no scheduler
+        # poria o lead esperando até 60s logo depois de escolher o horário.
+        #
+        # ABERTA SÓ AQUI, e não no começo do turno: o turno já segura uma conexão do webhook
+        # durante `llm.conversar` (3–5s), e abrir a segunda cedo dobraria a retenção num
+        # pool que acabou de ser dimensionado (P1-A). Ela vive o tempo do agendamento e
+        # fecha antes de qualquer outra coisa acontecer no turno.
+        #
+        # `read committed` é o que faz isto funcionar: o `_reuniao()` logo abaixo roda na
+        # sessão do webhook — cuja transação começou ANTES — e ainda assim enxerga a linha
+        # que esta sessão commitou. Conferido em produção
+        # (`default_transaction_isolation = read committed`).
+        from app.database import async_session
+        async with async_session() as db_agendamento:
+            r = await fluxo.agendar(
+                db_agendamento, nome=nome, email=None,
+                telefone=estado.contact_wa_id, slot_id=slot_id,
+                origem=None,
+                # SEMPRE com lead_id: é o que impede a pessoa de virar um segundo lead no
+                # funil.
+                lead_id=estado.exact_lead_id,
+                extras=None, origem_ip=None)
     except Exception as e:
         await _fallback(estado, f"agendamento falhou ({type(e).__name__}: {e})", db)
         return

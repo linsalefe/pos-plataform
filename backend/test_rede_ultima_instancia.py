@@ -13,8 +13,9 @@ produziram 3 exceções, 3 rollbacks, ZERO notificações e ZERO mensagens ao le
   3. estado ATIVO do agente -> gestão notificada + transferido_humano + despedida
   4. a notificação carrega contato, wa_message_id e traceback
   5. SEM estado ativo -> notifica a gestão, mas NÃO manda despedida (não era conversa dele)
-  6. a rede falhando por dentro NÃO levanta (uma rede que derruba o webhook não é rede)
-  7. despedida recusada pelo guard não levanta nem desfaz a transferência
+  6. modo de falha residual do P0-A: reunião commitada + turno estourado depois -> avisa
+  7. a rede falhando por dentro NÃO levanta (uma rede que derruba o webhook não é rede)
+  8. despedida recusada pelo guard não levanta nem desfaz a transferência
 """
 import asyncio
 import io
@@ -179,7 +180,34 @@ checa("sem estado (fluxo velho) -> nenhuma despedida", mandar.await_count, 0)
 checa("  gestão avisada", len(nova.notificacoes()), 1)
 checa("  e o log explica o porquê", "sem estado" in log, True)
 
-print("\n5) A rede não derruba o webhook — nem quando ela mesma falha")
+print("\n5) O modo de falha residual do P0-A — reunião marcada, turno estourado depois")
+# Com a sessão própria (P0-A opção iii), `fluxo.agendar` commita: a reunião existe na Exact e
+# em `agendamentos`. Se o turno estourar DEPOIS disso, o savepoint do webhook reverte
+# `estado.agendamento_id` enquanto a reunião continua marcada de verdade. É o resíduo
+# assumido da opção — aceitável em si, INACEITÁVEL em silêncio. Quem fecha o silêncio é esta
+# rede: a gestão fica sabendo (com traceback), o lead ouve alguma coisa, e o agente para de
+# escutar um lead cuja reunião já existe.
+def _estourado_pos_agendamento():
+    try:
+        raise RuntimeError("banco caiu depois do commit do agendamento (reunião #99 existe)")
+    except RuntimeError as e:
+        return e
+
+
+e = _estado()
+_, nova, mandar, log = roda(estado=e, erro=_estourado_pos_agendamento())
+notifs = nova.notificacoes()
+checa("gestão notificada da reunião que ficou órfã do estado", len(notifs), 1)
+checa("  e o corpo diz o que aconteceu", "reunião #99 existe" in notifs[0].body, True)
+checa("  com o contato para quem for atrás", WA_ID in notifs[0].body, True)
+checa("o lead NÃO fica em silêncio — despedida sai", mandar.await_count, 1)
+checa("  com o texto determinístico", mandar.await_args.kwargs.get("corpo_livre"),
+      fluxo.TEXTO_FALLBACK)
+checa("o agente para de escutar (a reunião já existe)", e.etapa, ETAPA_Q_TRANSFERIDO)
+checa("traceback do caso no log", "banco caiu depois do commit" in log, True)
+
+
+print("\n6) A rede não derruba o webhook — nem quando ela mesma falha")
 webhook, _, mandar, log = roda(estado=_estado(), quebra_sessao_nova=True)
 checa("sessão nova indisponível (pool esgotado) -> não levanta", True, True)
 checa("  falha ALTO no log", "Rede de última instância falhou" in log, True)

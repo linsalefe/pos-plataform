@@ -572,25 +572,44 @@ print("\n4) Agendamento — o slot é validado DUAS vezes antes de escrever")
 OFERTADOS = {"2026-09-01T10:30:00": "2026-09-01 10:30"}
 
 
-async def tenta_agendar(slot_id, livres, ofertados=OFERTADOS):
+class _SessaoDoAgendamento:
+    """A `async_session()` que o P0-A abre só para o `fluxo.agendar`. Conta abre/fecha."""
+    abertas = 0
+    fechadas = 0
+
+    async def __aenter__(self):
+        _SessaoDoAgendamento.abertas += 1
+        return self
+
+    async def __aexit__(self, *a):
+        _SessaoDoAgendamento.fechadas += 1
+        return False
+
+
+async def tenta_agendar(slot_id, livres, ofertados=OFERTADOS, reuniao_explode=False):
     e = _estado(ETAPA_Q_ESCOLHENDO_SLOT)
     disp = MagicMock()
     disp.slots_livres = AsyncMock(return_value=[MagicMock(id=s) for s in livres])
     fluxo_ag = MagicMock()
     fluxo_ag.agendar = AsyncMock(return_value=MagicMock(agendamento_id=99))
     modulo = MagicMock(agendar=fluxo_ag, disponibilidade=disp)
+    _SessaoDoAgendamento.abertas = _SessaoDoAgendamento.fechadas = 0
+    db_webhook = _db()
+    reuniao_mock = (AsyncMock(side_effect=RuntimeError("banco caiu depois do commit"))
+                    if reuniao_explode else AsyncMock(return_value=_reuniao()))
     with patch.dict("sys.modules", {"app.agendamento": modulo}), \
+         patch("app.database.async_session", new=lambda: _SessaoDoAgendamento()), \
          patch.object(fluxo, "_fallback", new=AsyncMock()) as fb, \
          patch.object(fluxo, "_ofertar_agenda", new=AsyncMock()) as reoferta, \
          patch.object(fluxo, "_enviar", new=AsyncMock(return_value=(True, "ok"))), \
          patch.object(fluxo, "_concluir", new=AsyncMock()) as concluir, \
-         patch.object(fluxo, "_reuniao", new=AsyncMock(return_value=_reuniao())):
+         patch.object(fluxo, "_reuniao", new=reuniao_mock):
         await fluxo._agendar(e, _resp(acao="agendar_slot",
-                                      extraido={"slot_id": slot_id}), ofertados, _db())
-    return e, fb, reoferta, concluir, fluxo_ag
+                                      extraido={"slot_id": slot_id}), ofertados, db_webhook)
+    return e, fb, reoferta, concluir, fluxo_ag, db_webhook
 
 
-_, fb, _, concluir, escrita = asyncio.run(
+_, fb, _, concluir, escrita, db_webhook = asyncio.run(
     tenta_agendar("2026-09-01T10:30:00", ["2026-09-01T10:30:00"]))
 checa("slot oferecido E livre -> agenda", escrita.agendar.await_count, 1)
 checa("  e conclui", concluir.await_count, 1)
@@ -598,11 +617,55 @@ checa("  sem fallback", fb.await_count, 0)
 checa("  SEMPRE com lead_id (impede lead duplicado)",
       escrita.agendar.await_args.kwargs.get("lead_id"), 42)
 
-_, fb, _, _, escrita = asyncio.run(tenta_agendar("2026-09-09T03:00:00", ["2026-09-01T10:30:00"]))
+# ------------------------------------------------------------------------------------------
+# P0-A — `agendar` roda em SESSÃO PRÓPRIA (26/08/2026)
+# ------------------------------------------------------------------------------------------
+# `agendar._marcar` commita a cada passo, de propósito: é o que deixa a faxina enxergar um
+# box nosso pendurado. Recebendo a sessão do WEBHOOK, esse commit fechava o savepoint e a
+# instrução seguinte levantava InvalidRequestError — 3× com a Fabiana em 25/08, e seria em
+# 100% dos agendamentos do agente. A sessão própria devolve ao `agendar` a transação que ele
+# espera SEM tocar no `_marcar`, e portanto sem mexer no caminho da LP.
+checa("agendar recebe sessão PRÓPRIA, não a do webhook",
+      escrita.agendar.await_args.args[0] is db_webhook, False)
+checa("  e ela é uma sessão de verdade, aberta pelo async_session",
+      isinstance(escrita.agendar.await_args.args[0], _SessaoDoAgendamento), True)
+checa("  aberta uma vez", _SessaoDoAgendamento.abertas, 1)
+checa("  e FECHADA antes do resto do turno (não fica presa no pool)",
+      _SessaoDoAgendamento.fechadas, 1)
+
+_, fb, _, _, escrita, _ = asyncio.run(tenta_agendar("2026-09-09T03:00:00", ["2026-09-01T10:30:00"]))
 checa("slot que o LLM INVENTOU -> fallback, sem escrita", escrita.agendar.await_count, 0)
 checa("  e transfere", fb.await_count, 1)
+# A conexão extra só nasce no instante do agendamento. Abri-la no começo do turno dobraria a
+# retenção — o turno já segura a do webhook durante `llm.conversar` (3-5s medidos) — e o pool
+# acabou de ser dimensionado para a retenção de UMA (P1-A).
+checa("  e NENHUMA sessão foi aberta (o turno não chegou a agendar)",
+      _SessaoDoAgendamento.abertas, 0)
 
-_, fb, reoferta, _, escrita = asyncio.run(tenta_agendar("2026-09-01T10:30:00", []))
+_, fb, reoferta, _, escrita, _ = asyncio.run(tenta_agendar("2026-09-01T10:30:00", []))
+checa("slot que saiu da grade -> nenhuma sessão aberta", _SessaoDoAgendamento.abertas, 0)
+
+# ------------------------------------------------------------------------------------------
+# O MODO DE FALHA RESIDUAL DO P0-A — exceção DEPOIS do agendamento commitado
+# ------------------------------------------------------------------------------------------
+# A sessão própria commita; a reunião existe na Exact e em `agendamentos`. Se o turno
+# estourar DEPOIS disso, o savepoint do webhook reverte `estado.agendamento_id` enquanto a
+# reunião continua marcada de verdade. Este é o resíduo assumido da opção (iii), e a regra
+# é: o resíduo é aceitável, o SILÊNCIO sobre ele não é.
+#
+# Por isso a exceção tem de ESCAPAR — é o que entrega o caso à rede de última instância do
+# P0-C (`main.py`), que notifica a gestão em sessão nova e manda a despedida ao lead. Um
+# `try/except` local aqui engoliria o caso e a gestão nunca saberia da reunião órfã.
+# O outro lado deste teste vive em test_rede_ultima_instancia.py.
+try:
+    _, fb, _, _, escrita, _ = asyncio.run(
+        tenta_agendar("2026-09-01T10:30:00", ["2026-09-01T10:30:00"], reuniao_explode=True))
+    escapou = False
+except RuntimeError:
+    escapou = True
+checa("exceção APÓS o agendamento commitado ESCAPA (vai para a rede do P0-C)", escapou, True)
+checa("  e a sessão do agendamento fechou assim mesmo (async with)",
+      _SessaoDoAgendamento.fechadas, 1)
 checa("slot oferecido mas TOMADO (corrida) -> não escreve", escrita.agendar.await_count, 0)
 checa("  reoferta a grade em vez de transferir", reoferta.await_count, 1)
 checa("  e NÃO chama fallback", fb.await_count, 0)
