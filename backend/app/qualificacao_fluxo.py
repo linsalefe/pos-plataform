@@ -51,11 +51,12 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         ETAPA_Q_CONCLUIDO, ETAPA_Q_ESCOLHENDO_SLOT, ETAPA_Q_OFERTANDO_AGENDA,
                         ETAPA_Q_TRANSFERIDO, ETAPAS_QUALIFICACAO_ATIVAS,
                         ETAPA_Q_ENCERRADO, KIND_ENCERRAR_INATIVO, KIND_LEMBRETE_REUNIAO,
+                        KIND_RESPONDER_PENDENTE,
                         Agendamento, Contact, Message, Notification, NatQualificacaoState,
                         PASSO_AGENDADO)
 from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
                            proximo_horario_util)
-from app.nat_scheduler import AcaoAdiada, AcaoIgnorada, registrar_handler
+from app.nat_scheduler import AcaoAdiada, AcaoIgnorada, agendar as nat_agendar, registrar_handler
 from app.nat_sender import enviar_nat, send_nat_message
 from app.telefone import variantes_wa_id
 from app.nomes import primeiro_nome
@@ -482,11 +483,56 @@ async def _fatos(estado: NatQualificacaoState, db: AsyncSession, *,
 # ESCRITA
 # ==========================================================================================
 
-async def _enviar(estado: NatQualificacaoState, texto: str, db: AsyncSession) -> bool:
-    """Fala livre do agente, dentro da janela de 24h."""
-    return await send_nat_message(
+async def _enviar(estado: NatQualificacaoState, texto: str,
+                  db: AsyncSession) -> tuple[bool, str]:
+    """Fala livre do agente, dentro da janela de 24h. `(saiu, motivo)`."""
+    return await enviar_nat(
         estado.contact_wa_id, guard.ETAPA_CONVERSA, db,
         guard=guard.qualificacao_pode_atuar, corpo_livre=texto)
+
+
+async def _falar(estado: NatQualificacaoState, texto: str, db: AsyncSession) -> bool:
+    """Fala — e trata a RECUSA, que até 26/08 era jogada fora. Devolve se o turno segue.
+
+    ------------------------------------------------------------------------------------
+    O BURACO MAIS LARGO DOS SEIS (P0-B)
+    ------------------------------------------------------------------------------------
+    `_enviar` sempre soube dizer se a mensagem saiu. Ninguém lia. `processar_texto`,
+    `_avancar` e `_ofertar_agenda` chamavam `await _enviar(...)` e descartavam o retorno,
+    devolviam True ("tratei") e o turno terminava normalmente — sem mensagem, sem fallback,
+    sem notificação e SEM EXCEÇÃO. Silêncio perfeito, invisível em qualquer tabela.
+
+    MEDIDO em 25/08: matou 4 mensagens do 5583988046720 e 2 do 5582998307979. As duas
+    conversas morreram sem deixar um único rastro ligado ao lead — só uma linha de `print`
+    no journald que nem sempre chegava a sair do buffer.
+
+    A RECUSA TEM DUAS NATUREZAS, E TRATÁ-LAS IGUAL É O ERRO:
+
+        teto por hora   -> passa sozinho. REENFILEIRA a fala e tenta de novo em 10 min.
+                           É a mesma lógica que `iniciar_qualificacao` já usa com AcaoAdiada:
+                           o teto é contagem MÓVEL, esperar resolve. Transferir o lead para
+                           humano por causa de uma janela cheia seria queimar lead por
+                           congestionamento.
+        qualquer outra  -> não passa sozinha (janela fechada, chave desligada, template não
+                           montável, Meta recusou). `_fallback`: despedida + notificação.
+
+    A fala reenfileirada é a MESMA que o LLM gerou agora. Ela pode chegar até 10 min depois
+    do inbound e soar um pouco atrasada — e isso é aceitável de propósito: a alternativa
+    medida é o lead nunca receber nada.
+    """
+    saiu, motivo = await _enviar(estado, texto, db)
+    if saiu:
+        return True
+
+    if guard.e_teto(motivo):
+        await nat_agendar(KIND_RESPONDER_PENDENTE, estado.contact_wa_id,
+                          _agora_sp() + ATRASO_POR_TETO, {"texto": texto}, db)
+        print(f"⏳ Agente: fala para {estado.contact_wa_id} adiada ({motivo}) — "
+              f"reenfileirada para daqui a {int(ATRASO_POR_TETO.total_seconds() // 60)} min")
+        return False
+
+    await _fallback(estado, f"envio recusado: {motivo}", db)
+    return False
 
 
 async def _notificar(estado: NatQualificacaoState, titulo: str, corpo: str,
@@ -825,7 +871,7 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
     if not resposta["etapa_cumprida"]:
         # A pessoa desconversou ou perguntou outra coisa. O LLM acolhe e retoma; a etapa NÃO
         # anda. É o caminho normal de uma digressão, não uma falha.
-        await _enviar(estado, resposta["mensagem"], db)
+        await _falar(estado, resposta["mensagem"], db)
         return True
 
     await _avancar(estado, resposta["mensagem"], db)
@@ -837,7 +883,12 @@ async def _avancar(estado: NatQualificacaoState, mensagem: str, db: AsyncSession
     etapa = estado.etapa
 
     if etapa in PROXIMA:
-        await _enviar(estado, mensagem, db)
+        # A etapa anda mesmo se a fala foi só ADIADA pelo teto: o dado do lead já foi
+        # extraído e regravar a etapa depois exigiria guardar o turno inteiro. O que não
+        # pode acontecer — e não acontece — é a etapa andar depois de um `_fallback`, que
+        # já move o estado para `transferido_humano` antes de voltar.
+        if not await _falar(estado, mensagem, db) and estado.etapa == ETAPA_Q_TRANSFERIDO:
+            return
         estado.etapa = PROXIMA[etapa]
         print(f"➡️  Agente: {estado.contact_wa_id} {etapa} → {estado.etapa}")
         return
@@ -846,7 +897,8 @@ async def _avancar(estado: NatQualificacaoState, mensagem: str, db: AsyncSession
         # A bifurcação do roteiro. Releitura, não memória: a reunião pode ter nascido no
         # obrigado.html DEPOIS da abertura.
         reuniao = await _reuniao(estado, db)
-        await _enviar(estado, mensagem, db)
+        if not await _falar(estado, mensagem, db) and estado.etapa == ETAPA_Q_TRANSFERIDO:
+            return
         if reuniao is not None:
             estado.agendamento_id = reuniao.id
             await _concluir(estado, reuniao, db, confirmar=True)
@@ -874,7 +926,9 @@ async def _ofertar_agenda(estado: NatQualificacaoState, db: AsyncSession) -> Non
     if resposta is None:
         await _fallback(estado, "LLM indisponível ao oferecer a agenda", db)
         return
-    await _enviar(estado, resposta["mensagem"], db)
+    if not await _falar(estado, resposta["mensagem"], db) \
+            and estado.etapa == ETAPA_Q_TRANSFERIDO:
+        return
     estado.etapa = ETAPA_Q_ESCOLHENDO_SLOT
     print(f"📅 Agente ofereceu {len(ofertados)} horário(s) a {estado.contact_wa_id}")
 
@@ -918,8 +972,11 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
 
     estado.agendamento_id = r.agendamento_id
     reuniao = await _reuniao(estado, db)
-    await _enviar(estado, resposta["mensagem"], db)
-    await _concluir(estado, reuniao, db)
+    # A reunião JÁ EXISTE na Exact neste ponto. Se a confirmação não sai, o estado ainda
+    # tem de fechar — senão o agente continua "escutando" um lead cuja reunião está marcada.
+    await _falar(estado, resposta["mensagem"], db)
+    if estado.etapa != ETAPA_Q_TRANSFERIDO:
+        await _concluir(estado, reuniao, db)
 
 
 async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession, *,
@@ -961,7 +1018,7 @@ async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession, *,
     if confirmar and reuniao is not None:
         from app.agendamento import consultoras as equipe
         quem = equipe.nome_de(reuniao.sales_rep_email or "")
-        await _enviar(estado, (
+        await _falar(estado, (
             f"Na verdade você já tem horário reservado: "
             f"{reuniao.slot_inicio.strftime('%d/%m às %H:%M')}"
             f"{f' com {quem}' if quem else ''}. "
@@ -1143,6 +1200,42 @@ async def _agendar_encerramento(estado: NatQualificacaoState, db: AsyncSession) 
     except Exception as e:
         print(f"⚠️  Agente: encerramento não agendado para {estado.contact_wa_id} "
               f"({type(e).__name__}: {e})")
+
+
+@registrar_handler("responder_pendente")
+async def responder_pendente(acao: dict, db: AsyncSession) -> None:
+    """A fala que o TETO por hora adiou. Tenta de novo; adia outra vez se ainda não couber.
+
+    Existe pelo mesmo motivo que `AcaoAdiada` existe na abertura: o teto é contagem MÓVEL de
+    1h, então ele passa sozinho — e recusar por causa dele é perder o lead por
+    congestionamento, não por regra de negócio.
+
+    O ESTADO É RELIDO, nunca vem do payload: entre agendar e executar passam 10 minutos, e
+    nesse intervalo a pessoa pode ter escrito de novo (a etapa andou), um humano pode ter
+    assumido, ou o encerramento por inatividade pode ter corrido. Só o texto vem do payload,
+    porque é a única coisa que o banco não sabe reconstruir.
+    """
+    wa_id = acao["contact_wa_id"]
+    texto = (json.loads(acao.get("payload") or "{}")).get("texto") or ""
+    if not texto.strip():
+        raise AcaoIgnorada("sem texto para reenviar")
+
+    estado = await estado_de(wa_id, db)
+    if estado is None or estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
+        # Não é falha: humano assumiu, lead concluiu ou o silêncio encerrou. Falar agora
+        # seria o agente reaparecendo numa conversa que já não é dele.
+        raise AcaoIgnorada(f"etapa não é mais ativa "
+                           f"({estado.etapa if estado else 'sem estado'})")
+
+    saiu, motivo = await _enviar(estado, texto, db)
+    if saiu:
+        print(f"⏳→✅ Agente: fala adiada entregue a {wa_id}")
+        return
+    if guard.e_teto(motivo):
+        raise AcaoAdiada(_agora_sp() + ATRASO_POR_TETO, motivo)
+    # Não é mais o teto: virou recusa definitiva enquanto esperávamos. Fecha com humano em
+    # vez de tentar para sempre.
+    await _fallback(estado, f"envio recusado ao reenviar fala adiada: {motivo}", db)
 
 
 @registrar_handler("encerrar_inativo")

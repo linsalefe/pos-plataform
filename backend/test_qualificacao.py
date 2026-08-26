@@ -29,7 +29,8 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         ETAPA_Q_AGUARDANDO_FORMACAO, ETAPA_Q_AGUARDANDO_MOTIVACAO,
                         ETAPA_Q_CONCLUIDO, ETAPA_Q_ESCOLHENDO_SLOT, ETAPA_Q_OFERTANDO_AGENDA,
                         ETAPA_Q_TRANSFERIDO, ETAPAS_QUALIFICACAO_ATIVAS,
-                        ETAPAS_QUALIFICACAO_VALIDAS, NatConfig, NatQualificacaoState,
+                        ETAPAS_QUALIFICACAO_VALIDAS, KIND_RESPONDER_PENDENTE,
+                        NatConfig, NatQualificacaoState,
                         ORIGENS_QUALIFICACAO_VALIDAS,
                         ORIGEM_LP)
 
@@ -402,7 +403,18 @@ checa("toda etapa ativa tem missão",
 
 
 async def roda(estado, resposta, *, reuniao=None, ofertados=None, wa_id="wamid.1"):
-    """Uma passada de processar_texto com LLM e envio mockados."""
+    """Uma passada de processar_texto com LLM e envio mockados.
+
+    UM espião para os DOIS caminhos de saída: a fala normal passa por `enviar_nat`
+    (que devolve `(saiu, motivo)` desde o P0-B) e a despedida do `_fallback` passa por
+    `send_nat_message`. Espionar só um deixaria metade dos envios invisível ao teste.
+    """
+    envio = AsyncMock(return_value=True)
+
+    async def _via_envio(*a, **k):
+        await envio(*a, **k)
+        return True, "ok"
+
     with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=estado)), \
          patch.object(fluxo, "_fatos", new=AsyncMock(return_value=("ctx", ofertados or {}))), \
          patch.object(fluxo, "_historico", new=AsyncMock(return_value=[])), \
@@ -410,8 +422,8 @@ async def roda(estado, resposta, *, reuniao=None, ofertados=None, wa_id="wamid.1
          patch.object(fluxo, "_notificar", new=AsyncMock()), \
          patch.object(fluxo, "agendar_lembrete", new=AsyncMock()) as lembrete, \
          patch.object(fluxo.llm, "conversar", new=AsyncMock(return_value=resposta)) as ia, \
-         patch.object(fluxo, "send_nat_message",
-                      new=AsyncMock(return_value=True)) as envio:
+         patch.object(fluxo, "send_nat_message", new=envio), \
+         patch.object(fluxo, "enviar_nat", new=AsyncMock(side_effect=_via_envio)):
         tratou = await fluxo.processar_texto(estado.contact_wa_id, "oi", wa_id, _db())
     return tratou, envio, ia, lembrete
 
@@ -454,6 +466,52 @@ asyncio.run(roda(e, _resp(cumprida=True), ofertados={"x": "y"}))
 checa("etapa de agenda 'cumprida' sem slot -> humano", e.etapa, ETAPA_Q_TRANSFERIDO)
 
 
+print("\n   P0-B — a recusa de envio nunca mais é silêncio")
+# Até 26/08 `_enviar` devolvia bool e ninguém lia: recusa do guard = turno que termina
+# normalmente, sem mensagem, sem fallback, sem notificação e sem exceção. Matou 4 mensagens
+# do 5583988046720 e 2 do 5582998307979 em 25/08, sem deixar rastro em tabela nenhuma.
+#
+# A recusa tem DUAS naturezas e o teste guarda a distinção: o teto passa sozinho (adia), o
+# resto não passa (transfere).
+
+def _falar_com_recusa(motivo, etapa=ETAPA_Q_AGUARDANDO_ANO):
+    e = _estado(etapa)
+    agendou = AsyncMock()
+    with patch.object(fluxo, "_enviar", new=AsyncMock(return_value=(False, motivo))), \
+         patch.object(fluxo, "nat_agendar", new=agendou), \
+         patch.object(fluxo, "send_nat_message", new=AsyncMock(return_value=True)):
+        seguiu = asyncio.run(fluxo._falar(e, "oi", _db()))
+    return e, seguiu, agendou
+
+e, seguiu, agendou = _falar_com_recusa(guard.MOTIVO_TETO + " (20/20)")
+checa("teto -> NÃO transfere", e.etapa, ETAPA_Q_AGUARDANDO_ANO)
+checa("  reenfileira a fala", agendou.await_count, 1)
+checa("  no kind certo", agendou.await_args.args[0], KIND_RESPONDER_PENDENTE)
+checa("  com o texto no payload", agendou.await_args.args[3], {"texto": "oi"})
+checa("  e avisa quem chamou que não saiu", seguiu, False)
+
+e, seguiu, agendou = _falar_com_recusa("janela de 24h fechada")
+checa("recusa definitiva -> transferido_humano", e.etapa, ETAPA_Q_TRANSFERIDO)
+checa("  motivo cita o envio", "envio recusado" in (e.transferido_motivo or ""), True)
+checa("  NÃO reenfileira", agendou.await_count, 0)
+
+# O handler da fala adiada relê o estado: em 10 min um humano pode ter assumido.
+for etapa_terminal in (ETAPA_Q_TRANSFERIDO, ETAPA_Q_CONCLUIDO):
+    e = _estado(etapa_terminal)
+    envio_h = AsyncMock(return_value=(True, "ok"))
+    with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=e)), \
+         patch.object(fluxo, "_enviar", new=envio_h):
+        try:
+            asyncio.run(fluxo.responder_pendente(
+                {"contact_wa_id": "5583999998888",
+                 "payload": json.dumps({"texto": "oi"})}, _db()))
+            ignorou = False
+        except fluxo.AcaoIgnorada:
+            ignorou = True
+    checa(f"fala adiada NÃO ressuscita conversa em '{etapa_terminal}'", ignorou, True)
+    checa("  e nada foi enviado", envio_h.await_count, 0)
+
+
 print("\n   bifurcação do roteiro (passo 4a x 4b), decidida por CÓDIGO")
 e = _estado(ETAPA_Q_AGUARDANDO_MOTIVACAO)
 _, _, _, lembrete = asyncio.run(roda(e, _resp(extraido={"motivacao": "quero atuar no CAPS"}),
@@ -485,7 +543,7 @@ async def tenta_agendar(slot_id, livres, ofertados=OFERTADOS):
     with patch.dict("sys.modules", {"app.agendamento": modulo}), \
          patch.object(fluxo, "_fallback", new=AsyncMock()) as fb, \
          patch.object(fluxo, "_ofertar_agenda", new=AsyncMock()) as reoferta, \
-         patch.object(fluxo, "_enviar", new=AsyncMock()), \
+         patch.object(fluxo, "_enviar", new=AsyncMock(return_value=(True, "ok"))), \
          patch.object(fluxo, "_concluir", new=AsyncMock()) as concluir, \
          patch.object(fluxo, "_reuniao", new=AsyncMock(return_value=_reuniao())):
         await fluxo._agendar(e, _resp(acao="agendar_slot",
@@ -534,6 +592,7 @@ async def trata(etapa_ou_none):
          patch.object(fluxo, "_historico", new=AsyncMock(return_value=[])), \
          patch.object(fluxo, "_reuniao", new=AsyncMock(return_value=None)), \
          patch.object(fluxo, "send_nat_message", new=AsyncMock(return_value=True)), \
+         patch.object(fluxo, "enviar_nat", new=AsyncMock(return_value=(True, "ok"))), \
          patch.object(fluxo.llm, "conversar", new=AsyncMock(return_value=_resp(cumprida=False))):
         return await fluxo.processar_texto("5583999998888", "oi", "wamid.X", _db())
 

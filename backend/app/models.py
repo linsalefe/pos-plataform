@@ -469,6 +469,10 @@ KIND_LEMBRETE_REUNIAO = "lembrete_reuniao"
 # apontou no fluxo velho (`sem_contato` e `encerrado` declaradas e nunca atribuídas).
 KIND_ENCERRAR_INATIVO = "encerrar_inativo"
 
+# A fala que o teto por hora adiou. Não precisa de migração: o CHECK de
+# `nat_scheduled_actions` é sobre `status`, não sobre `kind`.
+KIND_RESPONDER_PENDENTE = "responder_pendente"
+
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3
 

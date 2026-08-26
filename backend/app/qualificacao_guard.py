@@ -168,7 +168,7 @@ async def qualificacao_pode_atuar(contact: Contact, db: AsyncSession) -> tuple[b
     "o agente escuta" nunca divergem.
     """
     def bloqueia(motivo: str) -> tuple[bool, str]:
-        print(f"🔒 Agente não enviou: {motivo}")
+        print(f"🔒 Agente não enviou ({contact.wa_id}): {motivo}")
         return False, motivo
 
     try:
