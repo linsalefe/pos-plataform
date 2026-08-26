@@ -28,7 +28,8 @@ import sys
 from app import qualificacao_llm as llm
 from app.qualificacao_fluxo import MISSOES
 from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
-                        ETAPA_Q_AGUARDANDO_MOTIVACAO)
+                        ETAPA_Q_AGUARDANDO_MOTIVACAO, ETAPA_Q_ESCOLHENDO_SLOT,
+                        ETAPA_Q_OFERTANDO_AGENDA)
 
 # --------------------------------------------------------------------------------------
 # Contexto base do roteiro: Marina, Psicologia, sem reunião marcada.
@@ -174,6 +175,54 @@ def cita_algum(*palavras):
 
 # --------------------------------------------------------------------------------------
 # Os cenários. (id, título, etapa, contexto, histórico, [checagens], [pontos de leitura])
+# --------------------------------------------------------------------------------------
+# GRUPO 4 — A OFERTA DE AGENDA (regressão de 26/08)
+#
+# Cenário que faltava: a etapa `ofertando_agenda` NUNCA teve teste automático, e foi
+# justamente ela que falhou em produção duas vezes seguidas em 26/08 10:11, levando um lead
+# a `transferido_humano` por "LLM indisponível ao oferecer a agenda". O log de então não
+# dizia qual checagem recusou — o P0-E existe por causa disto.
+#
+# A grade é a REAL de 26/08: 13 slots em 3 dias, o mesmo tamanho da que falhou.
+HORAS_DIA = ["09:00", "10:30", "12:00", "13:30", "15:00", "17:15"]
+GRADE_13 = (["2026-08-26 14:15 (id: s1)"]
+            + [f"2026-08-27 {h} (id: d2{i})" for i, h in enumerate(HORAS_DIA)]
+            + [f"2026-08-28 {h} (id: d3{i})" for i, h in enumerate(HORAS_DIA)])
+IDS_GRADE = ["s1"] + [f"d2{i}" for i in range(6)] + [f"d3{i}" for i in range(6)]
+HORAS_GRADE = set(HORAS_DIA) | {"14:15"}
+
+
+def ate_5_horarios(r):
+    """NO MÁXIMO 5 horários na mensagem. A Fabiana recebeu 14 numa só, em 25/08."""
+    achados = set(re.findall(r"\b([0-2]?\d:[0-5]\d)\b", r["mensagem"]))
+    return len(achados) <= 5, f"{len(achados)} horário(s) apresentado(s) (teto 5)"
+
+
+def so_horarios_da_grade(r):
+    """Nenhum horário inventado. É a regra dura: o LLM só veste o que o código ofereceu."""
+    achados = set(re.findall(r"\b([0-2]?\d:[0-5]\d)\b", r["mensagem"]))
+    fora = achados - HORAS_GRADE
+    return not fora, ("todos os horários vêm da grade" if not fora
+                      else f"INVENTOU {sorted(fora)}")
+
+
+def sem_id_cru(r):
+    """O id do slot é instrução interna. Vazá-lo para o lead é ruído."""
+    vazou = [i for i in IDS_GRADE if i in r["mensagem"]]
+    return not vazou, "nenhum id cru na mensagem" if not vazou else f"vazou {vazou}"
+
+
+def cabe_no_teto(r):
+    """A resposta não pode estar perto de `MAX_TOKENS` — truncar quebra o JSON inteiro.
+
+    MEDIDO em 26/08: com a missão antiga (lista completa) a saída chegou a 328 tokens de
+    400 — 82% do teto. Com o teto de 5 horários, 117-173. Esta checagem é o alarme se a
+    missão voltar a crescer.
+    """
+    chars = len(r["mensagem"])
+    return chars < 900, f"mensagem com {chars} chars (folga sobre MAX_TOKENS={llm.MAX_TOKENS})"
+
+
 CENARIOS = [
     # ---- GRUPO 1 — caminho feliz ----
     ("1.1", "responde o ano", ETAPA_Q_AGUARDANDO_ANO, ctx(),
@@ -279,6 +328,35 @@ CENARIOS = [
      [contrato, cumprida(False), sem_dado,
       cita_algum("texto", "escrever", "escreve", "não consigo", "nao consigo")],
      ["diz com naturalidade que não consegue ouvir/ver por ali e pede em texto"]),
+
+    # ---- GRUPO 4 — oferta de agenda ----
+    ("4.1", "oferece a agenda com 13 slots na grade", ETAPA_Q_OFERTANDO_AGENDA,
+     ctx(**{"Ano de conclusão": "2019", "Atuação profissional": "CAPS em Recife",
+            "Motivação declarada": "quero me especializar",
+            "Horários disponíveis (use SÓ estes)": GRADE_13}),
+     hist(("a", "Entendi — você quer se especializar. Vou ver os horários disponíveis.")),
+     [contrato, ate_5_horarios, so_horarios_da_grade, sem_id_cru, cabe_no_teto,
+      acao("nenhuma"), sem_valor],
+     ["convida a dizer dia/período preferido se nenhum dos 5 servir"]),
+
+    ("4.2", "escolhe um horário oferecido", ETAPA_Q_ESCOLHENDO_SLOT,
+     ctx(**{"Ano de conclusão": "2019", "Atuação profissional": "CAPS em Recife",
+            "Motivação declarada": "quero me especializar",
+            "Horários disponíveis (use SÓ estes)": GRADE_13}),
+     hist(("a", "Tenho estes: 27/08 às 09:00, 10:30 ou 15:00; 28/08 às 12:00. Qual serve?"),
+          ("u", "27/08 às 10:30")),
+     [contrato, acao("agendar_slot"), extraiu("slot_id", "d21")],
+     ["copia o id EXATO do contexto, sem inventar"]),
+
+    ("4.3", "escolhe com o formato torto (o caso Fabiana)", ETAPA_Q_ESCOLHENDO_SLOT,
+     ctx(**{"Ano de conclusão": "2019", "Atuação profissional": "CAPS em Recife",
+            "Motivação declarada": "quero me especializar",
+            "Horários disponíveis (use SÓ estes)": GRADE_13}),
+     hist(("a", "Tenho estes: 27/08 às 09:00, 10:30 ou 15:00; 28/08 às 12:00. Qual serve?"),
+          ("u", "27:08 - 10:30")),
+     [contrato, acao("agendar_slot"), extraiu("slot_id", "d21")],
+     ["o typo 27:08 no lugar de 27/08 NÃO atrapalha — em 25/08 ela escreveu assim e o "
+      "modelo acertou; este cenário protege esse acerto"]),
 ]
 
 
@@ -289,7 +367,8 @@ async def roda_um(c):
     print(f"etapa   : {etapa}")
     print(f"lead    : {fala!r}")
 
-    r = await llm.conversar(missao=MISSOES[etapa], contexto=contexto, historico=historico)
+    r = await llm.conversar(missao=MISSOES[etapa], contexto=contexto, historico=historico,
+                            rotulo=f"teste/{cid}")
 
     print(f"\nJSON devolvido:\n{json.dumps(r, ensure_ascii=False, indent=2)}")
     if r:

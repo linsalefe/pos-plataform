@@ -129,7 +129,9 @@ MISSOES = {
         'PERGUNTA: esta é a última etapa de qualificação, e quem fala em seguida é o '
         'sistema, com os horários. Termine dizendo que vai ver os horários disponíveis.'),
     ETAPA_Q_OFERTANDO_AGENDA: (
-        'Apresente os horários que estão no contexto, de forma curta, e pergunte qual serve. '
+        'Ofereça NO MÁXIMO 5 horários, escolhidos entre os do contexto e espalhados entre '
+        'os dias e entre manhã e tarde. NÃO liste todos. Depois dos 5, TERMINE convidando: '
+        'se nenhum servir, que ela diga que dia e período prefere, que você procura. '
         'Use SOMENTE os horários listados. Quando ela escolher um deles, use '
         'acao="agendar_slot" e dado_extraido = {"slot_id": "<o id exato do horário '
         'escolhido, copiado do contexto>"}.'),
@@ -417,6 +419,13 @@ def _espalhados(horarios: list[dict], n: int) -> list[dict]:
     Espalhar em vez de aumentar o `n`: o limite existe porque a lista vai inteira para o
     prompt e uma parede de 12 horários por dia empurra o modelo a despejar tudo no
     WhatsApp. Seis pontos cobrindo 09:00–17:15 dizem mais sobre o dia do que doze.
+
+    ISTO NÃO É O QUE A PESSOA VÊ. Este `n` corta o que vai para o CONTEXTO — a lista da qual
+    o modelo pode escolher, e a garantia de que ele não inventa horário. Quantos deles são
+    APRESENTADOS é regra da missão de `ofertando_agenda`, hoje no máximo 5. Os dois números
+    são diferentes de propósito: 3 dias × 6 dão ao modelo margem para atender "prefiro de
+    manhã" sem uma segunda consulta à grade; 5 é o que cabe numa mensagem de WhatsApp sem
+    virar parede. A Fabiana recebeu 14 numa mensagem só, em 25/08.
 
     Extremos sempre entram — o primeiro e o último horário do dia são justamente os que
     resolvem quem só pode cedo ou só pode tarde.
