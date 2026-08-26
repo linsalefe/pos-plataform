@@ -344,6 +344,117 @@ async def verify_webhook(
     raise HTTPException(status_code=403, detail="Token inválido")
 
 
+# ==========================================================================================
+# P0-C — A REDE DE ÚLTIMA INSTÂNCIA, FORA DO SAVEPOINT (26/08/2026)
+# ==========================================================================================
+# O `except Exception` do roteamento fazia UMA coisa: `print`. Não enviava, não notificava,
+# não marcava. E o `begin_nested` revertia junto a etapa `transferido_humano` que o
+# `_fallback` já tinha escrito — de modo que a única prova de que o lead existiu sumia com
+# o rollback.
+#
+# MEDIDO EM 25/08 (Fabiana Moreira, 5517997379129): 3 mensagens dela, 3 exceções, 3
+# rollbacks. `notifications` ficou com ZERO linhas `agente_transferiu` para ela, a etapa
+# voltou para `escolhendo_slot` e o lead — que tinha escolhido horário três vezes — não
+# recebeu nada. O log trazia só `InvalidRequestError: Can't operate on closed transaction`,
+# sem traceback: foi sorte a mensagem do erro ser autoexplicativa.
+#
+# O QUE ESTA FUNÇÃO GARANTE, nesta ordem e sem depender da sessão quebrada:
+#   1. a sessão do webhook volta a ser usável (ou o lote inteiro morria na linha seguinte);
+#   2. a gestão recebe uma notificação com contato, wa_message_id e traceback;
+#   3. o lead recebe UMA despedida e o agente para de escutá-lo (`transferido_humano`);
+#   4. nada disto pode levantar. Uma rede que derruba o webhook não é rede.
+#
+# POR QUE SESSÃO NOVA. Os passos 2 e 3 rodam em `async_session()` própria justamente porque
+# a sessão do webhook pode estar com a transação FECHADA (foi o caso da Fabiana: o
+# `db.commit()` de `agendar._marcar` dentro do savepoint) ou ABORTADA (erro de banco). Uma
+# sessão nova não herda nenhum dos dois estados — e commita sozinha, então o que ela grava
+# NÃO é revertido pelo savepoint que acabou de estourar.
+async def _rede_de_ultima_instancia(db: AsyncSession, contact_wa_id: str,
+                                    wa_message_id: str, erro: Exception) -> None:
+    """Roteamento estourou. Salva o que der: sessão, aviso à gestão, despedida ao lead."""
+    import traceback
+    from app.models import Notification
+
+    # `format_exception(erro)` e NÃO `format_exc()`: o segundo lê a exceção "em voo" do
+    # `except` ambiente, e devolve "NoneType: None" para quem for chamado fora dele — foi o
+    # que o teste desta rede pegou. Formatar a partir do OBJETO funciona nos dois casos e
+    # torna a função testável sem simular um `raise` de verdade.
+    detalhe = "".join(traceback.format_exception(type(erro), erro, erro.__traceback__))
+    print(f"⚠️  Falha no roteamento de fluxo ({wa_message_id}) para {contact_wa_id}: "
+          f"{type(erro).__name__}: {erro}\n{detalhe}")
+
+    # ---- 1. A SESSÃO DO WEBHOOK ---------------------------------------------------------
+    # Sondar antes de rolar para trás, e não rolar sempre: um `db.rollback()` incondicional
+    # descartaria a Message do inbound que o lote acabou de gravar — o lead sumiria da tela
+    # do SDR por causa de um erro que não tinha nada com ela. Quando o savepoint fez o seu
+    # trabalho (exceção comum, sem commit no meio), a sessão está intacta e o SELECT passa.
+    # Quando não está — transação fechada ou abortada —, aí sim o rollback é o que impede o
+    # `db.execute` da linha seguinte de derrubar o lote inteiro de mensagens.
+    try:
+        await db.execute(select(1))
+    except Exception:
+        try:
+            await db.rollback()
+            print(f"↩️  Sessão do webhook revertida após falha de roteamento "
+                  f"({wa_message_id}) — o lote segue")
+        except Exception as e2:
+            print(f"❌ Rollback da sessão do webhook falhou: {type(e2).__name__}: {e2}")
+
+    # ---- 2 e 3. SESSÃO NOVA, QUE COMMITA SOZINHA ----------------------------------------
+    try:
+        from app.nat_guard import GESTOR_USER_ID, _agora_sp
+        from app.qualificacao_fluxo import (ETAPAS_QUALIFICACAO_ATIVAS, ETAPA_Q_TRANSFERIDO,
+                                            TEXTO_FALLBACK, TIPO_NOTIF_AGENTE, estado_de)
+        from app.qualificacao_guard import ETAPA_CONVERSA, guard_de_abertura
+        from app.nat_sender import send_nat_message
+
+        async with async_session() as db2:
+            db2.add(Notification(
+                user_id=GESTOR_USER_ID, contact_wa_id=contact_wa_id,
+                type=TIPO_NOTIF_AGENTE, ref=wa_message_id,
+                title="FALHA NO ROTEAMENTO — lead pode ter ficado sem resposta",
+                body=(f"{contact_wa_id} · msg {wa_message_id} · "
+                      f"{type(erro).__name__}: {erro}\n{detalhe}")[:4000]))
+            await db2.commit()
+            print(f"🔔 Rede: gestão (user {GESTOR_USER_ID}) avisada sobre {contact_wa_id}")
+
+            # A despedida só sai para quem o AGENTE estava atendendo. Sem estado ativo o
+            # inbound era do fluxo velho (ou de ninguém): mandar "vou te conectar com uma
+            # pessoa" ali seria o agente aparecendo numa conversa que nunca foi dele. A
+            # gestão já foi avisada acima nos dois casos — é o aviso que fecha o silêncio.
+            estado = await estado_de(contact_wa_id, db2)
+            if estado is None or estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
+                print(f"↩️  Rede: {contact_wa_id} sem estado ativo do agente "
+                      f"({estado.etapa if estado else 'sem estado'}) — sem despedida")
+                return
+
+            # ORDEM IGUAL À DO `_fallback`: marca ANTES de enviar. `transferido_humano` está
+            # fora de ETAPAS_QUALIFICACAO_ATIVAS, então a partir daqui o agente nem escuta
+            # nem fala — e é isso que impede a próxima mensagem dela de cair na MESMA
+            # exceção e gerar uma segunda despedida.
+            estado.etapa = ETAPA_Q_TRANSFERIDO
+            estado.transferido_em = _agora_sp()
+            estado.transferido_motivo = (f"falha no roteamento: "
+                                         f"{type(erro).__name__}: {erro}")[:500]
+            await db2.commit()
+            print(f"🛟 Rede: {contact_wa_id} transferido para humano após falha de roteamento")
+
+            # UMA tentativa, e o guard é o de ABERTURA porque a etapa já não é ativa —
+            # `qualificacao_pode_atuar` recusaria a própria despedida. Mesmo motivo do
+            # `_fallback`.
+            saiu = await send_nat_message(contact_wa_id, ETAPA_CONVERSA, db2,
+                                          guard=guard_de_abertura,
+                                          corpo_livre=TEXTO_FALLBACK)
+            await db2.commit()
+            print(f"{'📨' if saiu else '🔒'} Rede: despedida para {contact_wa_id} "
+                  f"{'enviada' if saiu else 'RECUSADA pelo guard'}")
+    except Exception as e3:
+        # O último degrau. Se a rede falhar, ela falha ALTO no log e cala no resto — o
+        # webhook não pode morrer por causa do tratamento de um erro que ele já sobreviveu.
+        print(f"❌ Rede de última instância falhou para {contact_wa_id} "
+              f"({wa_message_id}): {type(e3).__name__}: {e3}\n{traceback.format_exc()}")
+
+
 @app.post("/webhook")
 async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
@@ -503,8 +614,8 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                                 await processar_texto(
                                     msg["from"], content, wa_message_id, db)
                 except Exception as e:
-                    print(f"⚠️  Falha no roteamento de fluxo ({wa_message_id}): "
-                          f"{type(e).__name__}: {e}")
+                    # P0-C — ver `_rede_de_ultima_instancia`, acima. Era só um print.
+                    await _rede_de_ultima_instancia(db, msg["from"], wa_message_id, e)
 
                 # Notificação de nova mensagem para o SDR dono (se houver)
                 owner_result = await db.execute(select(Contact.assigned_to, Contact.name).where(Contact.wa_id == msg["from"]))
