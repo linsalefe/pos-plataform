@@ -501,9 +501,15 @@ async def teste_15_janela_tolerante_ao_9o_digito():
             r.scalar_one_or_none.return_value = AGORA - timedelta(minutes=2)
             return r
 
+    # O RELÓGIO PRECISA SER O DO TESTE, NÃO O DE HOJE. `janela_aberta` compara o inbound
+    # com `_agora_sp()`; sem prender esse relógio, o teste nasceu passando (25/08) e virou
+    # vermelho sozinho 24h depois — a janela de 24h fechou sobre o próprio dublê. Um suite
+    # que fica vermelho pelo calendário deixa de ser lido, e foi o que aconteceu: chegou
+    # ao sprint de 26/08 já falhando, escondendo qualquer regressão real neste arquivo.
     for numero in (WA, WA_12):
         db = DB()
-        aberta = await nat_sender.janela_aberta(numero, db)
+        with patch.object(nat_sender, "_agora_sp", return_value=AGORA):
+            aberta = await nat_sender.janela_aberta(numero, db)
         check(f"{numero}: janela ABERTA", aberta is True, str(aberta))
         check(f"  busca as duas grafias", WA in db.sql and WA_12 in db.sql,
               [l for l in db.sql.split("\n") if "IN (" in l][:1])
