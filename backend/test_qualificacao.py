@@ -107,9 +107,9 @@ print("\n2) Contrato do LLM — fora dele, ninguém improvisa")
 
 VALIDO = json.dumps({"mensagem": "Oi!", "etapa_cumprida": True,
                      "dado_extraido": {"ano_conclusao": "2019"}, "acao": "nenhuma"})
-checa("JSON válido passa", llm._validar(VALIDO)["dado_extraido"], {"ano_conclusao": "2019"})
+checa("JSON válido passa", llm._validar(VALIDO)[0]["dado_extraido"], {"ano_conclusao": "2019"})
 checa("cercado em markdown passa",
-      llm._validar("```json\n" + VALIDO + "\n```")["mensagem"], "Oi!")
+      llm._validar("```json\n" + VALIDO + "\n```")[0]["mensagem"], "Oi!")
 for rotulo, bruto in [
     ("acao fora do enum", json.dumps({"mensagem": "x", "etapa_cumprida": True,
                                       "dado_extraido": None, "acao": "inventar"})),
@@ -125,7 +125,9 @@ for rotulo, bruto in [
     ("lista no lugar do objeto", "[]"),
     ("None", None),
 ]:
-    checa(f"{rotulo} -> None", llm._validar(bruto), None)
+    resultado, motivo = llm._validar(bruto)
+    checa(f"{rotulo} -> None", resultado, None)
+    checa(f"{rotulo} -> tem motivo", bool(motivo), True)
 
 ctx = llm.montar_contexto({"Curso": "TEA", "Formação": None, "Vazio": "",
                            "Horários": ["ter 10:30"]})

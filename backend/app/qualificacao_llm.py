@@ -35,9 +35,24 @@ régua R$100/200/300 é critério humano (RECON §1.11). Sem essa linha o modelo
 valor plausível, que é o pior desfecho possível numa conversa de venda.
 """
 import json
+import logging
 import os
+import time
 
 from openai import AsyncOpenAI
+
+# LOG, NÃO PRINT — e a diferença é operacional, não estética.
+#
+# `print` escreve no stdout do uvicorn, que o systemd captura por PIPE. Pipe não é TTY,
+# então o Python usa buffer de bloco (~8 KB) e a linha só aparece no journald quando o
+# buffer enche. O `logging` do SQLAlchemy (echo=True) usa outro caminho e sai na hora.
+#
+# MEDIDO em 26/08: o turno do teste imprimiu `➡️ Agente: ... aguardando_atuacao →
+# aguardando_motivacao`, o estado avançou no banco, e a linha NÃO ESTAVA no journald
+# minutos depois — presa no buffer, enquanto o SQL do mesmo turno já tinha saído. Um
+# rastro que chega fora de ordem, ou não chega se o processo morrer, não serve para
+# diagnóstico. Por isso o rastro do LLM nasce em `logging`, não em `print`.
+log = logging.getLogger("agente.llm")
 
 MODELO = "gpt-5-mini"
 
@@ -133,7 +148,7 @@ def _validar(bruto) -> dict | None:
     improvisar em produção. Fora do contrato → humano.
     """
     if not bruto or not isinstance(bruto, str):
-        return None
+        return None, "resposta vazia do modelo"
     texto = bruto.strip()
     # Cinto e suspensório: o modelo às vezes embrulha em cerca de markdown mesmo com
     # response_format json_object.
@@ -143,22 +158,25 @@ def _validar(bruto) -> dict | None:
             texto = texto[4:].strip()
     try:
         dados = json.loads(texto)
-    except (ValueError, TypeError):
-        return None
+    except (ValueError, TypeError) as e:
+        # O suspeito nº1 quando a mensagem é longa (a oferta de agenda): truncagem por
+        # `max_completion_tokens`, que no gpt-5 é dividido com os tokens de raciocínio.
+        # JSON cortado no meio de uma string cai exatamente aqui.
+        return None, f"JSON inválido ({e})"
     if not isinstance(dados, dict):
-        return None
+        return None, "JSON não é objeto"
 
     mensagem = dados.get("mensagem")
     if not isinstance(mensagem, str) or not mensagem.strip():
-        return None
+        return None, "'mensagem' ausente, vazia ou não-string"
     if not isinstance(dados.get("etapa_cumprida"), bool):
-        return None
+        return None, f"'etapa_cumprida' não é bool ({dados.get('etapa_cumprida')!r})"
     acao = dados.get("acao")
     if acao not in ACOES_VALIDAS:
-        return None
+        return None, f"'acao' fora do enum ({acao!r})"
     extraido = dados.get("dado_extraido")
     if extraido is not None and not isinstance(extraido, dict):
-        return None
+        return None, f"'dado_extraido' não é objeto ({type(extraido).__name__})"
     if isinstance(extraido, dict):
         # Só texto. Um dict aninhado viraria str() feio dentro de uma coluna TEXT.
         extraido = {str(k): str(v) for k, v in extraido.items()
@@ -169,7 +187,7 @@ def _validar(bruto) -> dict | None:
         "etapa_cumprida": dados["etapa_cumprida"],
         "dado_extraido": extraido or None,
         "acao": acao,
-    }
+    }, ""
 
 
 def montar_contexto(fatos: dict) -> str:
@@ -190,17 +208,43 @@ def montar_contexto(fatos: dict) -> str:
     return "\n".join(linhas) if linhas else "(sem fatos adicionais)"
 
 
-async def conversar(*, missao: str, contexto: str, historico: list) -> dict | None:
+# Quanto da resposta crua vai para o log quando ela é recusada. Suficiente para ver onde o
+# JSON foi cortado; curto o bastante para não transformar o journald em depósito de prompt.
+MAX_CRU_NO_LOG = 600
+
+
+async def conversar(*, missao: str, contexto: str, historico: list,
+                    rotulo: str = "?") -> dict | None:
     """Uma rodada de conversa. Devolve o dict do contrato, ou None (→ transferir humano).
 
     `historico` é [{"role": "user"|"assistant", "content": str}], já recortado por quem
     chama. Vem do banco, não da memória do modelo: cada chamada é independente.
+
+    `rotulo` identifica o turno no log (`<contato>/<etapa>`). Não vai para o modelo — só
+    existe para o rastro abaixo poder ser cruzado com `messages` e `nat_qualificacao_state`.
+
+    --------------------------------------------------------------------------------------
+    POR QUE ESTA FUNÇÃO AGORA FALA (P0-E)
+    --------------------------------------------------------------------------------------
+    Até 26/08 o único rastro de um turno era `⚠️ resposta fora do contrato (tentativa 1/2)`
+    — sem dizer QUAL das oito checagens de `_validar` recusou, sem a resposta crua e sem o
+    `finish_reason`. Quando o agente parou de oferecer agenda ao Álefe às 10:11, o log
+    provou que o LLM falhou duas vezes e NADA além disso: a causa exata ficou indeterminável
+    e a auditoria teve que registrar a lacuna em vez do motivo.
+
+    O turno bem-sucedido também some hoje, e é ele que permitiria responder "quantas vezes o
+    modelo devolveu `ofertar_agenda`?" — pergunta que a auditoria de 26/08 não pôde
+    responder porque o dado nunca existiu.
+
+    Uma linha por turno, nos dois desfechos. É barato e é a diferença entre diagnosticar e
+    adivinhar.
     """
     mensagens = [{"role": "system",
                   "content": PROMPT_BASE.format(missao=missao, contexto=contexto)}]
     mensagens.extend(historico or [])
 
     for tentativa in range(1, MAX_TENTATIVAS + 1):
+        marca = time.monotonic()
         try:
             extra = {"reasoning_effort": "minimal"} if MODELO.startswith("gpt-5") else {}
             resposta = await _obter_cliente().chat.completions.create(
@@ -210,14 +254,49 @@ async def conversar(*, missao: str, contexto: str, historico: list) -> dict | No
                 response_format={"type": "json_object"},
                 **extra,
             )
-            validado = _validar(resposta.choices[0].message.content)
+            ms = int((time.monotonic() - marca) * 1000)
+            escolha = resposta.choices[0]
+            bruto = escolha.message.content
+            validado, motivo = _validar(bruto)
+
             if validado is not None:
+                log.info(
+                    "🧠 LLM %s | acao=%s etapa_cumprida=%s dado=%s | %dms %s",
+                    rotulo, validado["acao"], validado["etapa_cumprida"],
+                    validado["dado_extraido"] or {}, ms, _uso(resposta))
                 return validado
-            print(f"⚠️  Agente/LLM: resposta fora do contrato "
-                  f"(tentativa {tentativa}/{MAX_TENTATIVAS})")
+
+            # RECUSA. Tudo o que faltava para diagnosticar vai aqui, de uma vez:
+            # qual checagem barrou, por que o modelo parou, quanto gastou, e o texto cru.
+            log.warning(
+                "⚠️  LLM %s FORA DO CONTRATO (tentativa %d/%d) | motivo=%s | "
+                "finish_reason=%s | %dms %s | cru=%r",
+                rotulo, tentativa, MAX_TENTATIVAS, motivo,
+                getattr(escolha, "finish_reason", "?"), ms, _uso(resposta),
+                (bruto or "")[:MAX_CRU_NO_LOG])
         except Exception as e:
-            print(f"⚠️  Agente/LLM: {type(e).__name__}: {e} "
-                  f"(tentativa {tentativa}/{MAX_TENTATIVAS})")
+            ms = int((time.monotonic() - marca) * 1000)
+            log.warning("⚠️  LLM %s ERRO (tentativa %d/%d) | %s: %s | %dms",
+                        rotulo, tentativa, MAX_TENTATIVAS, type(e).__name__, e, ms)
 
     # Esgotou. Não improvisa: quem chama transfere para humano.
+    log.error("🛑 LLM %s esgotou %d tentativas — quem chamou vai transferir para humano",
+              rotulo, MAX_TENTATIVAS)
     return None
+
+
+def _uso(resposta) -> str:
+    """`tokens=in/out(raciocínio)`. É o que revela truncagem por `max_completion_tokens`.
+
+    No gpt-5 o teto é COMPARTILHADO entre raciocínio e saída: um turno que raciocina demais
+    devolve JSON cortado, e sem este número a truncagem é indistinguível de um modelo que
+    simplesmente não seguiu o formato.
+    """
+    u = getattr(resposta, "usage", None)
+    if u is None:
+        return "tokens=?"
+    det = getattr(u, "completion_tokens_details", None)
+    racio = getattr(det, "reasoning_tokens", None) if det else None
+    saida = getattr(u, "completion_tokens", "?")
+    return (f"tokens={getattr(u, 'prompt_tokens', '?')}/{saida}"
+            f"{f'(racio {racio})' if racio is not None else ''}/teto {MAX_TOKENS}")

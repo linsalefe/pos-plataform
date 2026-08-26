@@ -788,7 +788,8 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
     contexto, ofertados = await _fatos(estado, db, com_slots=com_slots)
 
     resposta = await llm.conversar(missao=MISSOES[etapa], contexto=contexto,
-                                   historico=await _historico(contact_wa_id, db))
+                                   historico=await _historico(contact_wa_id, db),
+                                   rotulo=f"{contact_wa_id}/{etapa}")
     if resposta is None:
         await _fallback(estado, "LLM indisponível ou fora do contrato", db)
         return True
@@ -858,7 +859,9 @@ async def _ofertar_agenda(estado: NatQualificacaoState, db: AsyncSession) -> Non
         return
     resposta = await llm.conversar(missao=MISSOES[ETAPA_Q_OFERTANDO_AGENDA],
                                    contexto=contexto,
-                                   historico=await _historico(estado.contact_wa_id, db))
+                                   historico=await _historico(estado.contact_wa_id, db),
+                                   rotulo=f"{estado.contact_wa_id}/ofertar_agenda"
+                                          f"[{len(ofertados)} slots]")
     if resposta is None:
         await _fallback(estado, "LLM indisponível ao oferecer a agenda", db)
         return
