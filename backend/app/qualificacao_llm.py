@@ -64,6 +64,23 @@ MAX_TOKENS = 400
 
 ACOES_VALIDAS = frozenset({"nenhuma", "ofertar_agenda", "agendar_slot", "transferir_humano"})
 
+# `ofertar_agenda` É ACEITA, MAS NÃO EXISTE PARA O FLUXO — e as duas metades são de propósito.
+#
+# `qualificacao_fluxo.processar_texto` nunca teve ramo para ela: quem oferece a agenda é o
+# código (`_ofertar_agenda`, chamado por `_avancar`), não uma ação do modelo. A ação era um
+# rótulo morto que o próprio prompt oferecia — convite a usá-la por analogia, sem nada do
+# outro lado.
+#
+# TIRAR DO PROMPT resolve a indução. TIRAR DO ENUM seria pior que deixar: hoje ela cai
+# inofensiva no ramo de `etapa_cumprida`; recusada por `_validar`, viraria 2 tentativas
+# falhas e um `_fallback` — transferência espúria de um lead por causa de uma palavra. Um
+# no-op trocado por um lead perdido.
+#
+# Então ela é NORMALIZADA para "nenhuma" na entrada, com log. O log é o ponto: a auditoria
+# de 26/08 não pôde responder "com que frequência o modelo devolve isto?" porque o dado
+# nunca existiu. Agora existe, e a decisão de remover de vez passa a ter número.
+ACAO_OBSOLETA = "ofertar_agenda"
+
 # Cliente PREGUIÇOSO. Construir no import exigiria OPENAI_API_KEY presente para o módulo
 # sequer carregar — e isso impediria `test_qualificacao.py` de exercitar o validador do
 # contrato sem credencial, que é justamente o teste que mais importa. Também evita que uma
@@ -129,7 +146,7 @@ RESPONDA SOMENTE COM UM OBJETO JSON, sem markdown, exatamente com estas chaves:
 {{"mensagem": "o que enviar à pessoa, em texto puro",
   "etapa_cumprida": true ou false,
   "dado_extraido": {{"campo": "valor"}} ou null,
-  "acao": "nenhuma" | "ofertar_agenda" | "agendar_slot" | "transferir_humano"}}
+  "acao": "nenhuma" | "agendar_slot" | "transferir_humano"}}
 
 Regras do JSON:
 - "etapa_cumprida" é true SÓ quando a pessoa respondeu de fato o que a missão pedia. \
@@ -174,6 +191,10 @@ def _validar(bruto) -> dict | None:
     acao = dados.get("acao")
     if acao not in ACOES_VALIDAS:
         return None, f"'acao' fora do enum ({acao!r})"
+    if acao == ACAO_OBSOLETA:
+        log.info("🏷️  LLM devolveu '%s' (obsoleta, fora do prompt) — normalizada para "
+                 "'nenhuma'", ACAO_OBSOLETA)
+        acao = "nenhuma"
     extraido = dados.get("dado_extraido")
     if extraido is not None and not isinstance(extraido, dict):
         return None, f"'dado_extraido' não é objeto ({type(extraido).__name__})"

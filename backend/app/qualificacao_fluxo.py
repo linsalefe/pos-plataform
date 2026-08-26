@@ -840,7 +840,7 @@ async def _avancar(estado: NatQualificacaoState, mensagem: str, db: AsyncSession
         await _enviar(estado, mensagem, db)
         if reuniao is not None:
             estado.agendamento_id = reuniao.id
-            await _concluir(estado, reuniao, db)
+            await _concluir(estado, reuniao, db, confirmar=True)
         else:
             estado.etapa = ETAPA_Q_OFERTANDO_AGENDA
             await _ofertar_agenda(estado, db)
@@ -913,10 +913,51 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
     await _concluir(estado, reuniao, db)
 
 
-async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession) -> None:
-    """Missão cumprida: etapa `concluido` e lembrete agendado."""
+async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession, *,
+                    confirmar: bool = False) -> None:
+    """Missão cumprida: etapa `concluido` e lembrete agendado.
+
+    ------------------------------------------------------------------------------------
+    `confirmar` — A PROMESSA QUE O AGENTE FAZIA E NÃO CUMPRIA
+    ------------------------------------------------------------------------------------
+    A MISSAO de `aguardando_motivacao` manda, sem condição: "Termine dizendo que vai ver os
+    horários disponíveis". Ela não pode ser condicional — o modelo não sabe se a pessoa já
+    tem reunião, e essa é justamente a informação que só o código tem.
+
+    A bifurcação em `_avancar` tem dois ramos e, até 26/08, só um falava depois:
+
+        sem reunião -> _ofertar_agenda -> manda os horários          ✅
+        com reunião -> _concluir       -> CALAVA                     ❌
+
+    MEDIDO em 26/08 09h02 com a Evelyn (`nat_abertura_agendado`, reunião 205 já marcada):
+
+        09:02:01 agente: "...Vou ver os horários disponíveis para a sua reunião com a
+                          Victória Amorim e te retorno em seguida."
+        09:02:14 ela:    "Obrigada 😃"
+        (nada, nunca)
+
+    E o silêncio era definitivo: `concluido` está fora de ETAPAS_QUALIFICACAO_ATIVAS, então
+    o "Obrigada" seguinte já nem foi escutado. Não é um caso de borda — é TODO lead que
+    chega com reunião marcada, a faixa inteira da abertura T1.
+
+    O fecho é determinístico e não passa pelo LLM: ele afirma data, hora e consultora, que
+    são fatos do banco. Uma promessa quebrada não se conserta com criatividade.
+
+    Só `_avancar` pede `confirmar=True`. Vindo de `_agendar`, a fala do modelo ACABOU de
+    confirmar o horário escolhido — um segundo texto aqui seria a mesma notícia duas vezes.
+    """
     estado.etapa = ETAPA_Q_CONCLUIDO
     await db.flush()
+
+    if confirmar and reuniao is not None:
+        from app.agendamento import consultoras as equipe
+        quem = equipe.nome_de(reuniao.sales_rep_email or "")
+        await _enviar(estado, (
+            f"Na verdade você já tem horário reservado: "
+            f"{reuniao.slot_inicio.strftime('%d/%m às %H:%M')}"
+            f"{f' com {quem}' if quem else ''}. "
+            f"Te espero lá! Se precisar remarcar, é só me dizer. 🙂"), db)
+
     if reuniao is not None:
         await agendar_lembrete(reuniao, db)
     print(f"✅ Agente concluiu {estado.contact_wa_id}"
