@@ -563,8 +563,10 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession)
     ETAPAS_QUALIFICACAO_ATIVAS, então a partir daqui o agente nem escuta nem fala — e é
     justamente isso que impede um loop de "falhou → tenta de novo → falhou".
 
-    Por isso o envio usa `guard_de_abertura` e não `qualificacao_pode_atuar`: a etapa já não
-    é ativa, e o guard de envio recusaria a própria mensagem de despedida.
+    Por isso o envio usa `guard_de_despedida` e não `qualificacao_pode_atuar`: a etapa já não
+    é ativa, e o guard de envio recusaria a própria mensagem de despedida. Era
+    `guard_de_abertura` até 26/08 (P1-B) — e com ele vinha o teto por hora, que podia calar
+    exatamente a mensagem cuja razão de existir é não deixar o lead no silêncio.
     """
     print(f"🛟 Agente transferiu {estado.contact_wa_id} para humano: {motivo}")
     estado.etapa = ETAPA_Q_TRANSFERIDO
@@ -573,7 +575,7 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession)
     await db.flush()
 
     await send_nat_message(estado.contact_wa_id, guard.ETAPA_CONVERSA, db,
-                           guard=guard.guard_de_abertura, corpo_livre=TEXTO_FALLBACK)
+                           guard=guard.guard_de_despedida, corpo_livre=TEXTO_FALLBACK)
     await _notificar(estado, "Agente passou um lead para você",
                      f"Motivo: {motivo}", db)
 

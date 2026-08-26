@@ -196,12 +196,64 @@ async def qualificacao_pode_atuar(contact: Contact, db: AsyncSession) -> tuple[b
         if estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
             return bloqueia(f"{wa_id} está em '{estado.etapa}', etapa em que o agente cala")
 
-        ok, motivo = await _teto_ok(config, db)
-        if not ok:
-            return bloqueia(motivo)
+        # ----------------------------------------------------------------------------------
+        # O TETO POR HORA NÃO VALE AQUI — P1-B, 26/08/2026
+        # ----------------------------------------------------------------------------------
+        # Havia um `_teto_ok` nesta linha. Ele saiu, e a razão é a natureza da mensagem:
+        #
+        #   ABERTURA = business-initiated. Nós escolhemos falar com alguém que não pediu
+        #       nada. É esse volume que a Meta pontua em qualidade, e é para ele que o teto
+        #       foi dimensionado — o comentário do `max_envios_hora` mede "~7 aberturas no
+        #       pico das 09h contra teto de 20/h".
+        #   CONVERSA = user-initiated. A pessoa ACABOU DE ESCREVER e está esperando. Não há
+        #       risco de qualidade em responder a quem perguntou; há risco em não responder.
+        #
+        # Aplicar o mesmo teto aos dois fazia com que um lead que escrevesse durante um pico
+        # de aberturas simplesmente não fosse respondido. MEDIDO em 25/08: 20:32:00 e
+        # 20:32:12, duas mensagens do 5583988046720 mortas em `teto de envios/hora estourado
+        # (20/20)` — e mortas EM SILÊNCIO, porque até o P0-B ninguém lia a recusa.
+        #
+        # O teto continua inteiro onde ele existe para valer: `qualificacao_pode_iniciar`
+        # (admissão) e `guard_de_abertura` (abertura e lembrete). O que o agente responde
+        # nunca foi o que ameaçou a qualidade do número — o que ele INICIA, sim.
+        #
+        # O QUE SEGURA O VOLUME DAQUI PARA A FRENTE: a conversa só existe depois de uma
+        # abertura, e as aberturas continuam limitadas a 20/h. O agente não pode responder
+        # mais gente do que ele teve permissão de abordar — o teto age uma porta antes.
         return True, "ok"
     except Exception as e:
         return bloqueia(f"erro inesperado na verificação: {type(e).__name__}: {e}")
+
+
+async def guard_de_despedida(contact: Contact, db: AsyncSession) -> tuple[bool, str]:
+    """A DESPEDIDA — a fala com que o agente entrega o lead a um humano. Só a chave geral.
+
+    É irmã do `guard_de_abertura` e existe pelo mesmo motivo dele: quando ela sai, a etapa já
+    é `transferido_humano`, e `qualificacao_pode_atuar` — que exige etapa ATIVA — recusaria a
+    própria mensagem de despedida. Até 26/08 o `_fallback` usava `guard_de_abertura` por
+    falta de opção melhor, e herdava dele o TETO POR HORA.
+
+    Herdar o teto ali era o pior lugar possível para ele. A despedida é a resposta a um
+    inbound (user-initiated, ver P1-B acima), é o ÚLTIMO recurso de um turno que já falhou, e
+    é justamente o que o P0-B e o P0-C usam para que uma falha nunca vire silêncio. Bloqueá-la
+    por congestionamento de ABERTURAS devolveria o silêncio pela porta dos fundos: lead
+    transferido, gestão notificada, e a pessoa do outro lado sem uma palavra.
+
+    NÃO HÁ RISCO DE ENXURRADA sem o teto: `_fallback` e a rede de última instância gravam
+    `transferido_humano` ANTES de enviar, e as duas recusam agir sobre etapa não-ativa. São
+    estruturalmente uma despedida por conversa, não um caminho que se repete.
+    """
+    def bloqueia(motivo: str) -> tuple[bool, str]:
+        print(f"🔒 Agente não se despediu ({getattr(contact, 'wa_id', '?')}): {motivo}")
+        return False, motivo
+
+    try:
+        config = await _carregar_config(db)
+        if config is None or not config.qualificacao_enabled:
+            return bloqueia("qualificacao_enabled=false ou config ausente")
+        return True, "ok"
+    except Exception as e:
+        return bloqueia(f"erro inesperado na despedida: {type(e).__name__}: {e}")
 
 
 async def guard_de_abertura(contact: Contact, db: AsyncSession) -> tuple[bool, str]:

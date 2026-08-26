@@ -733,8 +733,60 @@ checa("envio em etapa terminal -> bloqueia",
       asyncio.run(envia(_cfg(), _estado(ETAPA_Q_CONCLUIDO)))[0], False)
 checa("envio em etapa ativa -> libera",
       asyncio.run(envia(_cfg(), _estado(ETAPA_Q_AGUARDANDO_ANO)))[0], True)
-checa("o teto vale também no envio",
-      asyncio.run(envia(_cfg(teto=1), _estado(ETAPA_Q_AGUARDANDO_ANO), envios=1))[0], False)
+
+
+# ------------------------------------------------------------------------------------------
+# P1-B — o teto por hora não cala quem já está conversando (26/08/2026)
+# ------------------------------------------------------------------------------------------
+# Este teste dizia o contrário até hoje: "o teto vale também no envio" -> False. Ele estava
+# fiel ao código e o código estava errado. O teto foi dimensionado para ABERTURA, que é
+# business-initiated; responder a quem acabou de escrever é user-initiated e não ameaça a
+# qualidade do número. MEDIDO em 25/08: duas mensagens do 5583988046720 (20:32:00 e 20:32:12)
+# morreram em "teto de envios/hora estourado (20/20)", e morreram em silêncio.
+#
+# O cenário do teste é o pedido pela auditoria: TETO ARTIFICIAL EM 1, já estourado.
+checa("teto ESTOURADO + lead ativo -> RESPONDE assim mesmo (era o silêncio de 25/08)",
+      asyncio.run(envia(_cfg(teto=1), _estado(ETAPA_Q_AGUARDANDO_ANO), envios=1))[0], True)
+checa("  e nem chega a contar os envios da hora",
+      asyncio.run(envia(_cfg(teto=1), _estado(ETAPA_Q_AGUARDANDO_ANO), envios=999))[0], True)
+
+# O outro lado da mesma regra: a ABERTURA continua limitada. Sem isto, P1-B viraria "o agente
+# pode abrir conversa com quantas pessoas quiser por hora", que é exatamente o risco de
+# qualidade que o teto existe para conter.
+checa("teto ESTOURADO + ABERTURA -> continua bloqueando",
+      asyncio.run(admite(_cfg(teto=1), DEPOIS, envios=1))[0], False)
+
+
+async def abre_guard(cfg, envios=0):
+    with patch.object(guard, "_carregar_config", new=AsyncMock(return_value=cfg)), \
+         patch.object(guard, "contar_envios_ultima_hora", new=AsyncMock(return_value=envios)):
+        return await guard.guard_de_abertura(MagicMock(wa_id="5583999998888"), _db())
+
+
+checa("teto ESTOURADO + guard_de_abertura -> bloqueia (abertura e lembrete)",
+      asyncio.run(abre_guard(_cfg(teto=1), envios=1))[0], False)
+
+
+# A DESPEDIDA é a resposta a um inbound, é o último recurso de um turno que já falhou, e é o
+# que o P0-B e o P0-C usam para que falha nunca vire silêncio. Herdava o teto do
+# `guard_de_abertura`; agora tem guard próprio. O único que ela ainda respeita é a chave
+# geral — desligar o agente desliga tudo, inclusive a despedida.
+async def despede(cfg, envios=0):
+    with patch.object(guard, "_carregar_config", new=AsyncMock(return_value=cfg)), \
+         patch.object(guard, "contar_envios_ultima_hora", new=AsyncMock(return_value=envios)):
+        return await guard.guard_de_despedida(MagicMock(wa_id="5583999998888"), _db())
+
+
+checa("teto ESTOURADO + despedida -> ENVIA (senão o fail-closed vira silêncio)",
+      asyncio.run(despede(_cfg(teto=1), envios=999))[0], True)
+checa("despedida NÃO exige etapa ativa (a etapa já é transferido_humano quando ela sai)",
+      asyncio.run(despede(_cfg()))[0], True)
+checa("chave geral desligada -> nem despedida", asyncio.run(despede(_cfg(enabled=False)))[0],
+      False)
+checa("config ausente -> nem despedida", asyncio.run(despede(None))[0], False)
+with patch.object(guard, "_carregar_config", new=AsyncMock(side_effect=RuntimeError("x"))):
+    checa("despedida também falha FECHADA",
+          asyncio.run(guard.guard_de_despedida(MagicMock(wa_id="x"), _db()))[0], False)
 
 checa("guard do agente NÃO olha nat_enabled (fluxos independentes)",
       asyncio.run(envia(NatConfig(id=1, nat_enabled=False, max_envios_hora=20,

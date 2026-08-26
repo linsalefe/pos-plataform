@@ -159,9 +159,11 @@ checa("despedida enviada UMA vez", mandar.await_count, 1)
 checa("  com o texto determinístico", mandar.await_args.kwargs.get("corpo_livre"),
       fluxo.TEXTO_FALLBACK)
 # Mesmo motivo do `_fallback`: a etapa já não é ativa, e `qualificacao_pode_atuar`
-# recusaria a própria mensagem de despedida.
-checa("  pelo guard de ABERTURA", mandar.await_args.kwargs.get("guard").__name__,
-      "guard_de_abertura")
+# recusaria a própria mensagem de despedida. E o guard é o de DESPEDIDA, não o de abertura:
+# o de abertura traz o teto por hora junto, que calaria justamente a mensagem que existe
+# para o lead não ficar no silêncio (P1-B).
+checa("  pelo guard de DESPEDIDA (sem teto por hora)",
+      mandar.await_args.kwargs.get("guard").__name__, "guard_de_despedida")
 checa("  e a sessão nova commitou", nova.commits >= 2, True)
 
 print("\n4) Quem não era conversa do agente não recebe despedida do agente")

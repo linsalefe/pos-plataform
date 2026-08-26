@@ -405,7 +405,7 @@ async def _rede_de_ultima_instancia(db: AsyncSession, contact_wa_id: str,
         from app.nat_guard import GESTOR_USER_ID, _agora_sp
         from app.qualificacao_fluxo import (ETAPAS_QUALIFICACAO_ATIVAS, ETAPA_Q_TRANSFERIDO,
                                             TEXTO_FALLBACK, TIPO_NOTIF_AGENTE, estado_de)
-        from app.qualificacao_guard import ETAPA_CONVERSA, guard_de_abertura
+        from app.qualificacao_guard import ETAPA_CONVERSA, guard_de_despedida
         from app.nat_sender import send_nat_message
 
         async with async_session() as db2:
@@ -439,11 +439,11 @@ async def _rede_de_ultima_instancia(db: AsyncSession, contact_wa_id: str,
             await db2.commit()
             print(f"🛟 Rede: {contact_wa_id} transferido para humano após falha de roteamento")
 
-            # UMA tentativa, e o guard é o de ABERTURA porque a etapa já não é ativa —
-            # `qualificacao_pode_atuar` recusaria a própria despedida. Mesmo motivo do
-            # `_fallback`.
+            # UMA tentativa, e o guard é o de DESPEDIDA porque a etapa já não é ativa —
+            # `qualificacao_pode_atuar` recusaria a própria despedida, e o de abertura traria
+            # junto o teto por hora. Mesmo motivo do `_fallback`.
             saiu = await send_nat_message(contact_wa_id, ETAPA_CONVERSA, db2,
-                                          guard=guard_de_abertura,
+                                          guard=guard_de_despedida,
                                           corpo_livre=TEXTO_FALLBACK)
             await db2.commit()
             print(f"{'📨' if saiu else '🔒'} Rede: despedida para {contact_wa_id} "
