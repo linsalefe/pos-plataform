@@ -256,6 +256,30 @@ async def enviar_nat(contact_wa_id: str, etapa: str, db: AsyncSession, *,
         print(f"📤 NAT enviou '{etapa}' para {contact_wa_id} "
               f"({'texto livre' if aberta else 'template'}, janela "
               f"{'aberta' if aberta else 'fechada'})")
+
+        # ----------------------------------------------------------------------------------
+        # O AGENTE FALOU -> O VIGIA DO P3-A NÃO TEM MAIS O QUE VIGIAR
+        # ----------------------------------------------------------------------------------
+        # Aqui e não em `_falar`: este é o ÚNICO ponto por onde TODO envio da NAT passa (é o
+        # mesmo motivo por que `nat_etapa` é gravado aqui). Cancelar em `_falar` deixaria de
+        # fora a despedida do `_fallback`, a confirmação do `_concluir`, a oferta de agenda e
+        # o lembrete — e um vigia sobrevivente depois de o agente ter falado é falso
+        # positivo, que é a doença que este detector veio curar, não espalhar.
+        #
+        # Cancela DEPOIS do envio confirmado, nunca antes: recusa do guard e erro da Meta
+        # saem por `recusa(...)` acima e não chegam nesta linha — o vigia continua de pé
+        # justamente porque, nesses casos, o lead continua sem resposta.
+        #
+        # Não levanta: uma falha ao cancelar não pode desfazer uma mensagem já entregue ao
+        # lead. O pior desfecho vira um aviso de agente mudo a mais, e o handler do vigia
+        # relê o estado e as mensagens antes de notificar.
+        try:
+            from app.models import KIND_VIGIAR_RESPOSTA
+            from app.nat_scheduler import cancelar as cancelar_acao
+            await cancelar_acao(KIND_VIGIAR_RESPOSTA, contact_wa_id, db)
+        except Exception as e:
+            print(f"⚠️  NAT: vigia de {contact_wa_id} não cancelado após envio "
+                  f"({type(e).__name__}: {e})")
         return True, "ok"
 
     except Exception as e:

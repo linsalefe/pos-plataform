@@ -41,7 +41,7 @@ e "o agente escuta" não podem divergir.
 import json
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import qualificacao_llm as llm
@@ -51,9 +51,9 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         ETAPA_Q_CONCLUIDO, ETAPA_Q_ESCOLHENDO_SLOT, ETAPA_Q_OFERTANDO_AGENDA,
                         ETAPA_Q_TRANSFERIDO, ETAPAS_QUALIFICACAO_ATIVAS,
                         ETAPA_Q_ENCERRADO, KIND_ENCERRAR_INATIVO, KIND_LEMBRETE_REUNIAO,
-                        KIND_RESPONDER_PENDENTE,
-                        Agendamento, Contact, Message, Notification, NatQualificacaoState,
-                        PASSO_AGENDADO)
+                        KIND_RESPONDER_PENDENTE, KIND_VIGIAR_RESPOSTA,
+                        ACAO_PENDENTE, Agendamento, Contact, Message, Notification,
+                        NatQualificacaoState, NatScheduledAction, PASSO_AGENDADO)
 from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
                            proximo_horario_util)
 from app.nat_scheduler import (AcaoAdiada, AcaoIgnorada, agendar as nat_agendar,
@@ -87,6 +87,43 @@ ATRASO_POR_TETO = timedelta(minutes=10)
 # dia" é rotina — muita gente aplica de madrugada e volta no fim de semana. Encerrar cedo
 # demais joga fora quem só demorou a ver o WhatsApp.
 INATIVIDADE_ENCERRA = timedelta(hours=72)
+
+# ==========================================================================================
+# O VIGIA — P3-A, 26/08/2026
+# ==========================================================================================
+# 10 MINUTOS. Um turno saudável leva 3–5s (medido nos prints de 25/08: 17:27:47→17:27:51,
+# 17:28:26→17:28:29, e 5s no turno com agendamento). 10 min não gera falso positivo por
+# lentidão e ainda cabe com folga dentro da janela de 24h para alguém agir.
+PRAZO_VIGIA = timedelta(minutes=10)
+
+# ------------------------------------------------------------------------------------------
+# O VIGIA E A FALA ADIADA PELO TETO — por que a régua é a ESPERA e não o `run_at`
+# ------------------------------------------------------------------------------------------
+# Quando o teto adia uma fala (P0-B), existe pendência legítima e o agente ainda não falou.
+# Duas medições decidiram o desenho:
+#
+#   1. `ATRASO_POR_TETO` é 10 min e o vigia vence em inbound+10 min. OS DOIS RELÓGIOS
+#      COINCIDEM. Sem supressão, todo adiamento por teto geraria um "AGENTE MUDO" no minuto
+#      exato em que a resposta ia sair — e alarme que erra é alarme que ninguém lê, que é
+#      precisamente o diagnóstico da auditoria sobre os `window_*`.
+#
+#   2. `AcaoAdiada` NÃO consome tentativa (está na docstring dela), e `responder_pendente`
+#      readia sempre para +10 min. Logo o `run_at` da pendência está SEMPRE a menos de 10
+#      min no futuro, para sempre. Uma supressão medida no `run_at` — "não dispara se a
+#      pendência está agendada para menos de 30 min" — nunca deixaria o vigia disparar.
+#      Seria supressão permanente, justo no caso em que o lead mais precisa do alarme.
+#
+# Por isso a régua é a ESPERA DO LEAD, que só cresce: suprime enquanto houver pendência E a
+# espera for menor que 30 minutos; a partir daí NOTIFICA, mesmo com pendência viva. 30 min
+# são três readiamentos seguidos — três falhas do "esperar resolve" —, e ainda sobram 23h30
+# de janela para agir.
+ESPERA_MAXIMA_COM_PENDENCIA = timedelta(minutes=30)
+
+# Tipo próprio na `notifications`. NÃO reusa `agente_transferiu`: transferência é desfecho
+# tratado, agente mudo é falha de sistema, e misturar os dois na mesma consulta apagaria a
+# distinção que este item existe para criar. Sem migração — `notifications.type` não tem
+# CHECK.
+TIPO_NOTIF_MUDO = "agente_mudo"
 MOTIVO_INATIVIDADE = "inatividade"
 
 TIPO_NOTIF_AGENTE = "agente_transferiu"
@@ -887,6 +924,11 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
     # parcial do banco é a rede da mesma regra.
     await _agendar_encerramento(estado, db)
 
+    # E o vigia do P3-A, pela mesma mecânica e no mesmo ponto: dois inbounds seguidos
+    # reagendam um vigia só, porque `agendar` cancela o pendente do mesmo (kind, contato)
+    # antes de inserir. Os dois kinds convivem — o índice é sobre (kind, contact_wa_id).
+    await _armar_vigia(estado, db)
+
     etapa = estado.etapa
     com_slots = etapa in (ETAPA_Q_OFERTANDO_AGENDA, ETAPA_Q_ESCOLHENDO_SLOT)
     contexto, ofertados = await _fatos(estado, db, com_slots=com_slots)
@@ -1325,6 +1367,146 @@ async def responder_pendente(acao: dict, db: AsyncSession) -> None:
     # Não é mais o teto: virou recusa definitiva enquanto esperávamos. Fecha com humano em
     # vez de tentar para sempre.
     await _fallback(estado, f"envio recusado ao reenviar fala adiada: {motivo}", db)
+
+
+async def _armar_vigia(estado: NatQualificacaoState, db: AsyncSession) -> None:
+    """(Re)arma o vigia de resposta. Nunca levanta — vigia que derruba turno é pior que nada.
+
+    ------------------------------------------------------------------------------------
+    A FRONTEIRA DE COBERTURA — quem cobre o quê, dito na cara
+    ------------------------------------------------------------------------------------
+    Isto roda DENTRO do savepoint do webhook (`main.py`, `async with db.begin_nested()`),
+    igual ao `_agendar_encerramento`. Consequência: um turno que ESTOURA reverte este INSERT
+    junto. Não é descuido, é divisão de trabalho, e cada classe tem um dono:
+
+        turno termina "com sucesso" e não fala  ->  o savepoint COMMITA, o vigia sobrevive
+                                                    e dispara.  ESTA É A CLASSE-ALVO — é a
+                                                    falha de contrato de 26/08 10:11, que
+                                                    segue sem nome, e qualquer outra ainda
+                                                    desconhecida com a mesma assinatura.
+        turno ESTOURA no meio                  ->  rollback leva o vigia junto, e não faz
+                                                    falta: a rede do P0-C
+                                                    (`_rede_de_ultima_instancia`) já notifica
+                                                    o MESMO GESTOR_USER_ID, em sessão nova,
+                                                    com traceback, e ainda se despede do lead.
+        webhook morre ANTES do roteamento      ->  fora de alcance de qualquer detector que
+                                                    viva no banco: nada chegou a ser escrito,
+                                                    nem a Message do inbound. É o caso do
+                                                    pool esgotado batendo em `main.py:370`,
+                                                    e quem o cobre é o P1-A, não este vigia.
+
+    Armar em sessão própria cobriria também a segunda linha — ao custo de uma conexão a mais
+    POR MENSAGEM DE LEAD, num pool dimensionado para a retenção de uma só, e para duplicar um
+    aviso que o P0-C já manda. Não vale o preço.
+    """
+    try:
+        from app.nat_scheduler import agendar as agendar_acao
+        await agendar_acao(KIND_VIGIAR_RESPOSTA, estado.contact_wa_id,
+                           _agora_sp() + PRAZO_VIGIA, {"etapa": estado.etapa}, db)
+    except Exception as e:
+        print(f"⚠️  Agente: vigia não armado para {estado.contact_wa_id} "
+              f"({type(e).__name__}: {e})")
+
+
+async def _ultimo_inbound(contact_wa_id: str, db: AsyncSession):
+    """Quando o lead falou pela última vez — nas DUAS grafias do telefone dele.
+
+    Mesma tolerância ao 9º dígito de `estado_de` e `janela_aberta`: o agente envia para 13
+    dígitos e o WhatsApp entrega o inbound com 12 em 59% das threads. Um vigia estrito não
+    veria a mensagem do próprio lead que ele está vigiando e calaria — repetindo, dentro do
+    detector de silêncio, exatamente o bug que ele existe para detectar.
+    """
+    vs = variantes_wa_id(contact_wa_id) or (contact_wa_id,)
+    res = await db.execute(
+        select(Message.timestamp)
+        .where(Message.contact_wa_id.in_(vs), Message.direction == "inbound")
+        .order_by(Message.timestamp.desc()).limit(1))
+    return res.scalar_one_or_none()
+
+
+async def _fala_adiada_pendente(contact_wa_id: str, db: AsyncSession) -> bool:
+    """Existe fala adiada pelo teto esperando a vez deste contato? (P0-B)"""
+    vs = variantes_wa_id(contact_wa_id) or (contact_wa_id,)
+    res = await db.execute(
+        select(func.count()).select_from(NatScheduledAction).where(
+            NatScheduledAction.kind == KIND_RESPONDER_PENDENTE,
+            NatScheduledAction.contact_wa_id.in_(vs),
+            NatScheduledAction.status == ACAO_PENDENTE))
+    return bool(res.scalar() or 0)
+
+
+@registrar_handler("vigiar_resposta")
+async def vigiar_resposta(acao: dict, db: AsyncSession) -> None:
+    """O lead escreveu e o agente não respondeu. Avisa a GESTÃO. NUNCA fala com o lead.
+
+    ------------------------------------------------------------------------------------
+    POR QUE UM SINAL NOVO, E NÃO MAIS UM `window_*`
+    ------------------------------------------------------------------------------------
+    O alerta antigo JÁ EXISTIA e JÁ DISPAROU para os cinco casos mortos de 24–26/08: 27+26+
+    25+9 notificações, e `is_read=false` em 100% delas. Ele falha em três eixos ao mesmo
+    tempo — vai para o SDR dono (que não pode consertar um agente), o título "Lead
+    aguardando há 1h" é indistinguível de um lead esperando um humano, e por isso ninguém
+    lê. Este aqui vai para o GESTOR_USER_ID e diz AGENTE MUDO: é falha de sistema.
+
+    RELÊ TUDO, nunca confia no payload: entre armar e vencer passam 10 minutos, e nesse
+    intervalo o agente pode ter falado, um humano pode ter assumido, o lead pode ter
+    concluído. O payload guarda só a etapa de quando foi armado, e serve para o corpo da
+    notificação mostrar se ela mudou.
+
+    SAÍDAS, e todas com motivo — nenhuma é silenciosa (Risco 3):
+        AcaoIgnorada -> `skipped` com motivo na linha. Não é falha: é "não há o que vigiar".
+        AcaoAdiada   -> volta a `pendente` com motivo gravado e run_at empurrado, sem gastar
+                        tentativa. É a supressão pela fala adiada.
+        notificação  -> `executado`.
+    """
+    wa_id = acao["contact_wa_id"]
+    etapa_de_quando_armou = (json.loads(acao.get("payload") or "{}")).get("etapa")
+
+    estado = await estado_de(wa_id, db)
+    if estado is None or estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
+        # `transferido_humano`, `concluido` e `encerrado` estão fora de
+        # ETAPAS_QUALIFICACAO_ATIVAS — a MESMA constante que governa escutar e falar. Nenhum
+        # caso especial novo: se o agente não é mais dono da conversa, não há agente mudo.
+        raise AcaoIgnorada(f"etapa não é mais ativa "
+                           f"({estado.etapa if estado else 'sem estado'})")
+
+    ultimo = await _ultimo_inbound(wa_id, db)
+    if ultimo is None:
+        raise AcaoIgnorada("nenhum inbound deste contato — nada a vigiar")
+
+    espera = _agora_sp() - ultimo
+    if espera < PRAZO_VIGIA:
+        # O lead escreveu de novo depois de o vigia ser armado e o cancelamento não pegou
+        # (ou o relógio andou). Adiar é mais barato e mais honesto que notificar cedo.
+        raise AcaoAdiada(ultimo + PRAZO_VIGIA, f"lead escreveu há {espera} — ainda no prazo")
+
+    # A SUPRESSÃO PELA FALA ADIADA — ver ESPERA_MAXIMA_COM_PENDENCIA. A régua é a espera do
+    # lead, que só cresce; NÃO o `run_at` da pendência, que fica para sempre a menos de 10
+    # min de distância e nunca deixaria o vigia disparar.
+    if espera < ESPERA_MAXIMA_COM_PENDENCIA and await _fala_adiada_pendente(wa_id, db):
+        raise AcaoAdiada(_agora_sp() + PRAZO_VIGIA,
+                         f"fala adiada pelo teto ainda pendente e o lead espera há "
+                         f"{int(espera.total_seconds() // 60)} min "
+                         f"(teto: {int(ESPERA_MAXIMA_COM_PENDENCIA.total_seconds() // 60)})")
+
+    minutos = int(espera.total_seconds() // 60)
+    from app.nat_flow import telefone_legivel, usuario_existe
+    destinatario = GESTOR_USER_ID
+    if not await usuario_existe(destinatario, db):
+        # Falha ALTA: sem destinatário, o detector de silêncio não pode virar silêncio.
+        raise RuntimeError(f"GESTOR_USER_ID={GESTOR_USER_ID} não existe — "
+                           f"agente mudo para {wa_id} não pôde ser reportado")
+
+    mudou = (f" (era '{etapa_de_quando_armou}' quando o vigia foi armado)"
+             if etapa_de_quando_armou and etapa_de_quando_armou != estado.etapa else "")
+    db.add(Notification(
+        user_id=destinatario, contact_wa_id=wa_id, type=TIPO_NOTIF_MUDO,
+        ref=estado.ultimo_wa_message_id,
+        title=f"AGENTE MUDO — lead esperando há {minutos} min",
+        body=(f"{telefone_legivel(wa_id)} escreveu {ultimo:%d/%m %H:%M} e o agente não "
+              f"respondeu. Etapa: '{estado.etapa}'{mudou}.")))
+    print(f"🔇 AGENTE MUDO: {wa_id} em '{estado.etapa}' há {minutos} min — "
+          f"gestão (user {destinatario}) avisada")
 
 
 @registrar_handler("encerrar_inativo")

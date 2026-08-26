@@ -473,6 +473,19 @@ KIND_ENCERRAR_INATIVO = "encerrar_inativo"
 # `nat_scheduled_actions` é sobre `status`, não sobre `kind`.
 KIND_RESPONDER_PENDENTE = "responder_pendente"
 
+# O VIGIA (P3-A). Lead escreveu, o agente não respondeu em 10 min: avisa a GESTÃO de que o
+# agente está mudo. É o alarme do sintoma, não de uma causa — existe para a classe de falha
+# que ainda não conhecemos, depois que P0-A..P0-E, P1-A e P1-B fecharam as que conhecemos.
+#
+# Não é mais um `window_*`: aqueles vão para o SDR dono, dizem "Lead aguardando há 1h" — que
+# é indistinguível de um lead esperando um humano — e a auditoria de 26/08 mediu 87 deles
+# para os 5 casos mortos, 100% com `is_read=false`. Este vai para o GESTOR_USER_ID e diz
+# AGENTE MUDO, porque é falha de sistema e não fila de atendimento.
+#
+# Sem migração: o CHECK de `nat_scheduled_actions` é sobre `status`, e o índice único parcial
+# é sobre (kind, contact_wa_id) — um vigia convive com o `encerrar_inativo` do mesmo contato.
+KIND_VIGIAR_RESPOSTA = "vigiar_resposta"
+
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3
 
