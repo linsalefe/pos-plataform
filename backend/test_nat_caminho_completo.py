@@ -27,7 +27,8 @@ from app import exact_spotter, nat_copy, nat_flow, nat_routes, nat_sender
 from app.nat_guard import _agora_sp
 from app.models import (ETAPA_AGUARDANDO_LIGACAO, ETAPA_AGUARDANDO_MOTIVACAO,
                         ETAPA_AGUARDANDO_RESPOSTA, ETAPA_ENCERRADO, AIConversationSummary,
-                        Channel, Contact, ExactLead, Message, NatFlowState, Notification, User)
+                        Channel, Contact, ExactLead, KIND_VIGIAR_RESPOSTA, Message,
+                        NatFlowState, Notification, User)
 
 WA_ID = "5583999998888"
 SDR_ID = 4
@@ -257,7 +258,15 @@ async def main():
         check("etapa virou encerrado", estado.etapa == ETAPA_ENCERRADO, f"{estado.etapa}")
         check("quem assumiu registrado", estado.assumido_por == SDR_ID,
               f"{estado.assumido_por}")
-        check("sla_check cancelado", cancelados == [("sla_check", WA_ID)], f"{cancelados}")
+        # `in` e não igualdade: desde o P3-A (26/08) TODO envio da NAT cancela também o
+        # `vigiar_resposta` do contato — o vigia do "AGENTE MUDO" não tem o que vigiar depois
+        # que uma mensagem chegou ao lead. A travessia manda 3 mensagens, então a lista traz
+        # 3 cancelamentos de vigia além deste. O que este passo afirma continua sendo o
+        # mesmo: assumir a ligação MATA o SLA.
+        check("sla_check cancelado", ("sla_check", WA_ID) in cancelados, f"{cancelados}")
+        check("  e os demais cancelamentos são só do vigia (P3-A)",
+              {k for k, _ in cancelados} == {"sla_check", KIND_VIGIAR_RESPOSTA},
+              f"{sorted({k for k, _ in cancelados})}")
         check("botão some e selo aparece",
               resp["pode_assumir"] is False and resp["assumido_por"] == SDR_ID, f"{resp}")
 
