@@ -56,7 +56,8 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         PASSO_AGENDADO)
 from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
                            proximo_horario_util)
-from app.nat_scheduler import AcaoAdiada, AcaoIgnorada, agendar as nat_agendar, registrar_handler
+from app.nat_scheduler import (AcaoAdiada, AcaoIgnorada, agendar as nat_agendar,
+                               cancelar as nat_cancelar, registrar_handler)
 from app.nat_sender import enviar_nat, send_nat_message
 from app.telefone import variantes_wa_id
 from app.nomes import primeiro_nome
@@ -491,6 +492,43 @@ async def _enviar(estado: NatQualificacaoState, texto: str,
         guard=guard.qualificacao_pode_atuar, corpo_livre=texto)
 
 
+async def _descartar_fala_adiada(estado: NatQualificacaoState, porque: str,
+                                 db: AsyncSession) -> None:
+    """Joga fora a fala que o teto adiou. Nunca levanta — higiene não derruba turno.
+
+    ------------------------------------------------------------------------------------
+    A ARESTA DAS DUAS FALAS FORA DE ORDEM
+    ------------------------------------------------------------------------------------
+    O adiamento por teto (P0-B) guarda o texto do turno e tenta de novo em 10 min. Entre
+    agendar e disparar, a pessoa pode escrever DE NOVO — e escreve, justamente porque não
+    recebeu resposta. O turno novo roda na etapa que já avançou (o `_avancar` move a etapa
+    mesmo quando a fala foi só adiada: o dado extraído não pode se perder) e produz a fala
+    da etapa seguinte. Dois desfechos:
+
+        o turno novo TAMBÉM é recusado pelo teto -> `nat_agendar` cancela o pendente do
+            mesmo (kind, contato) antes de inserir. Só o texto mais novo sobrevive. Já
+            estava certo, por construção do agendador.
+
+        o turno novo CONSEGUE falar (o teto é contagem MÓVEL de 1h — ele libera sozinho
+            dentro dos 10 min) -> sem este cancelamento, a fala velha dispara depois e a
+            pessoa recebe a pergunta do passo ANTERIOR depois da do passo seguinte. Duas
+            falas fora de ordem, e a segunda perguntando o que ela já respondeu.
+
+    NADA SE PERDE AO DESCARTAR. A fala adiada era o reconhecimento + a pergunta da etapa em
+    que o lead já está; como ela nunca chegou a sair, o turno novo faz a mesma pergunta com
+    contexto mais fresco. O que se descarta é uma duplicata velha, não informação.
+
+    Chamado nos dois pontos em que o agente EFETIVAMENTE fala com o lead: quando a fala sai
+    (`_falar`) e quando ele se despede (`_fallback`). Depois de qualquer um dos dois, uma
+    fala velha na fila só pode piorar a conversa.
+    """
+    try:
+        await nat_cancelar(KIND_RESPONDER_PENDENTE, estado.contact_wa_id, db)
+    except Exception as e:
+        print(f"⚠️  Agente: fala adiada de {estado.contact_wa_id} não cancelada "
+              f"({porque}): {type(e).__name__}: {e}")
+
+
 async def _falar(estado: NatQualificacaoState, texto: str, db: AsyncSession) -> bool:
     """Fala — e trata a RECUSA, que até 26/08 era jogada fora. Devolve se o turno segue.
 
@@ -518,10 +556,18 @@ async def _falar(estado: NatQualificacaoState, texto: str, db: AsyncSession) -> 
 
     A fala reenfileirada é a MESMA que o LLM gerou agora. Ela pode chegar até 10 min depois
     do inbound e soar um pouco atrasada — e isso é aceitável de propósito: a alternativa
-    medida é o lead nunca receber nada.
+    medida é o lead nunca receber nada. Se o lead escrever nesse intervalo, o cancelamento
+    de `_descartar_fala_adiada` impede que as duas falas cheguem fora de ordem.
+
+    DORMENTE DESDE O P1-B (26/08). O teto por hora saiu de `qualificacao_pode_atuar`, então
+    a CONVERSA não é mais recusada por ele e este ramo não deve disparar em produção. Fica
+    inteiro de propósito: ele é a rede se o teto voltar a valer para a conversa (a auditoria
+    previu essa hipótese como "opção B"), e `enviar_nat` repassa o motivo do guard tal e
+    qual — qualquer trava futura que se chame teto cai aqui e é ADIADA, não descartada.
     """
     saiu, motivo = await _enviar(estado, texto, db)
     if saiu:
+        await _descartar_fala_adiada(estado, "o agente acabou de falar", db)
         return True
 
     if guard.e_teto(motivo):
@@ -569,6 +615,7 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession)
     exatamente a mensagem cuja razão de existir é não deixar o lead no silêncio.
     """
     print(f"🛟 Agente transferiu {estado.contact_wa_id} para humano: {motivo}")
+    await _descartar_fala_adiada(estado, "o lead foi transferido", db)
     estado.etapa = ETAPA_Q_TRANSFERIDO
     estado.transferido_em = _agora_sp()
     estado.transferido_motivo = motivo

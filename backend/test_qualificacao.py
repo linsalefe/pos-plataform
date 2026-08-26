@@ -495,6 +495,45 @@ checa("recusa definitiva -> transferido_humano", e.etapa, ETAPA_Q_TRANSFERIDO)
 checa("  motivo cita o envio", "envio recusado" in (e.transferido_motivo or ""), True)
 checa("  NÃO reenfileira", agendou.await_count, 0)
 
+# ------------------------------------------------------------------------------------------
+# A ARESTA DAS DUAS FALAS FORA DE ORDEM (26/08)
+# ------------------------------------------------------------------------------------------
+# Entre agendar a fala adiada e ela disparar passam 10 min, e a pessoa escreve de novo
+# justamente porque não recebeu resposta. O turno novo roda na etapa JÁ AVANÇADA e, se o teto
+# tiver liberado (contagem móvel de 1h), fala AGORA — e a fala velha dispararia depois,
+# perguntando o passo anterior. O cancelamento é o que impede isso.
+e = _estado(ETAPA_Q_AGUARDANDO_ANO)
+cancelou = AsyncMock()
+with patch.object(fluxo, "_enviar", new=AsyncMock(return_value=(True, "ok"))), \
+     patch.object(fluxo, "nat_cancelar", new=cancelou):
+    seguiu = asyncio.run(fluxo._falar(e, "oi", _db()))
+checa("fala que SAI descarta a fala adiada na fila", cancelou.await_count, 1)
+checa("  no kind certo", cancelou.await_args.args[0], KIND_RESPONDER_PENDENTE)
+checa("  e o turno segue normalmente", seguiu, True)
+
+# Quando o turno novo TAMBÉM é recusado pelo teto, quem resolve é o agendador: `nat_agendar`
+# cancela o pendente do mesmo (kind, contato) antes de inserir. Só o texto mais novo fica.
+e, seguiu, agendou = _falar_com_recusa(guard.MOTIVO_TETO + " (20/20)")
+checa("fala adiada de novo -> reagenda (o agendador substitui, não acumula)",
+      agendou.await_count, 1)
+
+# Transferir também limpa a fila: depois da despedida, uma fala velha só pode piorar.
+e = _estado(ETAPA_Q_AGUARDANDO_ANO)
+cancelou = AsyncMock()
+with patch.object(fluxo, "send_nat_message", new=AsyncMock(return_value=True)), \
+     patch.object(fluxo, "_notificar", new=AsyncMock()), \
+     patch.object(fluxo, "nat_cancelar", new=cancelou):
+    asyncio.run(fluxo._fallback(e, "motivo qualquer", _db()))
+checa("transferência descarta a fala adiada", cancelou.await_count, 1)
+
+# Higiene não derruba turno: cancelamento que explode vira log, não exceção.
+e = _estado(ETAPA_Q_AGUARDANDO_ANO)
+with patch.object(fluxo, "_enviar", new=AsyncMock(return_value=(True, "ok"))), \
+     patch.object(fluxo, "nat_cancelar", new=AsyncMock(side_effect=RuntimeError("banco"))):
+    seguiu = asyncio.run(fluxo._falar(e, "oi", _db()))
+checa("cancelamento que falha NÃO derruba o turno", seguiu, True)
+
+
 # O handler da fala adiada relê o estado: em 10 min um humano pode ter assumido.
 for etapa_terminal in (ETAPA_Q_TRANSFERIDO, ETAPA_Q_CONCLUIDO):
     e = _estado(etapa_terminal)
