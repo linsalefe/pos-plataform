@@ -4,9 +4,9 @@ Continuação de `AUDITORIA_SILENCIO_AGENTE_20260826.md` (auditoria e plano) e d
 (commits `f19fae9` → `b25d233`). Aqui estão o P1-A, o P0-C, o P1-B, a aresta do adiamento
 por teto e o checkpoint do P0-A.
 
-**Estado do processo em produção enquanto este documento é escrito:** PID 1602896, subiu
-26/08 13:33:16 UTC (o restart de 13:32). Ele roda `b25d233` — **nenhum commit deste sprint
-está no ar.** Todos entram no restart do fim do sprint.
+**Estado em produção:** PID 1604190, subiu 26/08 **14:03:21 UTC**. Rodam `dde2fd8` (P1-A),
+`86d2adc` (P0-C), `722106b` (P1-B) e `7855fc0`. O **P0-A (`fe5b1c6`) NÃO está no ar** — ele
+espera o checkpoint e um restart próprio. Ver §9.
 
 ---
 
@@ -19,6 +19,8 @@ está no ar.** Todos entram no restart do fim do sprint.
 | `722106b` | **P1-B** | teto por hora sai da conversa; `guard_de_despedida` novo |
 | `7855fc0` | **item 4** | fala adiada não chega depois da fala nova |
 | `b1e3963` | higiene | `test_risco3_abertura.py` estava vermelho antes do sprint — bomba-relógio, não regressão |
+| `653f2e2` | docs | este relatório |
+| `fe5b1c6` | **P0-A** | `fluxo.agendar` em `async_session()` própria — **aprovado, ainda não deployado** |
 
 Nenhuma migração. Nenhuma escrita manual em produção. Nenhum WhatsApp enviado.
 
@@ -220,7 +222,7 @@ test_espontaneo.py · test_observabilidade_envio.py · test_risco3_abertura.py
 
 ---
 
-## 7. P0-A — CHECKPOINT, aguardando decisão
+## 7. P0-A — decidido, implementado, **ainda não no ar**
 
 **O bug:** `_marcar` (`app/agendamento/agendar.py:232-243`) faz `await db.commit()` a cada
 passo. Correto na requisição HTTP da LP, que é dona da sessão. Fatal quando o agente chama
@@ -235,35 +237,85 @@ em `passo='box_criado'` com `box_id` não nulo e `updated_at` de 15+ min, e devo
 agenda da consultora. Ela **só enxerga box cujo id está na nossa tabela** — uma linha que
 nunca foi commitada é um box `available` pendurado na agenda real, invisível para sempre.
 
-| | (i) `_marcar` nested/injetável | (ii) enfileirar `agendar_slot` | **(iii) `async_session()` própria** |
+### A comparação que levou à decisão
+
+| | (i) `_marcar` nested/injetável | (ii) enfileirar `agendar_slot` | **(iii) `async_session()` própria — ESCOLHIDA** |
 |---|---|---|---|
-| **Durabilidade da faxina** | ⚠️ **perde-se no caminho do agente**: sem commit por passo, queda entre o `BoxesAdd` e o commit final do webhook (2 chamadas externas + o envio do WhatsApp) deixa box órfão sem linha — o pior desfecho possível, porque é invisível | ✅ intacta: `agendar` roda em sessão que ele possui | ✅ **intacta e idêntica à da LP** |
-| **Latência para o lead** | = igual | ❌ **até 60s** (`nat_scheduler.INTERVALO_SEGUNDOS=60`) parado no momento mais quente da conversa; exigiria uma mensagem "só um instante" a mais | = igual (segue no mesmo turno) |
+| **Durabilidade da faxina** | ⚠️ **perde-se no caminho do agente**: sem commit por passo, queda entre o `BoxesAdd` e o commit final do webhook deixa box órfão sem linha — o pior desfecho, porque é invisível | ✅ intacta | ✅ **intacta e idêntica à da LP** |
+| **Latência para o lead** | = igual | ❌ **até 60s** (`nat_scheduler.INTERVALO_SEGUNDOS=60`) no momento mais quente da conversa | = igual (mesmo turno) |
 | **Risco ao caminho da LP** | ⚠️ alto — mexe na função compartilhada do caminho de maior volume | ✅ nenhum | ✅ **nenhum: `_marcar` não é tocado** |
-| **Superfície** | 1 função, 11 pontos de chamada | novo `kind` + handler + etapa estacionada + fala de confirmação migrada; lead que escreve na fila pode fazer o LLM escolher slot de novo | ~1 função em `qualificacao_fluxo.py` |
-| **Custo** | — | — | +1 conexão do pool presa ~5s por agendamento (com o P1-A, folgado) |
-| **Migração** | não | não (o CHECK é sobre `status`) | não |
+| **Superfície** | 1 função, 11 pontos de chamada | novo `kind` + handler + etapa estacionada + fala migrada | ~1 função em `qualificacao_fluxo.py` |
+| **Migração** | não | não | não |
 
-**Recomendação: (iii).** É a única que devolve ao `agendar` exatamente a transação para a
-qual ele foi escrito — uma que ele possui — sem tocar no caminho da LP e sem custar um
-segundo ao lead.
+### Como ficou (`fe5b1c6`)
 
-**Verificado, não suposto:** `default_transaction_isolation = read committed`. A linha
-commitada pela sessão nova **é** visível para o `_reuniao()` seguinte, feito pela sessão do
-webhook, mesmo tendo essa transação começado antes.
+```python
+from app.database import async_session
+async with async_session() as db_agendamento:
+    r = await fluxo.agendar(db_agendamento, nome=nome, ..., lead_id=estado.exact_lead_id, ...)
+```
 
-**A imperfeição residual, dita na cara:** se a transação externa do webhook rolar para trás
-DEPOIS do agendamento, `estado.agendamento_id` volta atrás enquanto a reunião existe de
-verdade na Exact e em `agendamentos`. O próximo turno se recupera sozinho, porque
-`_reuniao()` lê a tabela `agendamentos` e não o campo do estado — e desde o P0-C esse
-rollback deixa de ser mudo. Ainda assim é estritamente melhor que hoje, em que o mesmo
-rollback perde também o registro do agendamento.
+**A sessão abre só no instante do `fluxo.agendar`** — não no começo do turno. O turno já
+segura a conexão do webhook durante `llm.conversar` (3–5s medidos); abrir a segunda cedo
+dobraria a retenção num pool que acabou de ser dimensionado. Ela vive o tempo do
+agendamento e fecha antes de qualquer outra coisa. Coberto por teste: nas rodadas que
+**não** chegam a agendar (slot inventado, slot que saiu da grade), **zero** sessões abertas.
+
+**`read committed` é o que faz isto funcionar** (conferido em produção): o `_reuniao()`
+seguinte roda na sessão do webhook — cuja transação começou antes — e ainda assim enxerga a
+linha commitada pela sessão do agendamento.
+
+### O modo de falha residual, testado dos dois lados
+
+Se o turno estourar **depois** de `fluxo.agendar` commitar, o savepoint reverte
+`estado.agendamento_id` enquanto a reunião existe de verdade na Exact e em `agendamentos`.
+
+A exceção **escapa de propósito**. Um `try/except` local ali engoliria o caso e a gestão
+nunca saberia da reunião órfã do estado. Escapando, ela cai na rede do P0-C:
+
+```
+test_qualificacao.py          exceção APÓS o agendamento commitado ESCAPA
+                              e a sessão do agendamento fecha assim mesmo (async with)
+test_rede_ultima_instancia.py gestão notificada, com o caso e o contato no corpo
+                              lead NÃO fica em silêncio — despedida sai
+                              agente para de escutar (a reunião já existe)
+                              traceback do caso no log
+```
+
+**O resíduo é aceitável; o silêncio sobre ele não é.** Órfão local em `passo='iniciado'`
+não tem efeito externo (nada foi para a Exact) e não segura slot na grade.
+
+### Não rodado, e por quê
+
+`test_agendamento_e2e.py` exercita o caminho real ponta a ponta, mas **escreve na Exact de
+produção** e exige `--sim-eu-quero`. Não foi rodado. A validação de ponta a ponta do P0-A
+depende de um agendamento real pelo agente — o primeiro lead que escolher horário depois do
+restart do P0-A é o teste, e o P0-E vai deixar o rastro dele.
 
 ---
 
-## 8. Pendências
+## 8. O restart de 14:03 — o que ele mudou no log
 
-**Deste sprint:** o restart que põe os 5 commits no ar. Nada acima está em produção.
+```
+linhas no journald, última hora ANTES do restart .... 98 780
+linhas de SQL cru depois do restart ................. 0
+QueuePool limit depois do restart ................... 0
+estados do agente antes / depois .................... 37 / 37 (intactos)
+```
+
+Todos os jobs subiram: sync Exact, alertas de janela, templates agendados, agendador NAT,
+saúde de entrega, faxina, 2 consultoras em rotação, 13 origens confirmadas.
+
+O log do **P0-E** só aparece quando um lead real escreve, e não houve inbound nenhum na
+primeira meia hora depois do restart. Um vigia fecha a primeira hora e reporta os três
+números (journald, `QueuePool`, turnos do P0-E).
+
+---
+
+## 9. Pendências
+
+**Deste sprint:** o restart do **P0-A** (`fe5b1c6`), que ainda não está no ar. É o único
+commit do sprint fora de produção.
 
 **Fora deste sprint, não esquecer:**
 
