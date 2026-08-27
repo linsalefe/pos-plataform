@@ -15,6 +15,7 @@ from app.database import get_db
 from app.whatsapp import send_text_message, send_template_message, upload_media, send_media_message, create_template, GRAPH_VERSION
 # Trava unica do template de boas-vindas (a MESMA usada em bulk-send-template).
 from app.welcome_guard import bloquear_se_boas_vindas
+from app.contatos import destinatario
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -248,7 +249,11 @@ async def _silenciar_agente_apos_envio_manual(wa_id: str, quem, db: AsyncSession
 async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db),
                     current_user: User = Depends(get_current_user)):
     channel = await get_channel(req.channel_id, db)
-    result = await send_text_message(req.to, req.text, channel.phone_number_id, channel.whatsapp_token)
+    # QUEM DECIDE A GRAFIA DO DESTINATÁRIO É O SERVIDOR, NÃO A TELA. O front manda o `wa_id`
+    # da conversa que está aberta — que, depois do agrupamento, pode ser qualquer uma das
+    # duas. `destinatario` devolve a que a pessoa JÁ usou para nos escrever. Ver contatos.py.
+    destino = await destinatario(req.to, db)
+    result = await send_text_message(destino, req.text, channel.phone_number_id, channel.whatsapp_token)
 
     if "messages" in result:
         wa_id = result.get("contacts", [{}])[0].get("wa_id", req.to)
@@ -289,7 +294,8 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
     await bloquear_se_boas_vindas(req.template_name, db)
 
     channel = await get_channel(req.channel_id, db)
-    result = await send_template_message(req.to, req.template_name, req.language, channel.phone_number_id, channel.whatsapp_token, req.parameters if req.parameters else None)
+    destino = await destinatario(req.to, db)          # ver send_text
+    result = await send_template_message(destino, req.template_name, req.language, channel.phone_number_id, channel.whatsapp_token, req.parameters if req.parameters else None)
 
     if "messages" in result:
         wa_id = result.get("contacts", [{}])[0].get("wa_id", req.to)
@@ -356,7 +362,8 @@ async def send_media(
 
     # 2. Enviar mensagem com mídia
     caption = filename if media_type == "document" else None
-    result = await send_media_message(to, media_id, media_type, channel.phone_number_id, channel.whatsapp_token, caption)
+    destino = await destinatario(to, db)              # ver send_text
+    result = await send_media_message(destino, media_id, media_type, channel.phone_number_id, channel.whatsapp_token, caption)
 
     if "messages" in result:
         wa_id = result.get("contacts", [{}])[0].get("wa_id", to)
@@ -417,7 +424,8 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
             lm.content AS last_message,
             lm.timestamp AS last_message_time,
             lm.direction,
-            COALESCE(ur.unread, 0) AS unread
+            COALESCE(ur.unread, 0) AS unread,
+            COALESCE(ur.inbound_total, 0) AS inbound_total
         FROM contacts c
         LEFT JOIN LATERAL (
             SELECT content, timestamp, direction
@@ -425,9 +433,12 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
             ORDER BY timestamp DESC LIMIT 1
         ) lm ON true
         LEFT JOIN LATERAL (
-            SELECT COUNT(*) AS unread
+            -- `inbound_total` alimenta a escolha do representante do par em
+            -- `contatos.principal_do_par`: vence a grafia de que a pessoa NOS escreveu.
+            SELECT COUNT(*) FILTER (WHERE status = 'received') AS unread,
+                   COUNT(*) AS inbound_total
             FROM messages
-            WHERE contact_wa_id = c.wa_id AND direction = 'inbound' AND status = 'received'
+            WHERE contact_wa_id = c.wa_id AND direction = 'inbound'
         ) ur ON true
         {where_clause}
         ORDER BY lm.timestamp DESC NULLS LAST
@@ -438,6 +449,7 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
 
     # Buscar tags de todos os contatos de uma vez
     wa_ids = [r.wa_id for r in rows]
+
     if wa_ids:
         tag_sql = text("""
             SELECT ct.contact_wa_id, t.id, t.name, t.color
@@ -456,50 +468,118 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
             tags_map[tr.contact_wa_id] = []
         tags_map[tr.contact_wa_id].append({"id": tr.id, "name": tr.name, "color": tr.color})
 
-    return [
-        {
-            "wa_id": r.wa_id,
-            "name": r.name or r.wa_id,
-            "lead_status": r.lead_status or "novo",
-            "notes": r.notes,
-            "channel_id": r.channel_id,
-            "last_message": r.last_message or "",
-            "last_message_time": r.last_message_time.isoformat() if r.last_message_time else None,
-            "direction": r.direction,
-            "tags": tags_map.get(r.wa_id, []),
-            "unread": r.unread,
-            "ai_active": r.ai_active or False,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-            "assigned_to": r.assigned_to,
-        }
-        for r in rows
-    ]
+    # ------------------------------------------------------------------------------------
+    # UMA CONVERSA POR HUMANO. As duas grafias do mesmo telefone viram UMA linha.
+    #
+    # 406 pares (10% do Hub) estavam aparecendo como duas conversas, cada uma com metade das
+    # mensagens — ver `app/contatos.py` e RECON_THREADS_DIVIDIDAS_20260827.md. Aqui a fusão
+    # é só de APRESENTAÇÃO: nada é escrito, nenhum contato é apagado, e desligar este trecho
+    # devolve a tela ao estado anterior.
+    #
+    # Os campos NÃO são fundidos por COALESCE cego — cada um tem uma regra e um motivo:
+    #   name        o não-vazio (338 dos 406 pares têm nome só de um lado)
+    #   unread      SOMA — o badge tem que zerar junto com o `POST /read`, que agora
+    #               marca as duas grafias
+    #   last_*      da mensagem mais recente ENTRE as duas, que é o ponto do conserto
+    #   tags        união
+    #   ai_active   OR — divergente em 366 dos 406 pares; mostrar "ligado" quando qualquer
+    #               lado está ligado é o lado seguro do erro: esconder um robô ativo é pior
+    #               que mostrar um que não vai falar
+    #   assigned_to o dono existente; se os dois lados têm dono DIFERENTE, o do lado que
+    #               recebe inbound, e `assigned_to_conflito` avisa a tela (103 pares hoje)
+    # ------------------------------------------------------------------------------------
+    from app.contatos import chave_par, principal_do_par
+
+    grupos: dict = {}
+    for r in rows:
+        grupos.setdefault(chave_par(r.wa_id), []).append(r)
+
+    def _ts(r):
+        return r.last_message_time
+
+    saida = []
+    for membros in grupos.values():
+        por_wa = {m.wa_id: m for m in membros}
+        principal = principal_do_par(
+            list(por_wa),
+            tem_inbound=lambda w: (por_wa[w].inbound_total or 0) > 0,
+            ultimo_ts=lambda w: por_wa[w].last_message_time,
+        )
+        r = por_wa[principal]
+        outros = [m for m in membros if m.wa_id != principal]
+
+        recente = max((m for m in membros if m.last_message_time is not None),
+                      key=_ts, default=None)
+        nome = next((m.name for m in [r, *outros] if (m.name or "").strip()), None)
+        donos = [m.assigned_to for m in [r, *outros] if m.assigned_to is not None]
+        tags = {t["id"]: t for m in membros for t in tags_map.get(m.wa_id, [])}
+        nascimento = min((m.created_at for m in membros if m.created_at), default=None)
+
+        saida.append({
+            "wa_id": principal,
+            "name": nome or principal,
+            "lead_status": next((m.lead_status for m in [r, *outros] if m.lead_status), "novo"),
+            "notes": next((m.notes for m in [r, *outros] if (m.notes or "").strip()), None),
+            "channel_id": next((m.channel_id for m in [r, *outros] if m.channel_id), None),
+            "last_message": (recente.last_message or "") if recente else "",
+            "last_message_time": recente.last_message_time.isoformat() if recente else None,
+            "direction": recente.direction if recente else None,
+            "tags": list(tags.values()),
+            "unread": sum(m.unread or 0 for m in membros),
+            "ai_active": any(m.ai_active for m in membros),
+            # O mais antigo dos dois: a conversa começou quando o PRIMEIRO contato nasceu.
+            "created_at": nascimento.isoformat() if nascimento else None,
+            "assigned_to": donos[0] if donos else None,
+            # Só aparece quando há de fato duas grafias — a tela pode ignorar sem quebrar.
+            "wa_ids": [m.wa_id for m in membros] if len(membros) > 1 else None,
+            "assigned_to_conflito": len(set(donos)) > 1 or None,
+        })
+
+    # `last_message_time` já é ISO 8601 — ordena lexicograficamente na ordem certa, e a
+    # string vazia (conversa sem mensagem) cai para o fim, como fazia o `NULLS LAST` do SQL.
+    saida.sort(key=lambda d: d["last_message_time"] or "", reverse=True)
+    return saida
 
 
 @router.get("/contacts/{wa_id}")
 async def get_contact(wa_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
-    contact = result.scalar_one_or_none()
-    if not contact:
+    """O cabeçalho da conversa. Lê as duas grafias, pelas mesmas regras de `GET /contacts`."""
+    from app.telefone import variantes_wa_id
+
+    vs = variantes_wa_id(wa_id) or (wa_id,)
+    achados = list((await db.execute(
+        select(Contact).where(Contact.wa_id.in_(vs)))).scalars())
+    if not achados:
         raise HTTPException(status_code=404, detail="Contato não encontrado")
+    # O pedido manda: se o wa_id da URL existe, ele é o principal; senão, o que existir.
+    # Reordenar (e não só escolher) mantém este endpoint concordando com `GET /contacts`
+    # em name/notes/lead_status — dois lugares mostrando nomes diferentes do mesmo humano
+    # é exatamente o tipo de divergência que este sprint existe para acabar.
+    contact = next((c for c in achados if c.wa_id == wa_id), achados[0])
+    achados = [contact] + [c for c in achados if c is not contact]
+    todos = [c.wa_id for c in achados]
 
     tag_result = await db.execute(
-        select(Tag).join(contact_tags).where(contact_tags.c.contact_wa_id == wa_id)
+        select(Tag).join(contact_tags).where(contact_tags.c.contact_wa_id.in_(todos))
     )
-    tags = tag_result.scalars().all()
+    tags = {t.id: t for t in tag_result.scalars().all()}
 
-    msg_count = await db.execute(select(func.count(Message.id)).where(Message.contact_wa_id == wa_id))
+    msg_count = await db.execute(
+        select(func.count(Message.id)).where(Message.contact_wa_id.in_(vs)))
 
     return {
         "wa_id": contact.wa_id,
-        "name": contact.name,
-        "lead_status": contact.lead_status,
-        "notes": contact.notes,
-        "channel_id": contact.channel_id,
-        "ai_active": contact.ai_active or False,
-        "tags": [{"id": t.id, "name": t.name, "color": t.color} for t in tags],
+        "name": next((c.name for c in achados if (c.name or "").strip()), contact.name),
+        "lead_status": next((c.lead_status for c in achados if c.lead_status), None),
+        "notes": next((c.notes for c in achados if (c.notes or "").strip()), None),
+        "channel_id": next((c.channel_id for c in achados if c.channel_id), None),
+        "ai_active": any(c.ai_active for c in achados),
+        "tags": [{"id": t.id, "name": t.name, "color": t.color} for t in tags.values()],
         "total_messages": msg_count.scalar(),
-        "created_at": contact.created_at.isoformat() if contact.created_at else None,
+        "created_at": min((c.created_at for c in achados if c.created_at),
+                          default=None).isoformat()
+                      if any(c.created_at for c in achados) else None,
+        "wa_ids": todos if len(todos) > 1 else None,
     }
 
 
@@ -560,11 +640,19 @@ async def remove_tag_from_contact(wa_id: str, tag_id: int, db: AsyncSession = De
 
 @router.post("/contacts/{wa_id}/read")
 async def mark_as_read(wa_id: str, db: AsyncSession = Depends(get_db)):
-    """Marca todas as mensagens inbound do contato como lidas."""
+    """Marca como lidas as mensagens inbound do contato — NAS DUAS GRAFIAS.
+
+    Tem que casar com o `unread` de `GET /contacts`, que agora soma as duas metades. Marcar
+    só uma deixaria o badge preso num número que o SDR não consegue zerar por mais que abra
+    a conversa.
+    """
     from sqlalchemy import update
+    from app.telefone import variantes_wa_id
+
+    vs = variantes_wa_id(wa_id) or (wa_id,)
     await db.execute(
         update(Message).where(
-            Message.contact_wa_id == wa_id,
+            Message.contact_wa_id.in_(vs),
             Message.direction == "inbound",
             Message.status == "received"
         ).values(status="read")
@@ -575,8 +663,20 @@ async def mark_as_read(wa_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("/contacts/{wa_id}/messages")
 async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db)):
+    """A conversa INTEIRA deste humano — as duas grafias do telefone, mescladas por timestamp.
+
+    Era `== wa_id`, e é por isso que o SDR via meia conversa: a pessoa escreve na grafia de 12
+    dígitos e o agente responde na de 13. Lidas juntas na ordem do relógio, os turnos alternam
+    perfeitamente (o caso Mikaelle, em RECON_THREADS_DIVIDIDAS_20260827.md).
+
+    Mesma troca `== → IN (variantes)` que os sprints do agente já fizeram em
+    `nat_sender.janela_aberta` e `qualificacao_fluxo.estado_de`. Nada é escrito aqui.
+    """
+    from app.telefone import variantes_wa_id
+
+    vs = variantes_wa_id(wa_id) or (wa_id,)
     result = await db.execute(
-        select(Message).where(Message.contact_wa_id == wa_id).order_by(Message.timestamp.asc())
+        select(Message).where(Message.contact_wa_id.in_(vs)).order_by(Message.timestamp.asc())
     )
     messages = result.scalars().all()
 

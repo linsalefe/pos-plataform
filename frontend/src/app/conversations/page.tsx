@@ -59,6 +59,10 @@ interface ExactLeadResult {
 
 interface Contact {
   wa_id: string;
+  // As duas grafias do mesmo telefone, quando a conversa veio dividida (12 e 13 dígitos).
+  // Null na esmagadora maioria. `wa_id` acima é sempre a grafia de que a pessoa nos escreve.
+  wa_ids?: string[] | null;
+  assigned_to_conflito?: boolean | null;
   name: string;
   lead_status: string;
   notes: string | null;
@@ -243,7 +247,10 @@ export default function ConversationsPage() {
     if (deepLinkDoneRef.current || contacts.length === 0) return;
     const wa = new URLSearchParams(window.location.search).get('wa');
     if (!wa) { deepLinkDoneRef.current = true; return; }
-    const target = contacts.find(c => c.wa_id === wa);
+    // Casa também com a OUTRA grafia: uma notificação do agente carrega o wa_id de 13
+    // dígitos, e a conversa agrupada é representada pela de 12. Sem isto o clique na
+    // notificação abriria a lista sem selecionar nada, em silêncio.
+    const target = contacts.find(c => c.wa_id === wa || c.wa_ids?.includes(wa));
     if (target) { setSelectedContact(target); deepLinkDoneRef.current = true; }
   }, [contacts]);
 
@@ -799,7 +806,11 @@ export default function ConversationsPage() {
   const getTagColorConfig = (c: string) => tagColors.find(x => x.value === c) || tagColors[0];
 
   const filteredContacts = contacts.filter(c => {
-    const ms = c.name.toLowerCase().includes(search.toLowerCase()) || c.wa_id.includes(search);
+    // Busca por número casa as DUAS grafias: quem digitar o telefone com o 9º dígito tem que
+    // achar a conversa mesmo quando ela é representada pela grafia sem ele.
+    const ms = c.name.toLowerCase().includes(search.toLowerCase())
+      || c.wa_id.includes(search)
+      || !!c.wa_ids?.some(w => w.includes(search));
     const mst = statusFilter === 'todos' || c.lead_status === statusFilter;
     const mtag = tagFilter.length === 0 || c.tags.some(t => tagFilter.includes(t.id));
     const mur = !unreadFilter || c.unread > 0;
