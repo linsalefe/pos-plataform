@@ -63,11 +63,24 @@ sem resposta — enquanto for a MESMA mensagem sem resposta, é o MESMO caso e o
 Se o lead escrever de novo, o wa_message_id muda e um aviso novo sai, que é o certo: um lead
 que insistiu é um caso diferente de um lead que desistiu.
 
-Vai em `notifications.ref`, que é exatamente o que o índice `idx_notifications_dedup`
-(contact_wa_id, type, ref) indexa — a mesma mecânica do `window_alerts_job`. NÃO há UNIQUE
-nessa tripla hoje; a proteção real contra corrida seria um índice único parcial, e ele está
-PROPOSTO, não aplicado (ver SPRINT4_AGENTE_COMERCIAL.md). Aqui a corrida não existe: o job é
-uma única task asyncio, sequencial, com uma varredura por vez.
+Vai em `notifications.ref`, e a checagem em massa antes do INSERT usa o índice
+`idx_notifications_dedup` (contact_wa_id, type, ref) — a mesma mecânica do
+`window_alerts_job`.
+
+E ATRÁS DELA HÁ CONSTRAINT (27/08, `migrate_agente_parado_dedup.py`):
+
+    CREATE UNIQUE INDEX uq_notif_agente_parado
+        ON notifications (contact_wa_id, ref) WHERE type = 'agente_parado';
+
+Único e PARCIAL. Parcial porque a tripla global não pode virar única: `nat_sla` e
+`nat_recuperacao` gravam `ref = '<kind>:<acao_id>'` de propósito, para que dois
+escalonamentos do mesmo lead apareçam como dois avisos.
+
+O SELECT continua sendo o caminho normal — é ele que evita o erro. O índice é a rede: numa
+corrida (um segundo processo, um restart sobreposto), o INSERT duplicado levanta
+IntegrityError, o `commit` do ciclo falha inteiro e o job imprime ❌. É perda de UM ciclo, é
+RUIDOSA, e se cura sozinha: 15 min depois o SELECT já enxerga a linha vencedora e o ciclo
+passa limpo. Perder um ciclo com barulho é melhor que duplicar aviso em silêncio.
 
 ------------------------------------------------------------------------------------------
 FAIL-CLOSED
