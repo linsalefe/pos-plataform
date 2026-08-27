@@ -409,6 +409,41 @@ async def _reuniao(estado: NatQualificacaoState, db: AsyncSession):
 
 
 async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
+    """Nome legível do curso. DUAS fontes, pelo mesmo motivo de `_nome`. (S3-3, 27/08/2026)
+
+    `exact_leads` é a fonte boa, e era a única. O problema é QUANDO ela fica pronta: o lead
+    da LP nasce na Exact e só entra em `exact_leads` no sync seguinte, enquanto a abertura
+    dispara em 5 minutos. MEDIDO no RECON de 27/08 — a Sônia (`5566997112651`):
+
+        abertura enviada     26/08 14:55 UTC
+        exact_leads.synced_at 27/08 00:19 UTC     -> 9h de atraso
+
+    E o que saiu no WhatsApp dela foi, literalmente:
+
+        "Vi que você aplicou para a nossa Pós-Graduação em . Antes de te mostrar..."
+
+    **2 de 2 leads da LP do período (100%)** receberam a abertura com o buraco. Mais duas
+    aberturas foram RECUSADAS por causa do mesmo campo, com o guard de parâmetro em branco
+    do `nat_sender` — `template ... com parâmetro(s) [2] em branco`, o `#131008` local.
+
+    A segunda fonte é `agendamentos.sub_source`, que tem o dado **desde o instante do
+    formulário** — a mesma tabela e a mesma ordem (`id DESC`) que `_identidade_do_lead` já
+    usa para salvar o NOME no mesmo cenário. Não é fonte nova no módulo: é a fonte que já
+    estava resolvendo metade do problema.
+
+    ------------------------------------------------------------------------------------
+    O QUE ESTE FIX **NÃO** RESOLVE — dito aqui para não parecer descuido
+    ------------------------------------------------------------------------------------
+    Com as duas fontes vazias, ainda se devolve `""`, e `""` tem dois destinos diferentes
+    dependendo da janela de 24h:
+
+        janela FECHADA -> `nat_sender` confere `vazios` e RECUSA o envio inteiro. Correto.
+        janela ABERTA  -> vai como texto livre, e o buraco chega ao lead. Errado.
+
+    A assimetria mora em `nat_sender.send_nat_message` (a checagem de parâmetro em branco só
+    existe no ramo do template), não aqui, e consertá-la mexe no ÚNICO ponto por onde todo
+    envio da NAT passa — fora do escopo deste item, e de risco diferente. Fica registrado.
+    """
     from app.course_names import resolve_course_name
     from app.models import ExactLead
     if not estado.exact_lead_id:
@@ -416,15 +451,21 @@ async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
     res = await db.execute(select(ExactLead.sub_source).where(
         ExactLead.exact_id == estado.exact_lead_id))
     sub = res.scalar_one_or_none()
-    return await resolve_course_name(sub or "", db) if sub else ""
+    if not sub:
+        res = await db.execute(
+            select(Agendamento.sub_source)
+            .where(Agendamento.lead_id == estado.exact_lead_id)
+            .order_by(Agendamento.id.desc()).limit(1))
+        sub = res.scalar_one_or_none()
+    return await resolve_course_name(sub, db) if sub else ""
 
 
 async def _nome(estado: NatQualificacaoState, db: AsyncSession) -> str:
-    """Primeiro nome do lead. DUAS fontes, porque uma só não cobre.
+    """Primeiro nome do lead. DUAS fontes — o CADASTRO primeiro. (ordem invertida em S3-4)
 
     `contacts.name` nasce do perfil do WhatsApp e está VAZIO em 4 490 linhas do Hub — quem
-    nunca mandou mensagem e quem tem o perfil sem nome público. Este campo era a única fonte,
-    e um nome vazio aqui vira `{{1}}` vazio no template, que a Meta recusa inteiro:
+    nunca mandou mensagem e quem tem o perfil sem nome público. Ele já foi a única fonte, e
+    um nome vazio aqui vira `{{1}}` vazio no template, que a Meta recusa inteiro:
 
         (#131008) Required parameter is missing
         details: 'Parameter of type text is missing text value'
@@ -432,17 +473,53 @@ async def _nome(estado: NatQualificacaoState, db: AsyncSession) -> str:
     Não é degradação elegante: a mensagem simplesmente não sai. Em 25/08 derrubou 3 das 18
     aberturas do backfill (Karen, Marlen, Beatriz) — e as três tinham nome em `exact_leads` o
     tempo todo. A Beatriz é a prova do mecanismo: o perfil dela chegou às 20:18 e a recusa
-    dela foi às 19:46, com o mesmo número e o mesmo template.
+    dela foi às 19:46, com o mesmo número e o mesmo template. Foi por isso que o cadastro
+    entrou como segunda fonte (`80358e5`).
 
-    A segunda fonte é o cadastro do lead, que é onde o nome sempre esteve — o mesmo lugar de
-    onde `_contato_ou_criar` tira o nome ao criar o contato.
+    ------------------------------------------------------------------------------------
+    POR QUE A ORDEM INVERTEU (S3-4, 27/08/2026)
+    ------------------------------------------------------------------------------------
+    O cadastro cobria a AUSÊNCIA do perfil. Não cobria o perfil PRESENTE e errado — e o
+    perfil do WhatsApp é apelido, não nome. RECON de 27/08, `5511940718388`:
+
+        contacts.name                  "Eve 🍒🦖🤞"
+        exact_leads.name / agendamentos.nome  "Evelyn Renata Begliomini Manfrim"
+
+    e a abertura saiu **"Olá, Eve!"** — para alguém que se inscreveu como Evelyn e vai
+    aparecer como Evelyn na reunião com a consultora. O cadastro é o nome com que a pessoa se
+    candidatou; o perfil é como ela se apresenta para os amigos dela.
+
+    O CONJUNTO DE FONTES NÃO MUDOU — só a preferência. Isso é o que garante que o `#131008`
+    não volta: o caso "vazio" continua sendo exatamente o mesmo, os DOIS lugares vazios, e
+    aí a recusa local de `nat_sender` (parâmetro em branco) pega antes da Meta. Trocar a
+    ordem não pode criar um vazio novo, porque nenhuma fonte foi removida — e é isso que o
+    grupo 2 de `test_nome_cadastro_primeiro.py` trava.
+
+    Custo: 1–2 SELECTs a mais por abertura (`_identidade_do_lead`), contra 1 que já havia.
+    `_nome` roda uma vez por abertura e uma vez por montagem de contexto do LLM.
+
+    ------------------------------------------------------------------------------------
+    `.strip()` NA ESCOLHA — o que a inversão obrigou a arrumar
+    ------------------------------------------------------------------------------------
+    `primeiro_nome` devolve a entrada INTACTA quando nenhum token tem letra (está na
+    docstring dela, e é a decisão certa lá: `"Olá, 123!"` é ruim, `"Olá, !"` é pior). Então
+    `primeiro_nome("   ")` é `"   "` — que é *truthy*, e passaria como se fosse nome.
+
+    Com a ordem antiga isso quase não aparecia: a primeira fonte era o perfil do WhatsApp,
+    que o próprio WhatsApp normaliza. A primeira fonte agora é `agendamentos.nome`, que é
+    campo livre de formulário e `nullable=False` — só-espaço é plausível ali. Sem o `strip`,
+    um cadastro em branco venceria um perfil perfeitamente bom, o parâmetro sairia vazio, e
+    a recusa local de `nat_sender` mataria a abertura de um lead que tinha nome.
+
+    Trocar a ordem não podia introduzir um modo de falha novo; o `strip` é o que garante
+    isso. Travado no grupo 5 de `test_identidade_abertura.py`.
     """
-    contato = await _contato_de(estado.contact_wa_id, db)
-    nome = primeiro_nome((contato.name if contato else "") or "")
+    do_lead, _ = await _identidade_do_lead(estado.exact_lead_id, db)
+    nome = primeiro_nome(do_lead or "").strip()
     if nome:
         return nome
-    do_lead, _ = await _identidade_do_lead(estado.exact_lead_id, db)
-    return primeiro_nome(do_lead or "")
+    contato = await _contato_de(estado.contact_wa_id, db)
+    return primeiro_nome((contato.name if contato else "") or "").strip()
 
 
 def _espalhados(horarios: list[dict], n: int) -> list[dict]:

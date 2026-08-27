@@ -48,7 +48,8 @@ Casos:
  13. o agendador: executado LIMPA o motivo de um adiamento anterior
  14. passo 4.5: gatilho que NÃO enfileirou não carimba "o agente assumiu"
  15. janela de 24h enxerga o inbound na grafia de 12 dígitos (o 8º ponto de comparação)
- 16. contato SEM nome -> nome vem do lead, e o parâmetro em branco é barrado antes da Meta
+ 16. as duas fontes do nome (cadastro primeiro desde S3-4), e o parâmetro em branco
+     barrado antes da Meta
 """
 import asyncio
 import json
@@ -522,32 +523,49 @@ async def teste_15_janela_tolerante_ao_9o_digito():
 
 
 async def teste_16_parametro_vazio_nunca_chega_na_meta():
-    print("\n16) contato SEM nome -> nome vem do lead; parâmetro em branco é barrado aqui")
+    print("\n16) as duas fontes do nome; parâmetro em branco é barrado aqui")
     # 25/08: 3 das 18 aberturas do backfill morreram com (#131008) "Parameter of type text is
     # missing text value". `contacts.name` está vazio em 4 490 linhas do Hub, era a ÚNICA
     # fonte do `{{1}}`, e um parâmetro em branco faz a Meta recusar a mensagem INTEIRA.
+    #
+    # A ORDEM DAS DUAS FONTES INVERTEU EM 27/08 (S3-4) e este grupo acompanhou. O que este
+    # teste protege — que existir nome em ALGUMA das duas fontes basta para a abertura sair —
+    # não mudou; o que mudou é qual delas ganha quando as duas têm valor. Motivo, medido no
+    # RECON de 27/08: `contacts.name` é o perfil do WhatsApp, e "Eve 🍒🦖🤞" venceu
+    # "Evelyn Renata Begliomini Manfrim" numa abertura real. O cadastro é o nome com que a
+    # pessoa se candidatou. Ver a docstring de `fluxo._nome` e test_identidade_abertura.py.
     from app import nat_sender
 
     estado = SimpleNamespace(contact_wa_id=WA, exact_lead_id=51529947)
 
-    # (a) contato sem nome -> cai para o nome do lead
+    # (a) sem cadastro -> o perfil do WhatsApp ainda salva a abertura. É ESTE o caso que
+    #     o (#131008) de 25/08 gerou, e ele continua coberto — pelo outro lado.
     with patch.object(fluxo, "_contato_de",
-                      new=AsyncMock(return_value=_contato(WA, name := ""))), \
+                      new=AsyncMock(return_value=_contato(WA, "Karen Rossi Faris"))), \
          patch.object(fluxo, "_identidade_do_lead",
-                      new=AsyncMock(return_value=("Karen Rossi Faris", None))):
+                      new=AsyncMock(return_value=("", None))):
         nome = await fluxo._nome(estado, SessaoFalsa())
-    check("contato sem nome -> primeiro nome do LEAD", nome == "Karen", repr(nome))
+    check("sem cadastro -> primeiro nome do CONTATO", nome == "Karen", repr(nome))
 
-    # (b) o contato manda quando tem nome — a segunda fonte não atropela a primeira
+    # (b) as duas presentes -> vence o CADASTRO, e o perfil nem é consultado
     with patch.object(fluxo, "_contato_de",
-                      new=AsyncMock(return_value=_contato(WA, "Beatriz Cristina"))), \
+                      new=AsyncMock(return_value=_contato(WA, "Bia"))) as contato_espiao, \
          patch.object(fluxo, "_identidade_do_lead",
-                      new=AsyncMock(return_value=("Outro Nome", None))) as lead:
+                      new=AsyncMock(return_value=("Beatriz Cristina", None))):
         nome = await fluxo._nome(estado, SessaoFalsa())
-    check("contato COM nome continua mandando", nome == "Beatriz", repr(nome))
-    check("  e nem consulta o lead", lead.await_count == 0, str(lead.await_count))
+    check("cadastro COM nome manda (S3-4)", nome == "Beatriz", repr(nome))
+    check("  e nem consulta o contato", contato_espiao.await_count == 0,
+          str(contato_espiao.await_count))
 
-    # (c) parâmetro em branco não chega na Meta
+    # (c) as duas vazias -> vazio, e é o guard local abaixo que impede a ida à Meta
+    with patch.object(fluxo, "_contato_de",
+                      new=AsyncMock(return_value=_contato(WA, ""))), \
+         patch.object(fluxo, "_identidade_do_lead",
+                      new=AsyncMock(return_value=("", None))):
+        nome = await fluxo._nome(estado, SessaoFalsa())
+    check("as duas fontes vazias -> vazio", nome == "", repr(nome))
+
+    # (d) parâmetro em branco não chega na Meta
     envio = AsyncMock()
     db = SessaoFalsa(contatos=[_contato(WA, "Karen")])
     with patch.object(nat_sender, "send_template_message", new=envio), \
@@ -563,7 +581,7 @@ async def teste_16_parametro_vazio_nunca_chega_na_meta():
           f"saiu={saiu} chamadas={envio.await_count}")
     check("  e o motivo aponta o parâmetro", "[1]" in motivo and "131008" in motivo, motivo)
 
-    # (d) com todos preenchidos, passa
+    # (e) com todos preenchidos, passa
     envio = AsyncMock(return_value={"messages": [{"id": "wamid.X"}]})
     db = SessaoFalsa(contatos=[_contato(WA, "Karen")])
     with patch.object(nat_sender, "send_template_message", new=envio), \
