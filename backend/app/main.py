@@ -1,3 +1,8 @@
+# PRIMEIRA LINHA DE PROPÓSITO: instala o handler do root antes que qualquer módulo do
+# projeto (ou o engine do SQLAlchemy) tenha chance de logar. Ver app/logging_config.py —
+# sem isto, todo `log.info` do projeto morre no `lastResort` do uvicorn, que corta
+# abaixo de WARNING, e a instrumentação do P0-E nunca sai do processo.
+import app.logging_config  # noqa: F401  (efeito no import é o ponto)
 from fastapi import FastAPI, Request, Query, HTTPException, Depends
 from app.ai_engine import generate_ai_response
 from app.whatsapp import send_text_message
