@@ -124,7 +124,27 @@ ESPERA_MAXIMA_COM_PENDENCIA = timedelta(minutes=30)
 # distinção que este item existe para criar. Sem migração — `notifications.type` não tem
 # CHECK.
 TIPO_NOTIF_MUDO = "agente_mudo"
-MOTIVO_INATIVIDADE = "inatividade"
+
+# ------------------------------------------------------------------------------------------
+# OS DOIS MOTIVOS DE ENCERRAMENTO — quem calou? (S4-2, 27/08/2026)
+# ------------------------------------------------------------------------------------------
+# `encerrado_motivo` existe para preservar POR QUE o lead saiu (docstring de
+# NatQualificacaoState). Até aqui ela só sabia dizer uma coisa, `inatividade`, e a dizia
+# sempre — inclusive quando a inatividade era NOSSA.
+#
+# Medido em 26/08: a Erica e a Amanda Pavão escreveram, foram engolidas por um bug da janela
+# de 24 h, e o `encerrar_inativo` de 29/08 as gravaria como "o lead calou". Elas não calaram.
+# Um rótulo errado aqui contamina toda régua de follow-up que vier a ler `encerrado`: quem
+# nós ignoramos é exatamente quem MAIS merece uma segunda abordagem, e ia para o mesmo balde
+# de quem perdeu o interesse.
+#
+# A distinção é a mesma pergunta da varredura (`agente_parado.encalhada`), e por isso é ELA
+# que responde — não uma segunda cópia do critério que divergiria no primeiro ajuste.
+#
+# `encerrado_motivo` é TEXT sem CHECK (verificado no banco em 27/08) — motivo novo não pede
+# migração.
+MOTIVO_INATIVIDADE = "inatividade"          # o LEAD calou: falamos por último e ele sumiu
+MOTIVO_SEM_RESPOSTA_AGENTE = "sem_resposta_do_agente"   # NÓS calamos: ele falou por último
 
 TIPO_NOTIF_AGENTE = "agente_transferiu"
 
@@ -1662,6 +1682,10 @@ async def encerrar_inativo(acao: dict, db: AsyncSession) -> None:
 
     NÃO envia mensagem nenhuma ao lead: quem parou de responder não precisa de um aviso de
     que parou.
+
+    O MOTIVO GRAVADO diz QUEM calou (S4-2): `inatividade` quando falamos por último e o lead
+    sumiu, `sem_resposta_do_agente` quando o lead falou por último e nós é que não voltamos.
+    Ver o bloco OS DOIS MOTIVOS DE ENCERRAMENTO no topo do módulo.
     """
     wa_id = acao["contact_wa_id"]
     estado = await estado_de(wa_id, db)
@@ -1670,9 +1694,20 @@ async def encerrar_inativo(acao: dict, db: AsyncSession) -> None:
     if estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
         raise AcaoIgnorada(f"já está em '{estado.etapa}' — fora das etapas ativas")
 
+    # QUEM CALOU? Ver MOTIVO_SEM_RESPOSTA_AGENTE. A pergunta é a mesma da varredura por
+    # estado, e quem a responde é ela — um critério, um lugar.
+    from app.agente_parado import encalhada
+    agora = _agora_sp()
+    nos_calamos = await encalhada(wa_id, db, agora=agora) is not None
+
     estado.etapa = ETAPA_Q_ENCERRADO
-    estado.encerrado_em = _agora_sp()
-    estado.encerrado_motivo = MOTIVO_INATIVIDADE
+    estado.encerrado_em = agora
+    estado.encerrado_motivo = (MOTIVO_SEM_RESPOSTA_AGENTE if nos_calamos
+                               else MOTIVO_INATIVIDADE)
     await db.flush()
-    print(f"🌑 Agente encerrou {wa_id} por inatividade "
-          f"({INATIVIDADE_ENCERRA.total_seconds() / 3600:.0f}h sem resposta)")
+    horas = INATIVIDADE_ENCERRA.total_seconds() / 3600
+    if nos_calamos:
+        print(f"🌑 Agente encerrou {wa_id} com motivo '{MOTIVO_SEM_RESPOSTA_AGENTE}' — "
+              f"o lead falou por último e ficou {horas:.0f}h sem resposta NOSSA")
+    else:
+        print(f"🌑 Agente encerrou {wa_id} por inatividade ({horas:.0f}h sem resposta)")

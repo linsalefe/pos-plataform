@@ -270,6 +270,13 @@ async def lifespan(app: FastAPI):
     # minuto, e sem ela um fluxo que morra no meio deixa horário fantasma na agenda real.
     from app.agendamento.faxina import faxina_job, IDADE_MINIMA as FAXINA_IDADE
     faxina_task = asyncio.create_task(faxina_job())
+    # Varredura por ESTADO do agente parado (S4-2). Complementa o vigia por EVENTO do P3-A:
+    # aquele arma no inbound e vence em 10 min; este varre o banco a cada 15 min atrás de
+    # conversa em etapa ativa com a última fala do LEAD sem resposta há mais de 1h. SÓ
+    # NOTIFICA a gestão — nunca acorda o agente. Sobe SEMPRE: com a NAT desligada não há
+    # estado ativo novo, e a fila vazia custa um SELECT indexado a cada 15 min.
+    from app.agente_parado import agente_parado_job, ESPERA_MINIMA as PARADO_ESPERA
+    agente_parado_task = asyncio.create_task(agente_parado_job())
     # Valida as consultoras contra GET /Sellers. Em TAREFA de fundo, não bloqueando o boot:
     # o backend serve o Hub, o webhook da Meta e a NAT, e nenhum deles pode esperar o CRM
     # responder para o processo subir. A função nunca levanta — ver consultoras.py.
@@ -290,6 +297,8 @@ async def lifespan(app: FastAPI):
     print(f"✅ Agendador NAT ativo (checa a cada {NAT_SCHED_S}s)")
     print(f"✅ Alerta de saúde de entrega ativo (checa a cada {SAUDE_S // 60} min)")
     print(f"✅ Faxina de agendamento ativa (remove box nosso parado há {FAXINA_IDADE})")
+    print(f"✅ Varredura de agente parado ativa (a cada 15 min, régua de "
+          f"{int(PARADO_ESPERA.total_seconds() // 60)} min — só notifica)")
     yield
     # Shutdown: cancela o job
     task.cancel()
@@ -298,6 +307,7 @@ async def lifespan(app: FastAPI):
     scheduled_task.cancel()
     nat_scheduler_task.cancel()
     delivery_health_task.cancel()
+    agente_parado_task.cancel()
     faxina_task.cancel()
     consultoras_task.cancel()
 

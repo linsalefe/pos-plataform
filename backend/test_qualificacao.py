@@ -994,10 +994,17 @@ checa("72h é a régua", fluxo.INATIVIDADE_ENCERRA, timedelta(hours=72))
 checa("encerrado NÃO é etapa ativa", ETAPA_Q_ENCERRADO in ETAPAS_QUALIFICACAO_ATIVAS, False)
 
 
-async def encerra(estado):
-    """Devolve (estado, motivo_da_AcaoIgnorada_ou_None) — ver S4-1 em executa_lembrete."""
+async def encerra(estado, nos_calamos=False):
+    """Devolve (estado, motivo_da_AcaoIgnorada_ou_None) — ver S4-1 em executa_lembrete.
+
+    `encalhada` é dublada porque aqui o assunto é a MÁQUINA DE ETAPAS: quem escolhe entre
+    `inatividade` e `sem_resposta_do_agente` é a varredura do S4-2, e é lá — em
+    test_agente_parado.py §8, contra mensagens de verdade — que a escolha é testada.
+    """
     motivo = None
-    with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=estado)):
+    achado = ("ts", "wamid", "espera") if nos_calamos else None
+    with patch("app.agente_parado.encalhada", new=AsyncMock(return_value=achado)), \
+         patch.object(fluxo, "estado_de", new=AsyncMock(return_value=estado)):
         try:
             await fluxo.encerrar_inativo({"contact_wa_id": "5583999998888"}, _db())
         except AcaoIgnorada as e:
@@ -1011,6 +1018,10 @@ checa("  com motivo", e.encerrado_motivo, fluxo.MOTIVO_INATIVIDADE)
 checa("  e carimbo de quando", e.encerrado_em is not None, True)
 checa("  e SEM AcaoIgnorada (encerrou de verdade)", motivo, None)
 
+e, _ = asyncio.run(encerra(_estado(ETAPA_Q_AGUARDANDO_ANO), nos_calamos=True))
+checa("mas se NÓS calamos, o motivo é outro (S4-2)",
+      e.encerrado_motivo, fluxo.MOTIVO_SEM_RESPOSTA_AGENTE)
+
 e, motivo = asyncio.run(encerra(_estado(ETAPA_Q_CONCLUIDO)))
 checa("já concluído NÃO é encerrado", e.etapa, ETAPA_Q_CONCLUIDO)
 checa("  e vira skipped COM motivo, não executado mudo (S4-1)",
@@ -1021,7 +1032,8 @@ checa("já transferido NÃO é encerrado", e.etapa, ETAPA_Q_TRANSFERIDO)
 checa("  e vira skipped COM motivo (S4-1)", "transferido_humano" in (motivo or ""), True)
 
 motivo = None
-with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=None)):
+with patch("app.agente_parado.encalhada", new=AsyncMock(return_value=None)), \
+     patch.object(fluxo, "estado_de", new=AsyncMock(return_value=None)):
     try:
         asyncio.run(fluxo.encerrar_inativo({"contact_wa_id": "5583999998888"}, _db()))
     except AcaoIgnorada as ex:
