@@ -504,7 +504,7 @@ São a **única superfície pública** do backend; todo o resto exige token. Que
 
 ### 3.1 Adicionar uma LP nova (nova `subSource`)
 
-Procedimento validado na 12ª e na 13ª LP. **Leia isto inteiro antes de rodar qualquer coisa:
+Procedimento validado na 12ª, na 13ª e na 14ª LP. **Leia isto inteiro antes de rodar qualquer coisa:
 criar origem é permanente** — não existe `SourcesAdd` nem `SourcesRemove`, e a limpeza só é
 possível pela UI da Exact.
 
@@ -942,7 +942,7 @@ singular muda (`Follow 1..4` vs `Follows 5..9`) — nunca gere `stageName` por c
 | **Filtro de data em `/Meetings` é STRING** | `meetingDate` e `startTime` são `Edm.String`. `ge 2026-08-18` → 400; `ge '2026-08-18'` → 200 |
 | **`typeMeeting` não ecoa o que você manda** | `web` → volta `Online`. Não use o eco para conferir |
 | **Rate limit 30 req/20s é do token inteiro** | dividido com o `sync_job` (a cada 600s, paginando 500 leads). Um pico na LP concorre com a ingestão — daí o teto de 20 por ciclo da faxina e o rate limit por IP |
-| **id de subSource é global e não sequencial por source** | as 12 primeiras saíram em 176807–176818; a 13ª saiu **176822**, não 176819. O contador é da Exact inteira. **Ausência de lixo se prova pela verificação pós-disparo** (nenhum subSource inesperado), nunca pela sequência |
+| **id de subSource é global e não sequencial por source** | as 12 primeiras saíram em 176807–176818; a 13ª saiu **176822**, não 176819; a 14ª saiu **177142**, 320 à frente. O contador é da Exact inteira, e o salto cresce com o tempo entre operações. **Ausência de lixo se prova pela verificação pós-disparo** (nenhum subSource inesperado), nunca pela sequência |
 | **`LeadsDelete` cascateia** | a reunião vira `Cancelada` e o box **some de todos os `GET`**. Não use como compensação |
 | **`BoxesRemove` é idempotente** | 204 de novo no mesmo id; id que nunca existiu dá `400 The informed box does not exist.` A diferença de mensagem é o que distingue "removido" de "inexistente" |
 | **`.env` de produção vaza para a suíte offline** | `app.database` chama `load_dotenv()` no import, então todo o `.env` entra em `os.environ` antes do primeiro teste. A suíte limpa as `AGENDAMENTO_*` logo após os imports — um teste offline que muda de resultado conforme o servidor não é teste |
@@ -967,9 +967,9 @@ consultora. Só teste real pega isso.
 
 ---
 
-## 5. Estado atual (18/08/2026)
+## 5. Estado atual (27/08/2026)
 
-### As 13 LPs / `subSources`
+### As 14 LPs / `subSources`
 
 Todas sob o source **`Landing Page` = id 140648**, ativas, ASCII puro sem acento.
 
@@ -980,8 +980,8 @@ Todas sob o source **`Landing Page` = id 140648**, ativas, ASCII puro sem acento
 | 176809 | `Pos Infantojuvenil EAD` | 176816 | `Pos Gestao Psicossocial T5` |
 | 176810 | `Pos Psicologia na RAPS T3` | 176817 | `Pos TEA V3` |
 | 176811 | `Pos Psicologia Hospitalar` | 176818 | `Pos Saude do Trabalhador` |
-| 176812 | `Pos Suicidio e Luto T3` | **176822** | **`Pos Enfermagem em Saude Mental`** |
-| 176813 | `Pos Psicologia Escolar` | | |
+| 176812 | `Pos Suicidio e Luto T3` | 176822 | `Pos Enfermagem em Saude Mental` |
+| 176813 | `Pos Psicologia Escolar` | **177142** | **`Pos Direitos Humanos T4`** |
 
 Padrão (quando a LP não manda `origem`): `PosMulheridades`.
 
@@ -1023,7 +1023,7 @@ Log de boot esperado:
 
 ```
 ✅ agendamento: 2 consultora(s) em rotação — Victória Amorim, Victória Rodrigues
-✅ agendamento: source 'Landing Page' (id 140648) com as 13 origens da allowlist confirmadas
+✅ agendamento: source 'Landing Page' (id 140648) com as 14 origens da allowlist confirmadas
 ℹ️ agendamento: passo 4 (mover para funil de vendas) DESLIGADO
 ✅ Faxina de agendamento ativa (remove box nosso parado há 0:15:00)
 ✅ CORS do agendamento: .cenatsaudemental.com,.netlify.app (somente /api/agendamento/*)
@@ -1092,5 +1092,6 @@ Log de boot esperado:
 | 18/08 | passo 4 opcional (`ChangeFunnel`), desligado (§15) |
 | 18/08 | source `Landing Page` + as 12 primeiras origens (§16) |
 | 18/08 | 13ª origem: `Pos Enfermagem em Saude Mental` (§17) |
+| 27/08 | 14ª origem: `Pos Direitos Humanos T4` — id 177142, sem gêmeo antigo em source nenhum (§18) |
 | 25/08 | janela de dias corridos (o horizonte de 14 dias morreu) + grade no comercial inteiro 09:00–18:30, com os números recalculados contra os blocos reais (`AGENDAMENTO_JANELA_GRADE_20260825.md`) |
 | 25/08 | `AGENDAMENTO_JANELA_DIAS=4` **no ar**, escolhido contra a chegada real de 2 933 leads (§7 do mesmo doc): com 3, 5,3% dos leads veriam oferta zero |

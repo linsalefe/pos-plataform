@@ -1163,7 +1163,7 @@ POST /lead origem="posgenerot2" -> 400 (saiu da allowlist, como esperado)
 
 **Órfãos acumulados continuam 9** — esta operação não criou nenhum.
 
-> **Superado em parte:** o source tem **13** subSources desde a 13ª LP — ver §17.
+> **Superado em parte:** o source tem **14** subSources desde a 14ª LP — ver §17 e §18.
 
 
 ---
@@ -1232,6 +1232,105 @@ POST /lead origem="Pos Enfermagem em Saude Mental" -> 200, lead 51441824
                  | description "E-mail: ... | profissao: ... | como_conheceu: ..."
   excluído (204), confirmado por id eq e por varredura de telefone
 ```
+
+
+---
+
+## 18. A 14ª LP: `Pos Direitos Humanos T4` (27/08/2026)
+
+Pós em Saúde Mental, Direitos Humanos e Populações Vulnerabilizadas (T4). Mesmo procedimento
+do §17, sem desvio: uma chamada só, source já existente, autorizado após dry-run.
+
+**Resultado: subSource `Pos Direitos Humanos T4` = id 177142**, ativa, sob `Landing Page`
+(140648). Byte a byte idêntica ao valor aprovado — ASCII puro, 23 caracteres:
+
+```
+enviado : b'Pos Direitos Humanos T4'
+recebido: b'Pos Direitos Humanos T4'
+hex     : 50 6f 73 20 44 69 72 65 69 74 6f 73 20 48 75 6d 61 6e 6f 73 20 54 34
+```
+
+O source agora tem **14 subSources**: 14 valores, 14 esperados, **nenhum inesperado e nenhuma
+das 13 anteriores sumiu**. É essa conferência que prova ausência de lixo — não a sequência de
+ids (§17, e agora com folga maior: a 13ª saiu 176822, esta saiu **177142**, 320 ids à frente).
+
+### Desta vez não havia gêmeo antigo
+
+O dry-run varreu os **24 sources** da base atrás de `direito`, `humano`, `vulnerab` e `populac`:
+**nada, em source nenhum**. Diferente da 13ª (§17), que encontrou `posenfermagemsm` com 2 leads
+sob `Rd Marketing`, e do `PosMulheridades` do §16. Este curso nasce com um cadastro só — não há
+histórico partido a explicar em relatório de marketing, e não há nada a somar depois.
+
+Único vizinho de nomenclatura é `Pos Alcool e Drogas T4` (176814): mesmo sufixo de turma, curso
+diferente. Nenhum risco de colisão — a allowlist compara o valor inteiro.
+
+### `id eq` também atrasa logo depois do `LeadsDelete`
+
+Novidade, e ela contradiz em parte o §10 e o passo 4 do runbook, onde `id eq` é descrito como
+"o único filtro consistente na hora". No lead do smoke, **segundos depois** do `DELETE` → 204:
+
+```
+id eq 51600526                    -> AINDA EXISTE (stage 'Entrada')
+phone1 eq '5511999990013'         -> 0 leads          <- já limpo
+... ~40s depois
+id eq 51600526                    -> 0 resultados
+phone1 eq '5511999990013'         -> 0 leads
+```
+
+O lead saiu inteiro; o que atrasou foi a leitura. **`id eq` é mais consistente que busca
+textual, e não é instantâneo.** No lead de lote do passo 2 ele respondeu 0 de imediato — ou
+seja, o atraso é intermitente, e conferir uma vez só pode dar tanto falso "sobrou" quanto
+verdadeiro. A varredura por telefone continua sendo a palavra final, e é ela que fecha o passo
+4 do runbook. Quem vir `id eq` teimando logo após um 204: **espere e repita antes de concluir
+que sobrou órfão** — e nunca dispare compensação em cima da primeira leitura.
+
+### Leads descartáveis saíram inteiros
+
+| lead | id | telefone | fim |
+|---|---|---|---|
+| `TESTE CRIACAO ORIGEM - excluir` | 51600519 | `11999990001` (lote) | 204, `id eq` 0 na hora, varredura 0 |
+| `SMOKE - excluir` | 51600526 | `11999990013` | 204, `id eq` 0 após o atraso acima, varredura 0 |
+
+Sem box e sem `scheduleAdd`, `LeadsDelete` limpa 100%: **nenhum órfão nesta operação.**
+**Órfãos acumulados continuam 9.**
+
+### Smoke, e o 400 que continua de pé
+
+```
+POST /api/agendamento/lead origem="Pos Direitos Humanos T4" -> 200, lead 51600526
+  Exact: Entrada | source 140648 'Landing Page'
+                | subSource 177142 'Pos Direitos Humanos T4'
+                | description "E-mail: smoke@example.com | profissao: Psicologa | como_conheceu: Instagram"
+
+POST /api/agendamento/lead origem="Pos Direitos Humanos T5" -> 400 {"detail":"Origem inválida."}
+```
+
+O negativo importa tanto quanto o positivo: `T5` é um erro de digitação plausível na LP, e a
+allowlist o recusou **sem criar nada** na Exact. É exatamente o que `origens.py` existe para
+fazer.
+
+### Estado atual
+
+`AGENDAMENTO_SUBSOURCES` no `backend/.env` com **14 valores**, entre aspas (§16 explica por
+quê). Conferido nos dois leitores antes do restart — `bash set -a && . .env` devolve
+`Landing Page` inteiro e 14 valores, e `python-dotenv` + `origens.permitidas()` idem, com
+`resolver('pos direitos humanos t4')` devolvendo a caixa da allowlist.
+
+```
+boot: ✅ agendamento: source 'Landing Page' (id 140648) com as 14 origens da allowlist confirmadas
+```
+
+| id | subSource | id | subSource |
+|---|---|---|---|
+| 176807 | `PosMulheridades` | 176814 | `Pos Alcool e Drogas T4` |
+| 176808 | `Pos Grupos e Oficinas T2` | 176815 | `Pos Psicologia Clinica T2` |
+| 176809 | `Pos Infantojuvenil EAD` | 176816 | `Pos Gestao Psicossocial T5` |
+| 176810 | `Pos Psicologia na RAPS T3` | 176817 | `Pos TEA V3` |
+| 176811 | `Pos Psicologia Hospitalar` | 176818 | `Pos Saude do Trabalhador` |
+| 176812 | `Pos Suicidio e Luto T3` | 176822 | `Pos Enfermagem em Saude Mental` |
+| 176813 | `Pos Psicologia Escolar` | **177142** | **`Pos Direitos Humanos T4`** |
+
+A LP pode ser publicada.
 
 
 ---
