@@ -1142,6 +1142,59 @@ async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession, *,
 
     Só `_avancar` pede `confirmar=True`. Vindo de `_agendar`, a fala do modelo ACABOU de
     confirmar o horário escolhido — um segundo texto aqui seria a mesma notícia duas vezes.
+
+    ------------------------------------------------------------------------------------
+    POR QUE A CONFIRMAÇÃO NÃO PASSA POR `_falar` — o bug de 26/08, e a forma escolhida
+    ------------------------------------------------------------------------------------
+    Este bloco nasceu no P0-D (`defa955`) chamando `_enviar`, que devolve `(saiu, motivo)` e
+    não faz nada com a recusa. Seis minutos depois o P0-B (`b25d233`) trocou por `_falar` no
+    varrimento "recusa nunca mais é silêncio" — certo em todos os outros pontos do módulo,
+    e AQUI um lead perdido:
+
+        estado.etapa = 'concluido'  ->  db.flush()
+        _falar -> qualificacao_pode_atuar RELÊ o estado -> vê 'concluido' -> recusa
+               -> _fallback -> etapa='transferido_humano' + TEXTO_FALLBACK + notificação
+
+    A pessoa acabava de contar a trajetória inteira e recebia "Deixa eu te conectar com uma
+    pessoa da nossa equipe" no lugar da data da própria reunião. MEDIDO em 26/08: 4 de 4
+    (100%) dos leads T1 que completaram o roteiro depois das 13:32 UTC — Marina (207),
+    Mikaelle (216), Amanda (220) e Natália (222) —, e 4 dos 6 avisos `agente_transferiu`
+    que chegaram à gestão no período eram este falso alarme.
+
+    DUAS FORMAS EXISTIAM. A escolhida é a segunda:
+
+    (a) CONFIRMAR ANTES de gravar `concluido`, com a etapa ainda ativa. Recusada por três
+        razões, e a segunda é decisiva:
+          1. exigiria uma terceira cópia do idioma `if not await _falar(...) and
+             estado.etapa == ETAPA_Q_TRANSFERIDO: return` só para preservar a invariante;
+          2. uma confirmação que não sai levaria o estado a `transferido_humano` pelo
+             `_fallback` — que é EXATAMENTE o desfecho que este fix existe para remover. A
+             reunião já está de pé na Exact; falhar em anunciá-la não pode desfazer a
+             conclusão. `_agendar` já diz a mesma regra com outras palavras;
+          3. no ramo do teto (`_falar` devolve False sem transferir) a etapa viraria
+             `concluido` com um `responder_pendente` vivo — e o bug reapareceria 10 min
+             depois, só que mais raro e mais difícil de achar.
+
+    (b) GRAVAR a etapa e enviar com um guard que NÃO exige etapa ativa. É o que
+        `lembrete_reuniao` e `concluir_por_agendamento_externo` já fazem, pelo mesmo motivo.
+
+    O GUARD É `guard_de_despedida`, NÃO `guard_de_abertura`. Os dois dispensam etapa ativa,
+    mas `guard_de_abertura` carrega o TETO POR HORA, e o P1-B já decidiu essa questão: o
+    teto é para business-initiated (abertura), não para a resposta a quem acabou de
+    escrever. O lembrete fica com `guard_de_abertura` de propósito — ele É business-initiated
+    e sai dias depois. Esta confirmação é a última fala de um turno que o lead começou.
+
+    RECUSA AQUI NÃO É `_fallback` — E NÃO É SILÊNCIO. Sobrou pouco que possa recusar
+    (`guard_de_despedida` checa só a chave geral), e o que sobra significa "o agente está
+    desligado" ou "a Meta não aceitou". Nenhum desses casos justifica desfazer uma conclusão
+    correta nem acordar a gestão: a reunião existe, o SDR a vê na Exact e o lembrete T-30
+    continua agendado logo abaixo. Fica o `print`, que a partir do item 2 deste sprint
+    aparece de fato no journald. Mesmo tratamento (e mesmo texto) de
+    `concluir_por_agendamento_externo`.
+
+    A fala adiada eventualmente pendente não precisa ser cancelada aqui: o handler
+    `responder_pendente` já recusa agir sobre etapa fora de ETAPAS_QUALIFICACAO_ATIVAS com
+    `AcaoIgnorada` — ele NÃO cai em `_fallback` nesse caminho.
     """
     estado.etapa = ETAPA_Q_CONCLUIDO
     await db.flush()
@@ -1149,11 +1202,18 @@ async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession, *,
     if confirmar and reuniao is not None:
         from app.agendamento import consultoras as equipe
         quem = equipe.nome_de(reuniao.sales_rep_email or "")
-        await _falar(estado, (
-            f"Na verdade você já tem horário reservado: "
-            f"{reuniao.slot_inicio.strftime('%d/%m às %H:%M')}"
-            f"{f' com {quem}' if quem else ''}. "
-            f"Te espero lá! Se precisar remarcar, é só me dizer. 🙂"), db)
+        enviado, motivo = await enviar_nat(
+            estado.contact_wa_id, guard.ETAPA_CONVERSA, db,
+            guard=guard.guard_de_despedida,
+            corpo_livre=(
+                f"Na verdade você já tem horário reservado: "
+                f"{reuniao.slot_inicio.strftime('%d/%m às %H:%M')}"
+                f"{f' com {quem}' if quem else ''}. "
+                f"Te espero lá! Se precisar remarcar, é só me dizer. 🙂"))
+        if not enviado:
+            print(f"⚠️  Agente: confirmação de reunião NÃO saiu para "
+                  f"{estado.contact_wa_id} ({motivo}) — a reunião {reuniao.id} está de pé "
+                  f"e o estado segue em '{ETAPA_Q_CONCLUIDO}'")
 
     if reuniao is not None:
         await agendar_lembrete(reuniao, db)
