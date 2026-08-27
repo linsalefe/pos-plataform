@@ -322,8 +322,10 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
             _sdr = _sdr.get("name")
         sdr_user_id = resolve_sdr_user_id(_sdr)
 
-        contact_result = await db.execute(select(Contact).where(Contact.wa_id == phone))
-        contact = contact_result.scalar_one_or_none()
+        # CANONIZAÇÃO (b): `phone` vem de `format_phone(lead.phone1)`, que só prefixa 55 e
+        # nunca toca no 9º dígito — a boas-vindas foi o maior criador de threads divididas.
+        from app.contatos import contato_existente
+        contact = await contato_existente(phone, db)
         if not contact:
             contact = Contact(
                 wa_id=phone,

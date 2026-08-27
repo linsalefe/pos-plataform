@@ -60,6 +60,7 @@ from app.nat_scheduler import (AcaoAdiada, AcaoIgnorada, agendar as nat_agendar,
                                cancelar as nat_cancelar, registrar_handler)
 from app.nat_sender import enviar_nat, send_nat_message
 from app.telefone import variantes_wa_id
+from app.contatos import contato_existente
 from app.nomes import primeiro_nome
 
 # Quantas mensagens da conversa vão para o modelo. 10 cobre o vaivém das 4 perguntas com
@@ -304,8 +305,10 @@ async def _contato_ou_criar(wa_id: str, *, lead_id: int | None,
     Devolve None só se não houver canal — sem canal o envio não sairia de qualquer forma, e
     um Contact órfão sem `channel_id` seria lixo.
     """
-    achado = (await db.execute(
-        select(Contact).where(Contact.wa_id == wa_id))).scalar_one_or_none()
+    # CANONIZAÇÃO (b): procura nas DUAS grafias. A abertura nasce com o telefone do lead
+    # (13 dígitos, via `qualificacao_gatilho.wa_id_de`) e o inbound dessa pessoa chega com
+    # 12 — era exatamente aqui que a segunda thread nascia. Ver `app/contatos.py`.
+    achado = await contato_existente(wa_id, db)
     if achado is not None:
         # Contato que existe SEM nome recebe o nome do lead — exatamente o que a boas-vindas
         # faz no passo 7 (`if not contact.name: contact.name = name`). Sem isto, um contato

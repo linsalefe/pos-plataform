@@ -21,7 +21,8 @@ import asyncio
 from datetime import datetime
 from unittest.mock import MagicMock
 
-from app.contatos import agrupar, chave_par, contato_existente, destinatario, principal_do_par
+from app.contatos import (agrupar, canonizar, chave_par, contato_existente,
+                          destinatario, principal_do_par)
 from app.models import Contact, Message
 from app.telefone import variantes_wa_id
 
@@ -214,6 +215,31 @@ def teste_escrita():
           "com os dois gravados, escreve no que recebe inbound — o lado mudo não engorda")
 
 
+def teste_canonizar():
+    print("\n=== 8. canonizar — quem chega primeiro define a grafia ===")
+    # agente abre em 13d, a pessoa responde de 12d: o inbound grava no contato de 13d
+    so13 = Sessao(contatos=[Contact(wa_id=MIKA_13)])
+    checa(asyncio.run(canonizar(MIKA_12, so13)) == MIKA_13,
+          "agente abriu em 13d -> o inbound de 12d grava NAQUELE contato, não num novo")
+
+    # a pessoa escreve primeiro em 12d, o agente responde depois
+    so12 = Sessao(contatos=[Contact(wa_id=MIKA_12)])
+    checa(asyncio.run(canonizar(MIKA_13, so12)) == MIKA_12,
+          "pessoa escreveu em 12d -> a abertura do agente grava NAQUELE contato")
+
+    zerado = Sessao()
+    checa(asyncio.run(canonizar(MIKA_13, zerado)) == MIKA_13,
+          "ninguém ali ainda: fica na grafia de quem chegou (e o contato será criado)")
+
+    print("\n   canonizar NÃO é destinatario — a distinção do §4.2")
+    # mesmo cenário, as duas funções: uma decide a CHAVE, a outra o ENDEREÇO.
+    db = Sessao(contatos=[Contact(wa_id=MIKA_13)])
+    checa(asyncio.run(canonizar(MIKA_13, db)) == MIKA_13,
+          "sem inbound, canonizar mantém 13d (grava onde o contato está)")
+    checa(asyncio.run(destinatario(MIKA_13, db)) == MIKA_13,
+          "e destinatario NÃO troca o número: sem inbound, não há endereço comprovado")
+
+
 def teste_lista():
     print("\n=== 7. a lista: contatos viram conversas ===")
     linhas = [{"wa_id": MIKA_12}, {"wa_id": MIKA_13},
@@ -234,6 +260,7 @@ if __name__ == "__main__":
     teste_mikaelle()
     teste_envio()
     teste_escrita()
+    teste_canonizar()
     teste_lista()
     print("\n" + "=" * 72)
     if falhas:

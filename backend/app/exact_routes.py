@@ -368,10 +368,9 @@ async def bulk_send_template(
 
                 # Criar contato se não existir + vincular SDR do Exact
                 sdr_user_id = resolve_sdr_user_id(lead.sdr_name)
-                contact_result = await db.execute(
-                    select(Contact).where(Contact.wa_id == wa_id)
-                )
-                contact = contact_result.scalar_one_or_none()
+                # CANONIZAÇÃO (b) — ver `app/contatos.py`.
+                from app.contatos import contato_existente
+                contact = await contato_existente(wa_id, db)
                 if not contact:
                     db.add(Contact(wa_id=wa_id, name=lead.name, channel_id=channel_id, assigned_to=sdr_user_id))
                     await db.flush()

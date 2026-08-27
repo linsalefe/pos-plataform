@@ -15,7 +15,7 @@ from app.database import get_db
 from app.whatsapp import send_text_message, send_template_message, upload_media, send_media_message, create_template, GRAPH_VERSION
 # Trava unica do template de boas-vindas (a MESMA usada em bulk-send-template).
 from app.welcome_guard import bloquear_se_boas_vindas
-from app.contatos import destinatario
+from app.contatos import canonizar, contato_existente, destinatario
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -256,10 +256,11 @@ async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db),
     result = await send_text_message(destino, req.text, channel.phone_number_id, channel.whatsapp_token)
 
     if "messages" in result:
-        wa_id = result.get("contacts", [{}])[0].get("wa_id", req.to)
+        # O eco da Meta é a grafia canônica DELA; `canonizar` a alinha com o contato que
+        # este humano já tem aqui, se tiver. Ver `app/contatos.py`.
+        wa_id = await canonizar(result.get("contacts", [{}])[0].get("wa_id", req.to), db)
 
-        contact_result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
-        contact = contact_result.scalar_one_or_none()
+        contact = await contato_existente(wa_id, db)
         if not contact:
             contact = Contact(wa_id=wa_id, name="", channel_id=req.channel_id)
             db.add(contact)
@@ -298,10 +299,9 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
     result = await send_template_message(destino, req.template_name, req.language, channel.phone_number_id, channel.whatsapp_token, req.parameters if req.parameters else None)
 
     if "messages" in result:
-        wa_id = result.get("contacts", [{}])[0].get("wa_id", req.to)
+        wa_id = await canonizar(result.get("contacts", [{}])[0].get("wa_id", req.to), db)
 
-        contact_result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
-        contact = contact_result.scalar_one_or_none()
+        contact = await contato_existente(wa_id, db)
         if not contact:
             db.add(Contact(wa_id=wa_id, name=req.contact_name or "", channel_id=req.channel_id))
             await db.flush()
@@ -366,10 +366,9 @@ async def send_media(
     result = await send_media_message(destino, media_id, media_type, channel.phone_number_id, channel.whatsapp_token, caption)
 
     if "messages" in result:
-        wa_id = result.get("contacts", [{}])[0].get("wa_id", to)
+        wa_id = await canonizar(result.get("contacts", [{}])[0].get("wa_id", to), db)
 
-        contact_result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
-        contact = contact_result.scalar_one_or_none()
+        contact = await contato_existente(wa_id, db)
         if not contact:
             contact = Contact(wa_id=wa_id, name="", channel_id=channel_id)
             db.add(contact)

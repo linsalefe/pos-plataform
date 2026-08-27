@@ -142,6 +142,31 @@ async def contato_existente(wa_id: str, db):
     return sorted(achados, key=lambda c: ordem.get(c.wa_id, 99))[-1]
 
 
+async def canonizar(wa_id: str, db) -> str:
+    """Sob qual `wa_id` GRAVAR. O do contato que já existe no par, ou o próprio se não há.
+
+    É a peça que **para de criar divisão nova**. Chamada em todo ponto que escreve contato ou
+    mensagem, ela faz o segundo caminho a chegar escrever no contato que o primeiro criou —
+    em vez de abrir uma thread paralela com a outra grafia.
+
+    ⚠️ **ISTO NÃO MUDA PARA ONDE A MENSAGEM É ENVIADA.** Só decide a chave de gravação. Quem
+    resolve destinatário é `destinatario`, e só quando há inbound comprovando o endereço.
+    A distinção importa: `telefone.py` avisa que eleger uma forma canônica poderia quebrar o
+    ENVIO, porque não se sabe qual forma a Meta entrega. Continua verdade — e é por isso que
+    a canonização fica do lado de cá, na escrita, onde errar não deixa ninguém sem receber.
+
+    QUEM CHEGA PRIMEIRO DEFINE A GRAFIA, e isso é de propósito. Os dois sentidos acontecem:
+
+        agente abre (13d) -> pessoa responde (12d)   -> o inbound grava no contato de 13d
+        pessoa escreve (12d) -> agente responde      -> a abertura grava no contato de 12d
+
+    Nos dois casos sai **uma** thread. Qual das duas grafias sobrou importa menos do que não
+    haver duas — e a leitura já trata as duas como a mesma conversa de qualquer forma.
+    """
+    achado = await contato_existente(wa_id, db)
+    return achado.wa_id if achado is not None else wa_id
+
+
 async def destinatario(wa_id: str, db) -> str:
     """Para qual grafia ENVIAR. Devolve `wa_id` inalterado se não houver motivo para trocar.
 

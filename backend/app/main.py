@@ -115,6 +115,8 @@ async def _realimentar_welcome_status(wa_message_id: str, novo_status: str, erro
 from app.database import get_db, async_session
 from app.models import Channel, Contact, ExactLead, Message, NatButtonEvent
 from app.nat_buttons import extrair_evento_botao, conteudo_legivel
+from app.contatos import canonizar, contato_existente
+from app.telefone import variantes_wa_id
 from app.routes import router
 from app.auth_routes import router as auth_router
 from app.exact_routes import router as exact_router
@@ -505,8 +507,11 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 wa_id = contact_data["wa_id"]
                 name = contact_data.get("profile", {}).get("name", "")
 
-                result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
-                contact = result.scalar_one_or_none()
+                # CANONIZAÇÃO (b): se este humano já tem contato sob a OUTRA grafia do
+                # telefone, escreve nele. Sem isto, a abertura do agente cria o de 13
+                # dígitos e o primeiro inbound cria o de 12 — os 406 pares de hoje nasceram
+                # assim, ~8 por dia. Ver `app/contatos.py`.
+                contact = await contato_existente(wa_id, db)
 
                 if not contact:
                     contact = Contact(wa_id=wa_id, name=name, channel_id=channel_id)
@@ -552,9 +557,13 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 if evento_botao:
                     content = conteudo_legivel(evento_botao)
 
+                # A mesma grafia do contato resolvido acima — senão a FK aponta para um
+                # `contacts.wa_id` que a canonização decidiu não criar.
+                wa_gravacao = await canonizar(msg["from"], db)
+
                 message = Message(
                     wa_message_id=wa_message_id,
-                    contact_wa_id=msg["from"],
+                    contact_wa_id=wa_gravacao,
                     channel_id=channel_id,
                     direction="inbound",
                     message_type=msg_type,
@@ -633,7 +642,12 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     await _rede_de_ultima_instancia(db, msg["from"], wa_message_id, e)
 
                 # Notificação de nova mensagem para o SDR dono (se houver)
-                owner_result = await db.execute(select(Contact.assigned_to, Contact.name).where(Contact.wa_id == msg["from"]))
+                # Nas DUAS grafias: em 92 dos 406 pares o dono está registrado só no outro
+                # contato, e a notificação de nova mensagem simplesmente não saía.
+                owner_result = await db.execute(
+                    select(Contact.assigned_to, Contact.name)
+                    .where(Contact.wa_id.in_(variantes_wa_id(msg["from"]) or (msg["from"],)),
+                           Contact.assigned_to.isnot(None)))
                 owner_row = owner_result.first()
                 if owner_row and owner_row[0] is not None:
                     from app.models import Notification

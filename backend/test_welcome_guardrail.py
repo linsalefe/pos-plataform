@@ -246,7 +246,10 @@ async def caso_8_send_template_outro_passa():
     from app import routes
     from app.routes import send_template, SendTemplateRequest
     req = SendTemplateRequest(to="5583999999999", template_name="sdr_primeiro_contato", channel_id=1)
-    db = _fake_db(_cfg(enabled=False))
+    # Dois `execute`: a trava de boas-vindas e a resolução de destinatário de
+    # `contatos.destinatario` (sprint das threads divididas). O segundo devolve lista vazia
+    # — sem inbound conhecido, o número segue inalterado, que é o que este caso afirma.
+    db = _fake_db(_cfg(enabled=False), None)
     with patch.object(routes, "send_template_message", new=AsyncMock(return_value={})) as spy, \
          patch.object(routes, "get_channel", new=AsyncMock(return_value=CHANNEL)):
         await send_template(req, db)   # nao pode levantar HTTPException
