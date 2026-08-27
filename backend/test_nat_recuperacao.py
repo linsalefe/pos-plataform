@@ -31,6 +31,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app import nat_copy, nat_flow, nat_recuperacao, nat_routes
+from app.nat_scheduler import AcaoIgnorada
 from app.models import (ETAPA_AGUARDANDO_LIGACAO, ETAPA_AGUARDANDO_RESPOSTA, ETAPA_ENCERRADO,
                         ETAPA_REAGENDADO, ETAPA_SEM_CONTATO, KIND_RETRY_CONTATO,
                         KIND_SLA_CHECK, NatContactAttempt, Notification)
@@ -186,16 +187,25 @@ async def roda_sem_contato(state, sessao=None, envio=None, agenda=None, usuario=
 
 
 async def roda_retry(state, sessao=None):
-    """Chama o handler do retry_contato de verdade."""
+    """Chama o handler do retry_contato de verdade. Devolve (sessao, motivo|None).
+
+    S4-1: as três saídas de "nada a fazer" viraram AcaoIgnorada. "Não notificou" já não basta
+    como asserção — o motivo tem de estar lá, senão a ação sai `executado` com motivo NULL,
+    igual a quem cobrou o SDR de verdade.
+    """
     sessao = sessao if sessao is not None else SessaoFalsa(state)
+    motivo = None
     with patch.object(nat_recuperacao, "_dados_do_lead",
                       new=AsyncMock(return_value=DADOS_LEAD)), \
          patch.object(nat_recuperacao, "_destinatario_do_aviso",
                       new=AsyncMock(return_value=(4, False))), \
          patch.object(nat_recuperacao, "usuario_existe", new=AsyncMock(return_value=True)):
-        await nat_recuperacao.retry_contato(
-            {"contact_wa_id": WA, "agora": AGORA, "id": 77}, sessao)
-    return sessao
+        try:
+            await nat_recuperacao.retry_contato(
+                {"contact_wa_id": WA, "agora": AGORA, "id": 77}, sessao)
+        except AcaoIgnorada as e:
+            motivo = e.motivo
+    return sessao, motivo
 
 
 async def roda_clique(state, payload, texto="", wa_message_id="wamid.CLIQUE", agenda=None):
@@ -341,8 +351,9 @@ async def teste_3b_terceiro_clique():
 async def teste_4_retry():
     print("4) retry: cobra o SDR, e sai calado quando não há o que cobrar")
     state = estado(etapa=ETAPA_SEM_CONTATO, tentativas=1)
-    sessao = await roda_retry(state)
+    sessao, motivo = await roda_retry(state)
     notifs = sessao.notificacoes()
+    check("cobrança de verdade NÃO levanta AcaoIgnorada", motivo is None, f"{motivo}")
 
     check("UMA notificação criada", len(notifs) == 1, f"{len(notifs)}")
     if notifs:
@@ -358,18 +369,25 @@ async def teste_4_retry():
 
     # Lead já assumido: a cobrança perdeu o objeto.
     assumido = estado(etapa=ETAPA_SEM_CONTATO, tentativas=1, assumido_por=5)
-    s2 = await roda_retry(assumido)
+    s2, m2 = await roda_retry(assumido)
     check("lead assumido -> no-op", s2.notificacoes() == [], f"{s2.notificacoes()}")
+    check("  e SKIPPED com motivo, não executado mudo (S4-1)",
+          "assumido por user 5" in (m2 or ""), f"{m2}")
 
     # Fora de sem_contato: o lead já reagiu.
     for etapa in (ETAPA_AGUARDANDO_LIGACAO, ETAPA_REAGENDADO, ETAPA_ENCERRADO):
-        s3 = await roda_retry(estado(etapa=etapa, tentativas=1))
+        s3, m3 = await roda_retry(estado(etapa=etapa, tentativas=1))
         check(f"etapa {etapa} -> no-op", s3.notificacoes() == [], f"{s3.notificacoes()}")
+        check(f"  etapa {etapa} -> skipped com motivo (S4-1)",
+              etapa in (m3 or ""), f"{m3}")
 
-    # Sem estado nenhum: não levanta (levantar viraria 3 retentativas e uma ação `falhou`).
+    # Sem estado nenhum: AcaoIgnorada, e NÃO exceção comum — levantar Exception viraria 3
+    # retentativas e uma ação `falhou`; AcaoIgnorada é `skipped` na primeira passada.
     s4 = SessaoFalsa(None)
-    await roda_retry(None, s4)
-    check("sem estado -> no-op silencioso", s4.notificacoes() == [])
+    _, m4 = await roda_retry(None, s4)
+    check("sem estado -> no-op", s4.notificacoes() == [])
+    check("  e skipped com motivo (S4-1, era `return` mudo)",
+          "sem estado de fluxo" in (m4 or ""), f"{m4}")
 
     # E o retry NUNCA manda mensagem: nenhum caminho do módulo chama o sender.
     fonte = open("app/nat_recuperacao.py", encoding="utf-8").read()

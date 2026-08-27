@@ -747,35 +747,58 @@ _, spy = asyncio.run(agenda_lembrete(-1))
 checa("reunião NO PASSADO -> não agenda (não manda lembrete atrasado)", spy.await_count, 0)
 
 
-async def executa_lembrete(reuniao):
+from app.nat_scheduler import AcaoIgnorada  # noqa: E402
+
+
+async def executa_lembrete(reuniao, agendamento_id=7):
+    """Devolve (spy_do_envio, motivo_da_AcaoIgnorada_ou_None).
+
+    S4-1: as saídas de "nada a fazer" deixaram de ser `return` mudo. Não basta mais checar
+    que nada foi enviado — o motivo TEM de existir, senão a ação sai `executado` com motivo
+    NULL e fica indistinguível de um lembrete que saiu.
+    """
     db = _db()
     db.execute = AsyncMock(return_value=MagicMock(
         scalar_one_or_none=MagicMock(return_value=reuniao)))
+    motivo = None
     with patch.object(fluxo, "send_nat_message", new=AsyncMock(return_value=True)) as spy, \
          patch.object(fluxo, "_corpo_do_template", new=AsyncMock(return_value="corpo")):
-        await fluxo.lembrete_reuniao(
-            {"contact_wa_id": "5583999998888",
-             "payload": json.dumps({"agendamento_id": 7})}, db)
-    return spy
+        try:
+            await fluxo.lembrete_reuniao(
+                {"contact_wa_id": "5583999998888",
+                 "payload": json.dumps({"agendamento_id": agendamento_id})}, db)
+        except AcaoIgnorada as e:
+            motivo = e.motivo
+    return spy, motivo
 
 
 from app.models import PASSO_AGENDADO  # noqa: E402
 
 ok = _reuniao(dias=1)
 ok.passo = PASSO_AGENDADO
-checa("reunião viva -> lembrete enviado", asyncio.run(executa_lembrete(ok)).await_count, 1)
+spy, motivo = asyncio.run(executa_lembrete(ok))
+checa("reunião viva -> lembrete enviado", spy.await_count, 1)
+checa("  e SEM AcaoIgnorada (executado de verdade)", motivo, None)
 
-checa("reunião SUMIU -> não envia", asyncio.run(executa_lembrete(None)).await_count, 0)
+spy, motivo = asyncio.run(executa_lembrete(None))
+checa("reunião SUMIU -> não envia", spy.await_count, 0)
+checa("  e vira skipped COM motivo (S4-1)", "não está mais agendada" in (motivo or ""), True)
 
 morta = _reuniao(dias=1)
 morta.passo = "falhou"
-checa("reunião não está mais agendada -> não envia",
-      asyncio.run(executa_lembrete(morta)).await_count, 0)
+spy, motivo = asyncio.run(executa_lembrete(morta))
+checa("reunião não está mais agendada -> não envia", spy.await_count, 0)
+checa("  e vira skipped COM motivo (S4-1)", "passo=" in (motivo or ""), True)
 
 passada = _reuniao(dias=-1)
 passada.passo = PASSO_AGENDADO
-checa("reunião já começou -> não envia atrasado",
-      asyncio.run(executa_lembrete(passada)).await_count, 0)
+spy, motivo = asyncio.run(executa_lembrete(passada))
+checa("reunião já começou -> não envia atrasado", spy.await_count, 0)
+checa("  e vira skipped COM motivo (S4-1)", "já começou" in (motivo or ""), True)
+
+spy, motivo = asyncio.run(executa_lembrete(ok, agendamento_id=None))
+checa("payload sem agendamento_id -> não envia", spy.await_count, 0)
+checa("  e vira skipped COM motivo (S4-1)", "sem agendamento_id" in (motivo or ""), True)
 
 
 # ==========================================================================================
@@ -972,28 +995,42 @@ checa("encerrado NÃO é etapa ativa", ETAPA_Q_ENCERRADO in ETAPAS_QUALIFICACAO_
 
 
 async def encerra(estado):
+    """Devolve (estado, motivo_da_AcaoIgnorada_ou_None) — ver S4-1 em executa_lembrete."""
+    motivo = None
     with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=estado)):
-        await fluxo.encerrar_inativo({"contact_wa_id": "5583999998888"}, _db())
-    return estado
+        try:
+            await fluxo.encerrar_inativo({"contact_wa_id": "5583999998888"}, _db())
+        except AcaoIgnorada as e:
+            motivo = e.motivo
+    return estado, motivo
 
 
-e = asyncio.run(encerra(_estado(ETAPA_Q_AGUARDANDO_ANO)))
+e, motivo = asyncio.run(encerra(_estado(ETAPA_Q_AGUARDANDO_ANO)))
 checa("etapa ativa + 72h -> encerrado", e.etapa, ETAPA_Q_ENCERRADO)
 checa("  com motivo", e.encerrado_motivo, fluxo.MOTIVO_INATIVIDADE)
 checa("  e carimbo de quando", e.encerrado_em is not None, True)
+checa("  e SEM AcaoIgnorada (encerrou de verdade)", motivo, None)
 
-e = asyncio.run(encerra(_estado(ETAPA_Q_CONCLUIDO)))
+e, motivo = asyncio.run(encerra(_estado(ETAPA_Q_CONCLUIDO)))
 checa("já concluído NÃO é encerrado", e.etapa, ETAPA_Q_CONCLUIDO)
+checa("  e vira skipped COM motivo, não executado mudo (S4-1)",
+      "concluido" in (motivo or ""), True)
 
-e = asyncio.run(encerra(_estado(ETAPA_Q_TRANSFERIDO)))
+e, motivo = asyncio.run(encerra(_estado(ETAPA_Q_TRANSFERIDO)))
 checa("já transferido NÃO é encerrado", e.etapa, ETAPA_Q_TRANSFERIDO)
+checa("  e vira skipped COM motivo (S4-1)", "transferido_humano" in (motivo or ""), True)
 
+motivo = None
 with patch.object(fluxo, "estado_de", new=AsyncMock(return_value=None)):
-    asyncio.run(fluxo.encerrar_inativo({"contact_wa_id": "5583999998888"}, _db()))
-checa("sem estado: sai em silêncio, sem levantar", True, True)
+    try:
+        asyncio.run(fluxo.encerrar_inativo({"contact_wa_id": "5583999998888"}, _db()))
+    except AcaoIgnorada as ex:
+        motivo = ex.motivo
+checa("sem estado: skipped COM motivo (S4-1, era `return` mudo)",
+      "não tem estado" in (motivo or ""), True)
 
 # resposta do lead REAGENDA o encerramento
-e = asyncio.run(encerra(_estado(ETAPA_Q_AGUARDANDO_ANO)))  # já encerrado
+e, _ = asyncio.run(encerra(_estado(ETAPA_Q_AGUARDANDO_ANO)))  # já encerrado
 _, envio, ia, _ = asyncio.run(roda(e, _resp(), wa_id="wamid.POS"))
 checa("resposta DEPOIS de encerrado não reabre (LLM não é chamado)", ia.await_count, 0)
 checa("  e nada é enviado", envio.await_count, 0)

@@ -48,7 +48,7 @@ from app.models import (ETAPA_SEM_CONTATO, KIND_RETRY_CONTATO, NatFlowState, Not
 from app.nat_flow import (_dados_do_lead, _destinatario_do_aviso, telefone_legivel,
                           usuario_existe)
 from app.nat_guard import GESTOR_USER_ID
-from app.nat_scheduler import registrar_handler
+from app.nat_scheduler import AcaoIgnorada, registrar_handler
 
 # Teto de tentativas de contato por lead. Na segunda o fluxo ENCERRA: nem envio novo, nem
 # retry agendado. Dois é o número que o time definiu — mais que isso, com o lead calado nas
@@ -164,6 +164,10 @@ async def retry_contato(acao: dict, db: AsyncSession) -> None:
 
     NÃO ENVIA NADA AO LEAD e NÃO REAGENDA. É o que impede o ciclo: cada "sem contato" gera no
     máximo um retry, e ele termina aqui.
+
+    NENHUMA SAÍDA DAQUI É SILENCIOSA (Risco 3, S4-1). As três saídas de "nada a fazer" viravam
+    `executado` com motivo NULL — a mesma marca de quem cobrou o SDR. Agora são `AcaoIgnorada`:
+    `skipped` com o motivo GRAVADO.
     """
     wa_id = acao["contact_wa_id"]
     acao_id = acao["id"]
@@ -172,20 +176,16 @@ async def retry_contato(acao: dict, db: AsyncSession) -> None:
         select(NatFlowState).where(NatFlowState.contact_wa_id == wa_id))
     state = res.scalar_one_or_none()
 
-    # --- as três saídas de "nada a fazer" ---
+    # --- as três saídas de "nada a fazer" — todas AcaoIgnorada, nenhuma muda (S4-1) ---
     if state is None:
-        print(f"↩️  NAT recuperação: {wa_id} sem estado de fluxo — nada a fazer")
-        return
+        raise AcaoIgnorada("sem estado de fluxo — nada a cobrar")
 
     if state.etapa != ETAPA_SEM_CONTATO:
-        print(f"↩️  NAT recuperação: {wa_id} já saiu de {ETAPA_SEM_CONTATO} "
-              f"(está em {state.etapa}) — o lead reagiu, nada a fazer")
-        return
+        raise AcaoIgnorada(f"já saiu de {ETAPA_SEM_CONTATO} (está em {state.etapa}) — "
+                           f"o lead reagiu")
 
     if state.assumido_por is not None:
-        print(f"✅ NAT recuperação: {wa_id} já assumido por user {state.assumido_por} — "
-              "cobrança sem objeto, nada a fazer")
-        return
+        raise AcaoIgnorada(f"já assumido por user {state.assumido_por} — cobrança sem objeto")
 
     dados = await _dados_do_lead(state, db)
     title, body = montar_notificacao_retry(

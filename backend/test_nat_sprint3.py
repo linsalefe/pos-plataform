@@ -450,6 +450,12 @@ async def teste_14_sem_sdr():
 # ==========================================================================================
 
 async def _roda_sla(state, nivel_dono="Valéria"):
+    """Devolve (sessao, agendados, motivo|None).
+
+    S4-1: as quatro saídas de "nada a fazer" do sla_check viraram AcaoIgnorada. "Não
+    notificou e não reagendou" já não basta — o motivo tem de estar gravado, senão a ação
+    sai `executado` com motivo NULL, igual a quem escalonou de verdade.
+    """
     sessao = SessaoFalsa(resposta_execute=lambda s: ResultadoFalso(state))
     agendados = []
 
@@ -466,34 +472,54 @@ async def _roda_sla(state, nivel_dono="Valéria"):
          patch.object(nat_sla, "agendar", new=agendar_falso):
         acao = {"id": 7, "kind": KIND_SLA_CHECK, "contact_wa_id": "5511900000001",
                 "run_at": VENCIDA, "payload": None, "attempts": 0, "agora": AGORA}
-        await nat_sla.sla_check(acao, sessao)
-    return sessao, agendados
+        motivo = None
+        try:
+            await nat_sla.sla_check(acao, sessao)
+        except ns.AcaoIgnorada as e:
+            motivo = e.motivo
+    return sessao, agendados, motivo
 
 
 async def teste_7_ja_assumido():
     print("7) sla_check com lead já assumido -> nada")
     state = _estado(assumido_por=4)
-    sessao, agendados = await _roda_sla(state)
+    sessao, agendados, motivo = await _roda_sla(state)
     check("nenhuma notificação", sessao.notificacoes() == [])
     check("não reagendou", agendados == [])
     check("nível intacto", state.escalonamento_nivel == 0, f"{state.escalonamento_nivel}")
+    check("SKIPPED com motivo, não executado mudo (S4-1)",
+          "assumido por user 4" in (motivo or ""), f"{motivo}")
 
-    # As outras duas saídas de "nada a fazer".
+    # As outras três saídas de "nada a fazer".
     fora = _estado(etapa=ETAPA_AGUARDANDO_MOTIVACAO)
-    s2, a2 = await _roda_sla(fora)
+    s2, a2, m2 = await _roda_sla(fora)
     check("etapa diferente de aguardando_ligacao -> nada",
           s2.notificacoes() == [] and a2 == [])
+    check("  e skipped com motivo (S4-1)",
+          ETAPA_AGUARDANDO_MOTIVACAO in (m2 or ""), f"{m2}")
+
+    topo = _estado(nivel=nat_sla.NIVEL_GESTAO)
+    s2b, a2b, m2b = await _roda_sla(topo)
+    check("já no topo da escada -> nada", s2b.notificacoes() == [] and a2b == [])
+    check("  e skipped com motivo (S4-1)", "fim da escada" in (m2b or ""), f"{m2b}")
 
     sem_estado = SessaoFalsa(resposta_execute=lambda s: ResultadoFalso(None))
-    await nat_sla.sla_check({"id": 1, "contact_wa_id": "x", "agora": AGORA, "kind": "k",
-                             "run_at": VENCIDA, "payload": None, "attempts": 0}, sem_estado)
+    m3 = None
+    try:
+        await nat_sla.sla_check({"id": 1, "contact_wa_id": "x", "agora": AGORA, "kind": "k",
+                                 "run_at": VENCIDA, "payload": None, "attempts": 0},
+                                sem_estado)
+    except ns.AcaoIgnorada as e:
+        m3 = e.motivo
     check("sem estado de fluxo -> nada", sem_estado.notificacoes() == [])
+    check("  e skipped com motivo (S4-1, era `return` mudo)",
+          "sem estado de fluxo" in (m3 or ""), f"{m3}")
 
 
 async def teste_8_nivel_zero():
     print("8) sla_check nível 0 -> notifica o OUTRO SDR e reagenda")
     state = _estado(sdr=4, nivel=0)
-    sessao, agendados = await _roda_sla(state)
+    sessao, agendados, _ = await _roda_sla(state)
     notifs = sessao.notificacoes()
 
     check("UMA notificação", len(notifs) == 1, f"{len(notifs)}")
@@ -515,7 +541,7 @@ async def teste_8_nivel_zero():
 
     # LEAD SEM SDR: não existe "o outro", mas existem OS DOIS — e são eles que ligam.
     sem_dono = _estado(sdr=None, nivel=0)
-    s2, a2 = await _roda_sla(sem_dono, nivel_dono="sem SDR")
+    s2, a2, _ = await _roda_sla(sem_dono, nivel_dono="sem SDR")
     destinos = sorted(n.user_id for n in s2.notificacoes())
 
     check("sem SDR dono -> avisa AMBOS os SDRs (4 e 5)", destinos == [4, 5], f"{destinos}")
@@ -534,7 +560,7 @@ async def teste_8_nivel_zero():
           f"nivel={sem_dono.escalonamento_nivel} agendados={a2}")
 
     # E uma ação atrasada que chegue depois não pode reabrir nada.
-    s3, a3 = await _roda_sla(sem_dono, nivel_dono="sem SDR")
+    s3, a3, _ = await _roda_sla(sem_dono, nivel_dono="sem SDR")
     check("ação atrasada no nível 2 não notifica nem reagenda",
           s3.notificacoes() == [] and a3 == [])
 
@@ -542,7 +568,7 @@ async def teste_8_nivel_zero():
 async def teste_9_nivel_um():
     print("9) sla_check nível 1 -> notifica a gestão e NÃO reagenda")
     state = _estado(sdr=4, nivel=1)
-    sessao, agendados = await _roda_sla(state)
+    sessao, agendados, _ = await _roda_sla(state)
     notifs = sessao.notificacoes()
 
     check("UMA notificação", len(notifs) == 1, f"{len(notifs)}")
@@ -560,7 +586,7 @@ async def teste_9_nivel_um():
 async def teste_10_nivel_dois():
     print("10) sla_check nível 2 -> nada (não escala infinito)")
     state = _estado(sdr=4, nivel=2)
-    sessao, agendados = await _roda_sla(state)
+    sessao, agendados, _ = await _roda_sla(state)
     check("nenhuma notificação", sessao.notificacoes() == [])
     check("não reagendou", agendados == [])
     check("nível permanece 2", state.escalonamento_nivel == 2)
@@ -656,11 +682,14 @@ async def teste_12b_assumir_encerra_o_fluxo():
           resp["assumido_por"] == 5 and resp["assumido_por_nome"], f"{resp}")
 
     # A segunda rede: mesmo que o cancelamento do sla_check tenha falhado, o handler agora
-    # para na PRIMEIRA das suas três saídas de "nada a fazer" — a etapa mudou.
+    # para na PRIMEIRA das suas quatro saídas de "nada a fazer" — a etapa mudou.
     sessao = SessaoFalsa()
     sessao._resposta = lambda s: ResultadoFalso(state)
-    await nat_sla.sla_check({"contact_wa_id": state.contact_wa_id, "agora": AGORA, "id": 1},
-                            sessao)
+    try:
+        await nat_sla.sla_check({"contact_wa_id": state.contact_wa_id, "agora": AGORA,
+                                 "id": 1}, sessao)
+    except ns.AcaoIgnorada:
+        pass   # S4-1: a saída deixou de ser `return` mudo — ver teste 7
     check("sla_check não escalona lead encerrado",
           [o for o in sessao.adicionados if isinstance(o, Notification)] == [],
           "notificou alguém")

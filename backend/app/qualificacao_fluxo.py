@@ -1400,9 +1400,11 @@ async def agendar_lembrete(reuniao, db: AsyncSession) -> bool:
 async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     """T-30min. RELÊ tudo: entre agendar e executar passaram horas ou dias.
 
-    Não envia e sai silencioso quando a reunião sumiu, mudou de horário para o passado, ou
-    perdeu a consultora. Mesmo espírito das três saídas de `nat_recuperacao`: silencioso e
-    bem-sucedido, porque "nada a fazer" não é erro.
+    NENHUMA SAÍDA DAQUI É SILENCIOSA (Risco 3, S4-1). As quatro saídas de "nada a fazer"
+    — sem `agendamento_id`, reunião desmarcada, reunião que já começou, consultora que sumiu
+    — eram `return` mudo e viravam `executado` com motivo NULL, a mesma marca de quem enviou
+    o lembrete. Agora são `AcaoIgnorada`: `skipped` com o motivo GRAVADO, e "o lembrete saiu"
+    volta a significar uma coisa só.
     """
     from app.agendamento import consultoras as equipe
 
@@ -1410,23 +1412,21 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     wa_id = acao["contact_wa_id"]
     reuniao_id = payload.get("agendamento_id")
     if not reuniao_id:
-        print(f"↩️  Lembrete: sem agendamento_id para {wa_id}")
-        return
+        raise AcaoIgnorada("sem agendamento_id no payload")
 
     reuniao = (await db.execute(select(Agendamento).where(
         Agendamento.id == reuniao_id))).scalar_one_or_none()
     if reuniao is None or reuniao.passo != PASSO_AGENDADO:
-        print(f"↩️  Lembrete: reunião {reuniao_id} não está mais agendada")
-        return
+        raise AcaoIgnorada(f"reunião {reuniao_id} não está mais agendada "
+                           f"(passo={reuniao.passo if reuniao else 'inexistente'})")
     if reuniao.slot_inicio <= _agora_sp():
-        print(f"↩️  Lembrete: reunião {reuniao_id} já começou "
-              f"({reuniao.slot_inicio:%d/%m %H:%M}) — não envia atrasado")
-        return
+        raise AcaoIgnorada(f"reunião {reuniao_id} já começou "
+                           f"({reuniao.slot_inicio:%d/%m %H:%M}) — não envia lembrete atrasado")
 
     consultora = equipe.nome_de(reuniao.sales_rep_email or "")
     if not consultora:
-        print(f"↩️  Lembrete: reunião {reuniao_id} sem consultora resolvível")
-        return
+        raise AcaoIgnorada(f"reunião {reuniao_id} sem consultora resolvível "
+                           f"(sales_rep_email={reuniao.sales_rep_email!r})")
 
     nome = primeiro_nome(reuniao.nome or "")
     hora = reuniao.slot_inicio.strftime("%H:%M")
@@ -1654,18 +1654,21 @@ async def encerrar_inativo(acao: dict, db: AsyncSession) -> None:
     nesse intervalo o lead pode ter respondido (o que reagenda esta ação), sido transferido,
     ou concluído com reunião marcada.
 
-    Saída silenciosa e bem-sucedida quando não há o que fazer — mesmo espírito das três
-    saídas de `nat_recuperacao`. NÃO envia mensagem nenhuma ao lead: quem parou de responder
-    não precisa de um aviso de que parou.
+    NENHUMA SAÍDA DAQUI É SILENCIOSA (Risco 3, S4-1). As duas saídas de "nada a fazer" eram
+    `return` mudo e viravam `executado` com motivo NULL — indistinguíveis de um encerramento
+    real. Um lead transferido a um humano e um lead de fato encerrado produziam a MESMA linha
+    na fila, e a régua de follow-up que vier a ler `encerrado` não teria como separá-los.
+    Agora as duas são `AcaoIgnorada`: `skipped` com o motivo GRAVADO.
+
+    NÃO envia mensagem nenhuma ao lead: quem parou de responder não precisa de um aviso de
+    que parou.
     """
     wa_id = acao["contact_wa_id"]
     estado = await estado_de(wa_id, db)
     if estado is None:
-        print(f"↩️  Encerramento: {wa_id} não tem estado — nada a fazer")
-        return
+        raise AcaoIgnorada("não tem estado — nada a encerrar")
     if estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
-        print(f"↩️  Encerramento: {wa_id} já está em '{estado.etapa}' — nada a fazer")
-        return
+        raise AcaoIgnorada(f"já está em '{estado.etapa}' — fora das etapas ativas")
 
     estado.etapa = ETAPA_Q_ENCERRADO
     estado.encerrado_em = _agora_sp()

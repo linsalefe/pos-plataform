@@ -68,7 +68,7 @@ from app.models import (ETAPA_AGUARDANDO_LIGACAO, KIND_SLA_CHECK, NatFlowState, 
 from app.nat_flow import (SLA_LIGACAO_MINUTOS, telefone_legivel, usuario_existe,
                           _dados_do_lead)
 from app.nat_guard import GESTOR_USER_ID, SDR_IDS_PERMITIDOS
-from app.nat_scheduler import agendar, registrar_handler
+from app.nat_scheduler import AcaoIgnorada, agendar, registrar_handler
 
 # Tipos distintos por degrau, como window_alerts_job faz com 1h/3h/5h/20h: o tipo é o que
 # permite consultar "quantos leads chegaram à gestão" sem parsear o título.
@@ -170,9 +170,11 @@ async def _notificar(db: AsyncSession, *, user_id: int, wa_id: str, tipo: str, a
 async def sla_check(acao: dict, db: AsyncSession) -> None:
     """Handler do sla_check. Roda dentro do savepoint de _executar_acao.
 
-    Todo caminho de saída é silencioso e bem-sucedido (a ação vira `executado`): "não havia
-    nada a fazer" é um desfecho legítimo do SLA, não uma falha. O handler só levanta se algo
-    de verdade der errado — e aí o agendador retenta.
+    NENHUMA SAÍDA DAQUI É SILENCIOSA (Risco 3, S4-1). "Não havia nada a fazer" continua sendo
+    um desfecho legítimo do SLA — mas ele não pode se parecer com "escalonei". As quatro
+    saídas de nada-a-fazer viravam `executado` com motivo NULL, iguais às duas que de fato
+    notificam alguém; agora são `AcaoIgnorada`, isto é, `skipped` com o motivo GRAVADO na
+    linha. Falha de verdade continua levantando exceção, e aí o agendador retenta.
     """
     wa_id = acao["contact_wa_id"]
     agora = acao["agora"]
@@ -182,26 +184,20 @@ async def sla_check(acao: dict, db: AsyncSession) -> None:
         select(NatFlowState).where(NatFlowState.contact_wa_id == wa_id))
     state = res.scalar_one_or_none()
 
-    # --- as três saídas de "nada a fazer" ---
+    # --- as QUATRO saídas de "nada a fazer" — todas AcaoIgnorada, nenhuma muda (S4-1) ---
     if state is None:
-        print(f"↩️  NAT SLA: {wa_id} sem estado de fluxo — nada a fazer")
-        return
+        raise AcaoIgnorada("sem estado de fluxo — nada a escalonar")
 
     if state.etapa != ETAPA_AGUARDANDO_LIGACAO:
-        print(f"↩️  NAT SLA: {wa_id} já saiu de {ETAPA_AGUARDANDO_LIGACAO} "
-              f"(está em {state.etapa}) — nada a fazer")
-        return
+        raise AcaoIgnorada(f"já saiu de {ETAPA_AGUARDANDO_LIGACAO} (está em {state.etapa})")
 
     if state.assumido_por is not None:
-        print(f"✅ NAT SLA: {wa_id} já assumido por user {state.assumido_por} em "
-              f"{state.assumido_em:%H:%M:%S} — relógio parado, nada a fazer")
-        return
+        raise AcaoIgnorada(f"já assumido por user {state.assumido_por} em "
+                           f"{state.assumido_em:%d/%m %H:%M} — relógio parado")
 
     nivel = state.escalonamento_nivel or 0
     if nivel >= NIVEL_GESTAO:
-        print(f"↩️  NAT SLA: {wa_id} já está no nível {nivel} (gestão avisada) — "
-              "fim da escada, nada a fazer")
-        return
+        raise AcaoIgnorada(f"já está no nível {nivel} (gestão avisada) — fim da escada")
 
     dados = await _dados_do_lead(state, db)
     dono = await _nome_do_usuario(state.sdr_user_id, db)
