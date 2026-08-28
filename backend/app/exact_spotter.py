@@ -324,11 +324,25 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
 
         # CANONIZAÇÃO (b): `phone` vem de `format_phone(lead.phone1)`, que só prefixa 55 e
         # nunca toca no 9º dígito — a boas-vindas foi o maior criador de threads divididas.
+        #
+        # `wa_gravacao` e NÃO `phone` em tudo que ESCREVE, pelo mesmo motivo de
+        # `main.py:562`: se o contato deste humano já existe sob a outra grafia,
+        # `contato_existente` o encontra e o `if not contact` decide não criar — então
+        # gravar `Message.contact_wa_id=phone` apontaria para uma linha inexistente e a FK
+        # `messages_contact_wa_id_fkey` derrubaria o laço de boas-vindas inteiro. É o
+        # mesmo defeito que tirou o disparo em massa do ar em 28/08 (ver `exact_routes.py`);
+        # aqui ele estava latente só porque a automação está desligada desde 26/07.
+        #
+        # ⚠️ `to=phone` no envio acima fica como está: canonizar decide CHAVE DE GRAVAÇÃO,
+        # nunca destinatário — a distinção está em `app/contatos.py` e em `telefone.py`.
+        # `contato_existente` + a grafia dele é o corpo de `canonizar`, resolvido numa
+        # consulta só — chamar `canonizar` aqui repetiria a busca da linha seguinte.
         from app.contatos import contato_existente
         contact = await contato_existente(phone, db)
+        wa_gravacao = contact.wa_id if contact is not None else phone
         if not contact:
             contact = Contact(
-                wa_id=phone,
+                wa_id=wa_gravacao,
                 name=name,
                 channel_id=channel_id,
                 ai_active=True,
@@ -357,7 +371,7 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
 
         db.add(Message(
             wa_message_id=welcome_wamid,
-            contact_wa_id=phone,
+            contact_wa_id=wa_gravacao,
             channel_id=channel_id,
             direction="outbound",
             message_type="template",
@@ -369,10 +383,10 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
 
         # Card no Kanban — checar duplicata antes (protege o reenvio manual com force=True).
         ex = await db.execute(
-            select(AIConversationSummary).where(AIConversationSummary.contact_wa_id == phone))
+            select(AIConversationSummary).where(AIConversationSummary.contact_wa_id == wa_gravacao))
         if ex.scalar_one_or_none() is None:
             db.add(AIConversationSummary(
-                contact_wa_id=phone,
+                contact_wa_id=wa_gravacao,
                 channel_id=channel_id,
                 status="em_atendimento_ia",
                 lead_name=name,

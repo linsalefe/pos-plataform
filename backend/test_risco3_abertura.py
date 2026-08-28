@@ -150,9 +150,28 @@ class SessaoFalsa:
 
 
 def _parametros(stmt):
-    """Os valores literais ligados ao statement, para o dublê casar o WHERE."""
+    """Os valores literais ligados ao statement, para o dublê casar o WHERE.
+
+    ACHATA sequências, e isso não é detalhe. Desde 05cea3f o `_contato_ou_criar` busca com
+    `Contact.wa_id.in_(variantes)` em vez de `== wa_id`, e um `IN` expandido do SQLAlchemy
+    não deixa literal nenhum no `str(stmt)` — vira `IN (__[POSTCOMPILE_wa_id_1])`, com a
+    lista INTEIRA num único parâmetro:
+
+        params -> {'wa_id_1': ['5582998307979', '558298307979']}
+
+    Sem achatar, `str(v)` devolvia a lista formatada como UMA string e o `in` comparava
+    elemento a elemento contra ela: nunca casava. O dublê então não achava o contato que
+    existia, o código criava um novo, e o teste 2 falhava — um vermelho do harness, com a
+    produção correta. Era o único vermelho de `test_risco3_abertura`, PASS no sprint 4.
+    """
     try:
-        return [str(v) for v in stmt.compile().params.values()]
+        achatado = []
+        for v in stmt.compile().params.values():
+            if isinstance(v, (list, tuple, set)):
+                achatado.extend(str(x) for x in v)
+            else:
+                achatado.append(str(v))
+        return achatado
     except Exception:
         return []
 

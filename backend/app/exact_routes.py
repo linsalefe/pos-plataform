@@ -364,13 +364,30 @@ async def bulk_send_template(
             )
 
             if "messages" in result:
-                wa_id = result.get("contacts", [{}])[0].get("wa_id", phone)
+                # CANONIZAÇÃO (b) — ver `app/contatos.py`. O eco da Meta traz a grafia
+                # canônica DELA, que pode ser a de 12 dígitos enquanto o contato daqui
+                # nasceu com 13 (o agente cria a partir do telefone da Exact). Sem alinhar
+                # as duas ANTES, `contato_existente` acha o contato pela outra grafia, o
+                # `if not contact` decide não criar — corretamente — e o `Message` lá
+                # embaixo aponta `contact_wa_id` para uma linha que não existe:
+                # ForeignKeyViolation, e o lote inteiro morre em 500.
+                #
+                # Foi o que aconteceu em 28/08 (5 × 500 em ~35 min): o commit 05cea3f
+                # trocou a busca exata por `contato_existente` aqui, mas não trouxe o
+                # `canonizar` que `routes.py:261` recebeu no mesmo commit. Metade da
+                # correção causa um bug que a busca exata não tinha.
+                #
+                # `contato_existente` + a grafia dele é, literalmente, o corpo de
+                # `canonizar` — resolvido assim numa consulta só, em vez de chamar
+                # `canonizar` e repetir a mesma busca na linha seguinte.
+                from app.contatos import contato_existente
+
+                eco_meta = result.get("contacts", [{}])[0].get("wa_id", phone)
 
                 # Criar contato se não existir + vincular SDR do Exact
                 sdr_user_id = resolve_sdr_user_id(lead.sdr_name)
-                # CANONIZAÇÃO (b) — ver `app/contatos.py`.
-                from app.contatos import contato_existente
-                contact = await contato_existente(wa_id, db)
+                contact = await contato_existente(eco_meta, db)
+                wa_id = contact.wa_id if contact is not None else eco_meta
                 if not contact:
                     db.add(Contact(wa_id=wa_id, name=lead.name, channel_id=channel_id, assigned_to=sdr_user_id))
                     await db.flush()
@@ -397,6 +414,17 @@ async def bulk_send_template(
                     status="sent",
                 )
                 db.add(msg)
+                # FLUSH AQUI, DENTRO DO `try` DESTE LEAD. Sem ele o `msg` fica pendente e
+                # quem estoura é o PRÓXIMO ponto que flusha — na prática o `begin_nested`
+                # do `_silenciar` logo abaixo, cujo `except` largo engole o erro e devolve
+                # a sessão em `PendingRollbackError`. O laço então morre no `lead.phone1`
+                # da volta seguinte (atributo expirado → reload → sessão suja) e o lote
+                # inteiro vira 500. O savepoint do `_silenciar` não isola isto: o objeto
+                # que viola é da transação de FORA, não da dele.
+                #
+                # Com o flush aqui, uma falha deste lead é contabilizada como falha DESTE
+                # lead (`failed`/`errors`) e os demais seguem — que é o contrato do laço.
+                await db.flush()
                 # NUNCA DUAS VOZES NA MESMA THREAD — a mesma regra de routes.py /send/*.
                 # O disparo em massa não é um SDR conversando 1:1, mas o efeito no lead é
                 # idêntico: um template cai na conversa que o agente está conduzindo, e a
