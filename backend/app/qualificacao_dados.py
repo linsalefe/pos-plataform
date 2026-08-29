@@ -160,6 +160,24 @@ async def dados_da_lp(lead_id: int | None, db: AsyncSession) -> dict:
     Ordena por id DESC e pega a primeira: se a pessoa preencheu o formulário duas vezes,
     vale o que ela disse por último.
     """
+    return _de_extras(await extras_brutos_da_lp(lead_id, db))
+
+
+async def extras_brutos_da_lp(lead_id: int | None, db: AsyncSession) -> dict:
+    """O JSONB de `agendamentos.extras` COMO ELE ESTÁ, sem normalizar chave nenhuma.
+
+    Mesma consulta de `dados_da_lp` (que agora chama esta) — a diferença é só o que sai:
+    lá as chaves viram a forma canônica do parser, aqui saem com a caixa e o acento que a
+    LP mandou (`"Profissão"`, `"Faixa de investimento"`).
+
+    O consumidor cru é o S5-1: `qualificacao_fluxo._agendar` reescreve esse dicionário em
+    `agendamentos.extras` da linha nova, e normalizar no caminho faria a linha do agente
+    guardar chaves diferentes das que a mesma LP gravou na linha anterior — duas grafias do
+    mesmo formulário na mesma coluna, e todo relatório que agrupar por chave partido em dois.
+
+    `{}` e None são a mesma coisa para quem chama: `agendar(extras=...)` grava `extras or
+    None`, então formulário ausente continua virando NULL, como sempre foi.
+    """
     if not lead_id:
         return {}
     res = await db.execute(
@@ -169,7 +187,8 @@ async def dados_da_lp(lead_id: int | None, db: AsyncSession) -> dict:
                Agendamento.passo != PASSO_FALHOU)
         .order_by(Agendamento.id.desc())
         .limit(1))
-    return _de_extras(res.scalar_one_or_none())
+    bruto = res.scalar_one_or_none()
+    return bruto if isinstance(bruto, dict) else {}
 
 
 async def dados_do_exact(lead_id: int | None) -> dict:

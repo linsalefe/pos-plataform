@@ -468,6 +468,24 @@ async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
     envio da NAT passa — fora do escopo deste item, e de risco diferente. Fica registrado.
     """
     from app.course_names import resolve_course_name
+    sub = await _sub_source_do_lead(estado, db)
+    return await resolve_course_name(sub, db) if sub else ""
+
+
+async def _sub_source_do_lead(estado: NatQualificacaoState, db: AsyncSession) -> str:
+    """O `subSource` CRU do lead — a origem dele, antes de virar nome legível.
+
+    Extraído de `_curso` em 28/08/2026 (S5-1) sem mudar uma vírgula da consulta: as duas
+    fontes e a ordem entre elas são as mesmas, pela mesma razão descrita ali. O que mudou é
+    que agora existem DOIS consumidores do mesmo dado, e o segundo precisa do valor cru:
+
+        `_curso`                -> resolve_course_name(sub)  -> "Pós-Graduação em TEA"
+        `_origem_do_agendamento`-> allowlist de origens.py   -> "Pos TEA V3"
+
+    Ter uma função só é o que impede os dois de divergirem no dia em que a ordem das fontes
+    mudar de novo — e foi exatamente a divergência entre "o curso que a abertura fala" e "o
+    curso que o CRM registra" que o S5-1 veio consertar.
+    """
     from app.models import ExactLead
     if not estado.exact_lead_id:
         return ""
@@ -480,7 +498,54 @@ async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
             .where(Agendamento.lead_id == estado.exact_lead_id)
             .order_by(Agendamento.id.desc()).limit(1))
         sub = res.scalar_one_or_none()
-    return await resolve_course_name(sub, db) if sub else ""
+    return sub or ""
+
+
+async def _origem_do_agendamento(estado: NatQualificacaoState, db: AsyncSession) -> str | None:
+    """A `origem` a passar para `agendamento.agendar` — ou None, que significa "use o padrão".
+
+    ------------------------------------------------------------------------------------
+    S5-1 — A REUNIÃO DO AGENTE ENTRAVA COM O CURSO ERRADO (28/08/2026)
+    ------------------------------------------------------------------------------------
+    `_agendar` chamava `fluxo.agendar(..., origem=None)`, e `origens.resolver(None)` devolve
+    `AGENDAMENTO_SUBSOURCE_PADRAO` — que em produção é `PosMulheridades`. O padrão existe
+    para a LP ANTIGA, que ainda não manda o campo (está na docstring de `origens.resolver`);
+    o agente herdou-o sem ser o caso de uso dele.
+
+    MEDIDO em 28/08: **4 de 4** agendamentos que o agente já criou em toda a base saíram
+    `PosMulheridades`, incluindo o da Kaylla (`agendamentos` id 251), que aplicou para TEA,
+    conversou sobre TEA e teve a abertura falando de TEA — porque a abertura lê o sub_source
+    certo e o agendamento não lia nada.
+
+    NÃO É ALLOWLIST NOVA: é a MESMA de `origens.permitidas()`, conferida aqui antes da
+    chamada em vez de dentro dela. A diferença é o que acontece no miss:
+
+        `origens.resolver(fora_da_lista)` -> levanta OrigemInvalida -> agendamento MORRE
+        esta função                       -> devolve None + LOG     -> agendamento SEGUE
+
+    FAIL-CLOSED SOBRE O DADO, NÃO SOBRE A REUNIÃO. Um sub_source fora da allowlist é erro de
+    cadastro (curso novo que ninguém acrescentou ao `.env`), e recusar a reunião por causa
+    dele trocaria um relatório torto por um lead perdido — o pior dos dois. O que não pode
+    acontecer em silêncio é a troca: por isso o log nomeia o valor recusado.
+
+    A comparação é case-insensitive e o valor devolvido é o da allowlist, não o do banco —
+    a mesma regra de `origens.resolver`, e pela mesma razão: `posmulheridades` criaria um
+    SEGUNDO cadastro na Exact com o mesmo nome em caixa diferente.
+    """
+    from app.agendamento import origens
+
+    sub = (await _sub_source_do_lead(estado, db)).strip()
+    if not sub:
+        print(f"⚠️  Agente: lead {estado.exact_lead_id} sem sub_source — agendamento vai "
+              f"com a origem padrão ({origens.padrao_configurado()!r})")
+        return None
+    for permitida in origens.permitidas():
+        if permitida.lower() == sub.lower():
+            return permitida
+    print(f"⚠️  Agente: sub_source {sub!r} (lead {estado.exact_lead_id}) NÃO está em "
+          f"AGENDAMENTO_SUBSOURCES — agendamento vai com a origem padrão "
+          f"({origens.padrao_configurado()!r}). Confira a grafia contra GET /Sources.")
+    return None
 
 
 async def _nome(estado: NatQualificacaoState, db: AsyncSession) -> str:
@@ -1150,6 +1215,13 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
 
     contato = await _contato_de(estado.contact_wa_id, db)
     nome = (contato.name if contato else "") or "Lead"
+
+    # S5-1 — os dois dados que faltavam na chamada, lidos ANTES de abrir a sessão própria
+    # do agendamento: são consultas de leitura na sessão do webhook, e fazê-las lá dentro
+    # esticaria a segunda conexão sem necessidade (ver o bloco P0-A logo abaixo).
+    from app.qualificacao_dados import extras_brutos_da_lp
+    origem = await _origem_do_agendamento(estado, db)
+    extras = await extras_brutos_da_lp(estado.exact_lead_id, db)
     try:
         # ----------------------------------------------------------------------------------
         # P0-A — `agendar` PRECISA DE UMA TRANSAÇÃO QUE ELE POSSUA (26/08/2026)
@@ -1192,11 +1264,22 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
             r = await fluxo.agendar(
                 db_agendamento, nome=nome, email=None,
                 telefone=estado.contact_wa_id, slot_id=slot_id,
-                origem=None,
+                # S5-1: era `origem=None`, e None quer dizer "use o padrão do .env" —
+                # `PosMulheridades` para TODA reunião do agente. Ver
+                # `_origem_do_agendamento`: ela devolve o sub_source real do lead quando ele
+                # está na allowlist, e None (com log) quando não está, para que um cadastro
+                # incompleto nunca custe a reunião.
+                origem=origem,
                 # SEMPRE com lead_id: é o que impede a pessoa de virar um segundo lead no
                 # funil.
                 lead_id=estado.exact_lead_id,
-                extras=None, origem_ip=None)
+                # S5-1: era `extras=None`. O formulário da LP (profissão, faixa de
+                # investimento, "como conheceu") existe na linha `lead_criado` do mesmo lead
+                # e virava NULL aqui — a linha do agendamento REAL ficava sem o dado que a
+                # tentativa anterior tinha. Com `lead_externo=True` o `LeadsAdd` é pulado e
+                # os extras não vão para a Exact (`agendar.py:402-408`); eles ficam na nossa
+                # tabela, que é justamente onde o relatório os lê.
+                extras=extras or None, origem_ip=None)
     except Exception as e:
         await _fallback(estado, f"agendamento falhou ({type(e).__name__}: {e})", db)
         return
