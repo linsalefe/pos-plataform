@@ -66,7 +66,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models import (ACAO_CANCELADO, ACAO_EXECUTADO, ACAO_FALHOU, ACAO_PENDENTE,
-                        ACAO_SKIPPED, MAX_TENTATIVAS_ACAO, NatScheduledAction)
+                        ACAO_SKIPPED, KIND_INICIAR_QUALIFICACAO, MAX_TENTATIVAS_ACAO,
+                        ExactLead, NatScheduledAction)
 from app.nat_guard import _agora_sp
 
 # De quanto em quanto tempo o job varre a fila. 60s é o mesmo passo do
@@ -315,6 +316,76 @@ async def _finalizar(db: AsyncSession, acao_id: int, status: str, agora: datetim
         update(NatScheduledAction).where(NatScheduledAction.id == acao_id).values(**valores))
 
 
+# O carimbo que o sync põe no lead quando cede a abertura ao agente. É o texto de
+# `exact_spotter.py:266` — casado por LIKE porque ele leva o motivo entre parênteses
+# ("(enfileirado)", "(já tem estado)") e o motivo não importa aqui.
+CARIMBO_AGENTE_ASSUMIU = "%assumiu a abertura%"
+
+
+async def _desmentir_carimbo_do_lead(db: AsyncSession, dados: dict, motivo: str) -> None:
+    """A abertura NÃO saiu — então o lead não pode continuar carimbado como atendido.
+
+    ------------------------------------------------------------------------------------
+    O QUE ESTA FUNÇÃO CONSERTA
+    ------------------------------------------------------------------------------------
+    `exact_spotter.py:266` carimba `welcome_status='skipped'` com "agente de pré-qualificação
+    assumiu a abertura" no instante em que a ação é ENFILEIRADA. O comentário lá já trata o
+    caso de o gatilho recusar na hora. O que faltava é o outro: a ação pode morrer 5 minutos
+    ou 2 dias DEPOIS, e até 29/08 ninguém voltava no carimbo.
+
+    O lead ficava terminal pelos três lados ao mesmo tempo, e é a conjunção que o some:
+
+        `existing` no sync            -> nunca volta a `new_leads_to_contact`
+        `welcome_status` não-nulo     -> `reprocessar_leads_perdidos.py` filtra IS NULL
+        ação em estado final          -> o agendador não a repesca
+
+    MEDIDO em 29/08 (RECON_VAO_ESPONTANEO_20260829 §4.2): 7 leads carimbados como atendidos
+    sem uma única abertura — 3 pela saída muda de 25/08 e 4 pela grafia do telefone. Os dois
+    bugs já estavam consertados; o que não existia era o caminho de volta.
+
+    ------------------------------------------------------------------------------------
+    O QUE ELA NÃO FAZ, DE PROPÓSITO
+    ------------------------------------------------------------------------------------
+    **Não mexe em `welcome_status`.** Ele é a trava de idempotência que o passo 3 de
+    `send_welcome_to_new_lead` consulta (`is not null`), e devolvê-lo a NULL faria o lead
+    voltar a ser candidato à BOAS-VINDAS — que é o fluxo velho, não o agente. O que estava
+    errado nunca foi o status; era o texto ao lado dele.
+
+    **Não reenfileira.** Enfileirar de novo é decisão com triagem humana — a mesma que o
+    dict EXCLUIDOS de `reprocessar_leads_perdidos.py` registra. Aqui só se grava a verdade,
+    para que a varredura de reconciliação consiga ENXERGAR o lead depois.
+
+    **Só reescreve o carimbo que mente.** O `WHERE` exige `welcome_error LIKE
+    '%assumiu a abertura%'`: um lead marcado "funil fora do escopo" ou "backfill 25/08" tem
+    carimbo verdadeiro, e sobrescrevê-lo apagaria a decisão de quem o pôs lá.
+
+    Savepoint próprio pelo mesmo motivo de `_registrar_transicao`: um erro aqui não pode
+    abortar a transação que acabou de registrar o desfecho da ação. O desfecho é o que
+    importa; este UPDATE é o acréscimo.
+    """
+    if dados["kind"] != KIND_INICIAR_QUALIFICACAO:
+        return                      # só a abertura nasce daquele carimbo
+    lead_id = payload_de(dados).get("lead_id")
+    if not lead_id:
+        return                      # LP sem lead na Exact ainda — não há o que desmentir
+
+    try:
+        async with db.begin_nested():
+            resultado = await db.execute(
+                update(ExactLead)
+                .where(ExactLead.exact_id == lead_id,
+                       ExactLead.welcome_status == ACAO_SKIPPED,
+                       ExactLead.welcome_error.ilike(CARIMBO_AGENTE_ASSUMIU))
+                .values(welcome_error=f"agente NÃO abriu: {motivo}"))
+        if resultado.rowcount:
+            print(f"🩹 Agente: carimbo do lead {lead_id} corrigido — a abertura não saiu "
+                  f"({motivo})")
+    except Exception as e:
+        # Nunca custar o registro do desfecho por causa do acréscimo.
+        print(f"⚠️  Agente: não deu para corrigir o carimbo do lead {lead_id} "
+              f"({type(e).__name__}: {e})")
+
+
 async def _executar_acao(acao: NatScheduledAction, db: AsyncSession, agora: datetime) -> str:
     """Executa uma ação já travada e grava o desfecho. Devolve o status final.
 
@@ -349,6 +420,9 @@ async def _executar_acao(acao: NatScheduledAction, db: AsyncSession, agora: date
             await handler(dados, db)
     except AcaoIgnorada as e:
         await _finalizar(db, acao_id, ACAO_SKIPPED, agora, motivo=e.motivo)
+        # DEPOIS do `_finalizar`, e fora do savepoint do handler: aquele savepoint acabou de
+        # ser revertido pela exceção, e escrever antes seria escrever no que some.
+        await _desmentir_carimbo_do_lead(db, dados, e.motivo)
         print(f"⏭️  NAT scheduler: {kind} (ação {acao_id}, {dados['contact_wa_id']}) "
               f"SKIPPED — {e.motivo}")
         return ACAO_SKIPPED
@@ -363,6 +437,11 @@ async def _executar_acao(acao: NatScheduledAction, db: AsyncSession, agora: date
         tentativas = dados["attempts"] + 1
         if tentativas >= MAX_TENTATIVAS_ACAO:
             await _finalizar(db, acao_id, ACAO_FALHOU, agora, attempts=tentativas)
+            # `falhou` esgota as 3 tentativas e sai de circulação — é tão terminal quanto o
+            # `skipped`, e deixa o lead exatamente na mesma invisibilidade. O carimbo mente
+            # igual, então é desmentido igual.
+            await _desmentir_carimbo_do_lead(
+                db, dados, f"{type(e).__name__}: {e}"[:200])
             print(f"⛔ NAT scheduler: {kind} (ação {acao_id}, {dados['contact_wa_id']}) "
                   f"falhou na tentativa {tentativas}/{MAX_TENTATIVAS_ACAO} — desistindo. "
                   f"{type(e).__name__}: {e}")
