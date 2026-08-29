@@ -988,6 +988,31 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
         raise AcaoIgnorada("não foi possível resolver nem criar o contato "
                            "(sem canal configurado?)")
 
+    # ------------------------------------------------------------------------------------
+    # S5-2 — A GRAFIA DAQUI PARA BAIXO É A DO CONTATO, NÃO A DA AÇÃO (28/08/2026)
+    # ------------------------------------------------------------------------------------
+    # `_contato_ou_criar` resolve nas DUAS grafias desde `05cea3f`: com o contato já
+    # existindo como 12 dígitos, ele acha, decide corretamente NÃO criar o de 13 — e o
+    # objeto resolvido era jogado fora, porque este ponto só testava `is None`. O estado
+    # nascia com a grafia da ação e `nat_sender` procurava `Contact.wa_id == <13 dígitos>`
+    # com igualdade crua, não achava, e recusava com "contato não existe no banco". O
+    # savepoint então revertia o estado junto: o lead não recebia nada, não virava estado e
+    # não entrava em fila nenhuma — sumia.
+    #
+    # MEDIDO em 27-28/08: 6 ações, 4 pessoas (Fernanda `554999333881`, `558588719031`,
+    # Sandra Diell `555596238065`, `555198557793`). 19% das aberturas da janela.
+    #
+    # NÃO SE MEXE NA IGUALDADE CRUA DO SENDER. A docstring de `_contato_ou_criar` explica
+    # por que o porteiro precisa ser estrito: em 25/08 a variante de 12 dígitos de um lead
+    # era o número de OUTRA PESSOA, e só a igualdade do sender impediu o envio para o
+    # estranho. A regra continua sendo UMA — "o contato da abertura é o da grafia para a
+    # qual vamos mandar" —, e a forma de cumpri-la é ALINHAR a grafia ao contato que existe,
+    # não afrouxar quem envia.
+    if contato.wa_id != wa_id:
+        print(f"🔤 Agente: {wa_id} já existe como {contato.wa_id} — abertura segue nessa "
+              f"grafia (estado e envio)")
+        wa_id = contato.wa_id
+
     dados = await resolver_dados(lead_id=lead_id, origem=origem, db=db)
     formacao = dados["formacao"]
 
