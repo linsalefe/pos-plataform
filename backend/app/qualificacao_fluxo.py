@@ -1176,7 +1176,13 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
 
     resposta = await llm.conversar(missao=MISSOES[etapa], contexto=contexto,
                                    historico=await _historico(contact_wa_id, db),
-                                   rotulo=f"{contact_wa_id}/{etapa}")
+                                   # S5-7: o wa_id do ESTADO, não o do inbound. `estado_de`
+                                   # é tolerante às duas grafias, então `contact_wa_id` aqui
+                                   # é a grafia de quem escreveu (12 dígitos para 59% das
+                                   # threads) enquanto o estado vive na outra. Rotular pelo
+                                   # estado é rotular pela CHAVE — a mesma em todo turno da
+                                   # mesma pessoa, e a mesma que `_ofertar_agenda` usa.
+                                   rotulo=f"{estado.contact_wa_id}/{etapa}")
     if resposta is None:
         await _fallback(estado, "LLM indisponível ou fora do contrato", db)
         return True
@@ -1253,7 +1259,15 @@ async def _ofertar_agenda(estado: NatQualificacaoState, db: AsyncSession) -> Non
     resposta = await llm.conversar(missao=MISSOES[ETAPA_Q_OFERTANDO_AGENDA],
                                    contexto=contexto,
                                    historico=await _historico(estado.contact_wa_id, db),
-                                   rotulo=f"{estado.contact_wa_id}/ofertar_agenda"
+                                   # S5-7: era `ofertar_agenda` — nome de etapa que NÃO
+                                   # existe no banco (a real é `ofertando_agenda`). Com o
+                                   # rótulo do turno normal usando o wa_id do INBOUND (12
+                                   # dígitos) e este o do ESTADO (13), a Clarice aparecia
+                                   # como 553199818666 em 5 turnos e 5531999818666 em 1: um
+                                   # `grep` pelo telefone perdia metade dos turnos da mesma
+                                   # pessoa. Uma grafia só (a do estado, que é a chave) e o
+                                   # nome real da etapa.
+                                   rotulo=f"{estado.contact_wa_id}/{ETAPA_Q_OFERTANDO_AGENDA}"
                                           f"[{len(ofertados)} slots]")
     if resposta is None:
         await _fallback(estado, "LLM indisponível ao oferecer a agenda", db)
