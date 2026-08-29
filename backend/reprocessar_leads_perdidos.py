@@ -154,26 +154,67 @@ def _grade(inicio, passo, quantos: list | int) -> list:
 
 
 async def perdidos(db):
-    """Leads sem decisão de abertura, posteriores ao corte. Em ordem de chegada."""
+    """Leads sem decisão de abertura, posteriores ao corte, DENTRO DO ESCOPO. Em ordem.
+
+    ------------------------------------------------------------------------------------
+    O FILTRO DE FUNIL — 29/08/2026
+    ------------------------------------------------------------------------------------
+    Sem ele este script enfileirava lead que o sync NUNCA teria considerado, e o dry-run de
+    29/08 mostrou o tamanho do estrago: **11 leads, os 11 fora do escopo** — 10 de
+    intercâmbio/congresso (funil 18285) e 1 de busca orgânica (21007). Nenhum lead de pós
+    entrava, porque os 6 do escopo já estavam em EXCLUIDOS.
+
+    O buraco era uma assimetria entre dois filtros que ninguém tinha cruzado:
+
+        `exact_spotter.py:548`  só vira candidato quem está nos funis da config
+        `qualificacao_pode_iniciar`  checa chave, corte de data, referência e teto — NÃO funil
+
+    Ou seja: o guardrail de funil existe uma vez só, no laço do sync, e este backfill passava
+    por fora dele. A admissão não o barraria — ela nem sabe o que é funil.
+
+    E o que sairia não era uma abertura inofensiva: `interuruguai2026` não tem linha em
+    `course_aliases`, então `resolve_course_name` cai no fallback e o `{{2}}` do template
+    recebe a string crua. Dez pessoas inscritas numa visita de estudos ao Uruguai receberiam
+    "Vi que você se interessou pela nossa Pós-Graduação em interuruguai2026".
+
+    **O Hub trata pós. Intercâmbio e congresso não são escopo dele** (decisão de 29/08), e a
+    forma de dizer isso no código é reusar a MESMA lista que o sync usa — `funnel_ids` de
+    `auto_welcome_config`, via `_funnels_from_config`. Uma definição de "quais funis", não
+    duas: mudar a config passa a mudar os dois caminhos juntos.
+
+    RESSALVA CONHECIDA: `exact_leads.funnel_id` é o funil ATUAL, não o de nascimento. Um lead
+    que tenha nascido no escopo, se perdido, e migrado para fora depois não é pego aqui —
+    hoje são Vera Rosa (51532753) e a Escola Municipal (51543683), nascidas em 18535 e
+    movidas para 21007, e **as duas já estão em EXCLUIDOS por triagem manual**. Se um dia
+    isso deixar de ser verdade, o critério certo é o primeiro `exact_stage_events` do lead.
+    """
     cfg = (await db.execute(select(NatConfig).where(NatConfig.id == 1))).scalar_one_or_none()
     if cfg is None or cfg.qualificacao_start_at is None:
         raise SystemExit("❌ nat_config sem qualificacao_start_at — sem corte, sem backfill.")
+
+    from app.exact_spotter import _funnels_from_config, get_auto_welcome_config
+    funis = _funnels_from_config(await get_auto_welcome_config(db))
+    if not funis:
+        raise SystemExit("❌ nenhum funil no escopo — sem escopo, sem backfill.")
+
     res = await db.execute(
         select(ExactLead)
         .where(ExactLead.welcome_status.is_(None),
-               ExactLead.register_date >= cfg.qualificacao_start_at)
+               ExactLead.register_date >= cfg.qualificacao_start_at,
+               ExactLead.funnel_id.in_(funis))
         .order_by(ExactLead.register_date))
-    return cfg, list(res.scalars())
+    return cfg, funis, list(res.scalars())
 
 
 async def main(executar: bool, por_hora: int | None):
     async with async_session() as db:
-        cfg, leads = await perdidos(db)
+        cfg, funis, leads = await perdidos(db)
         teto = cfg.max_envios_hora or 20
         ritmo = por_hora or max(1, int(teto * FRACAO_DO_TETO))
         passo = timedelta(minutes=60 / ritmo)
 
         print(f"\ncorte de admissão : {cfg.qualificacao_start_at} (UTC)")
+        print(f"funis no escopo   : {sorted(funis)}  (o Hub trata pós; ver `perdidos`)")
         print(f"teto do agente    : {teto}/h  →  este backfill usa {ritmo}/h "
               f"(1 a cada {passo.total_seconds()/60:.0f} min)")
         print(f"leads perdidos    : {len(leads)}   "

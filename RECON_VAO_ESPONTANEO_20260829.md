@@ -82,10 +82,25 @@ Quem não passa aqui **nunca chega** a `send_welcome_to_new_lead` e por isso **n
 carimbado**: `welcome_status` fica `NULL`, indistinguível de quem foi perdido por bug. Os 11
 têm `welcome_status` vazio no banco — conferido.
 
-É a decisão de produto que está pendente desde `AUDITORIA_NAT_20260725`: **a admissão do
-lead de intercâmbio/congresso nunca foi decidida.** O agente não sabe falar de "Visita de
-Estudos em Trieste 2026"; abrir com o roteiro de pós seria pior que o silêncio. Mas **10 de
-104 leads da janela (9,6%)** entram e ninguém decide nada sobre eles.
+> **DECIDIDO — 29/08:** *"o intercâmbio não importa para o Hub; o foco é a pós."* Os 10 de
+> intercâmbio/congresso saem da conta como **fora de escopo por decisão**, não como buraco.
+> O agente não sabe falar de "Visita de Estudos em Trieste 2026", e abrir com o roteiro de
+> pós seria pior que o silêncio. **Não há pendência aqui, e eles não voltam a aparecer em
+> nenhuma lista de ação deste documento.**
+
+O que sobra, e que continua valendo, é a forma do filtro: ele **não carimba**. Com o escopo
+decidido isso deixa de ser risco de produto e vira apenas ruído de leitura — `welcome_status`
+NULL passa a significar duas coisas (nunca avaliado × perdido por falha), e foi exatamente
+por isso que ISABELA, Vera Rosa e a Escola Municipal se confundiram com os leads de
+intercâmbio no primeiro corte desta apuração. **As três nasceram em 18535, dentro do escopo**
+— conferido em `exact_stage_events` — e migraram para 21007 depois. São vítimas do crash de
+25/08, não caso de funil.
+
+**A cobertura do escopo é apertada, e isso é notícia boa.** Dos 110 leads da janela, **99
+nasceram em 18535** e todos os 99 têm `sub_source` de pós; 10 nasceram em 18285
+(intercâmbio) e 1 em 21007. **Nenhum lead de pós nasceu fora do escopo na janela.** O funil
+21007 é destino, não origem: dos seus 1.039 leads, 992 têm `sub_source` de pós porque
+CHEGARAM lá vindos de 18535.
 
 **⚠️ Telefone inválido — 51624198, Elisabete Braga.** `5555719999822` tem 13 dígitos, mas o
 número local (`719999822`) começa em **7**, não em 9. `variantes_wa_id` devolve só a forma
@@ -262,8 +277,8 @@ produziu efeito nenhum no sistema.
 
 | Categoria | N | É bug? |
 |---|---:|---|
-| Funil de intercâmbio/congresso (18285) fora do escopo | 10 | Não — decisão de produto pendente |
-| Funil de busca orgânica (21007) fora do escopo | 1 | Não — decisão de produto pendente |
+| Funil de intercâmbio/congresso (18285) fora do escopo | 10 | Não — **fora do foco por decisão (29/08)** |
+| Funil de busca orgânica (21007) fora do escopo | 1 | Não — mas é prospect de pós; ver §4.4 |
 | Abertura enfileirada, adiada para segunda 09:00 (fora do horário comercial) | 5 | Não — mas ver §1.2 |
 | Vítima de bug já corrigido, **nunca reprocessada** | 3 | **Sim** |
 | **Total** | **19** | |
@@ -396,10 +411,17 @@ São as 12 da tabela §3.2. Sete delas **não estão no CRM**: só existem no Hu
 51642327 DENILRA (01/09 15:45). *Clovis e Ana Paula, também deste grupo, já estão na
 Prioridade 1 porque escreveram.*
 
-**⚪ NÃO CONTATAR SEM DECISÃO — 11 leads fora do escopo**
-Os 10 de intercâmbio/congresso (18285) e Adriana Araújo (21007). O agente não tem roteiro
-para o produto deles. **51624198 Elisabete Braga tem telefone inválido** (`5555719999822`) —
-corrigir o cadastro antes de qualquer tentativa.
+**⚪ NÃO CONTATAR — 10 leads de intercâmbio/congresso (18285)**
+Fora do foco do Hub por decisão de 29/08. Nada a fazer, nem contato nem cadastro. *(Entre eles,
+51624198 Elisabete Braga tem telefone inválido — `5555719999822`, cujo número local começa em
+7. Irrelevante agora, mas o cadastro está errado.)*
+
+**🟡 EXCEÇÃO — 51549969 Adriana Araújo é prospect de PÓS, e está no funil errado**
+Ela está em 21007 com `sub_source` **vazio** e `source` "Busca Orgânica | Google", o que a fez
+parecer intercâmbio no primeiro corte. Mas o inbound dela de 13/08 é o **botão da LP de
+`Novas Abordagens em Saúde Mental: Autolesão, Comportamento suicida e Luto`** — é pós, e ela
+escreveu *"Olá"* de novo em 25/08 sem nunca ser respondida. **É o único lead de pós da janela
+nascido fora do escopo, e vale contato.**
 
 **⚪ SEM AÇÃO DE VENDA — 51537537 ISABELA** já está em `Vendidos`; o contato dela é a
 Prioridade 1 por causa da segunda pós, não do funil.
@@ -424,9 +446,9 @@ relatório sobre as reuniões indeterminadas virem do telefone.
 Autorizado o levantamento, **não a execução**. Os dois caminhos foram simulados; nada foi
 escrito, nada foi enfileirado.
 
-### 5.1 `reprocessar_leads_perdidos.py` — 🛑 **NÃO rodar como está**
+### 5.1 `reprocessar_leads_perdidos.py` — ✅ **restringido ao escopo de pós**
 
-O dry-run enfileiraria **11 leads**. E os 11 estão **todos fora do escopo de funil**: os 10 de
+O dry-run **antes da correção** enfileiraria **11 leads**. E os 11 estão **todos fora do escopo de funil**: os 10 de
 intercâmbio/congresso (18285) e a Adriana Araújo (21007). **Nenhum dos 6 leads NULL no escopo
 entra** — os 6 já estavam na triagem manual do próprio script (`EXCLUIDOS`, ISABELA entre
 eles) ou são duplicata de telefone.
@@ -450,10 +472,26 @@ o `{{2}}` do template recebe a string crua:
 Para 10 pessoas que se inscreveram numa **visita de estudos ao Uruguai**. Mais a Elisabete
 Braga, cujo telefone (`5555719999822`) é inválido.
 
-**Proposta:** não rodar. Antes de qualquer `--executar`, o script precisa de um filtro de
-funil — `ExactLead.funnel_id.in_(funis_do_config)` no `perdidos()` — e aí ele passa a
-devolver zero, que é a resposta certa. Enquanto isso, os 6 NULL no escopo continuam cobertos
-pela triagem manual que já existe.
+**✅ FEITO em 29/08.** `perdidos()` passou a filtrar por
+`ExactLead.funnel_id.in_(_funnels_from_config(...))` — a **mesma** lista que o sync usa, para
+que mudar a config mude os dois caminhos juntos, e não duas definições de "quais funis". O
+dry-run depois da correção:
+
+```
+funis no escopo   : [18535, 18537, 25588]  (o Hub trata pós)
+leads perdidos    : 6   (7 excluídos na triagem manual)
+(simulação — nada foi escrito). 0 lead(s) seriam enfileirados.
+```
+
+**Os 6 que restam são exatamente os 6 leads de pós do §1.3**, e os 6 já estavam em
+`EXCLUIDOS` ou são duplicata de telefone. **Zero enfileirados é a resposta certa**, e agora é
+a resposta que o script dá sozinho — não a que depende de alguém lembrar de não rodá-lo.
+
+**Ressalva registrada no código:** `funnel_id` é o funil ATUAL, não o de nascimento. Vera Rosa
+(51532753) e a Escola Municipal (51543683) nasceram em **18535** e migraram para 21007 depois
+— o filtro não as pegaria. As duas já estão em `EXCLUIDOS` por triagem manual, então hoje não
+há diferença prática; se um dia houver, o critério certo é o primeiro `exact_stage_events` do
+lead.
 
 ### 5.2 A varredura irmã — **7 leads**, e a lista para você aprovar
 
@@ -504,8 +542,8 @@ como **Prioridade 2**, junto com Josiqueila e Fernanda.
 
 ### 5.4 Estado dos scripts
 
-* `reprocessar_leads_perdidos.py` — **existe no repo**, dry-run rodado, `--executar`
-  **não** rodado. Precisa do filtro de funil antes de qualquer execução.
+* `reprocessar_leads_perdidos.py` — **existe no repo**, agora com filtro de funil, dry-run
+  rodado devolvendo **0**. `--executar` **não** rodado.
 * A varredura irmã — **escrita e rodada em simulação**, ainda **fora do repositório**. Ela
   não tem caminho `--executar`: levantar a lista é read-only e não precisa de autorização;
   enfileirar precisa, e a triagem é humana. **Commito quando a lista do §5.3 for aprovada.**
