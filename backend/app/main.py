@@ -229,6 +229,10 @@ async def scheduled_messages_job():
                             "channel_id": sm.channel_id,
                             "lead_ids": json.loads(sm.lead_ids) if sm.lead_ids else [],
                             "param_mappings": json.loads(sm.param_mappings) if sm.param_mappings else None,
+                            # S5-5: disparo AGENDADO e' campanha. E' tambem o default do
+                            # backend quando a flag falta, mas explicito aqui porque este
+                            # payload e' montado a mao e nao passa pela tela.
+                            "origem_envio": "campanha",
                         }
                         result = await bulk_send_template(payload, db)
                         sm.status = "sent"

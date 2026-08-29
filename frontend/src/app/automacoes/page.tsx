@@ -30,6 +30,11 @@ interface SendResult {
   sent: number;
   failed: number;
   errors: { name: string; error: string }[];
+  // S5-5: contatos que o backend PULOU por estarem em conversa ativa com a NAT.
+  // Opcionais porque um backend anterior a 29/08 não os devolve — a tela não pode
+  // quebrar por causa da ordem do deploy.
+  skipped_nat?: number;
+  skipped?: { name: string; phone: string; etapa: string; motivo: string }[];
 }
 
 interface CourseAlias {
@@ -454,6 +459,9 @@ export default function AutomacoesPage() {
         channel_id: activeChannelId,
         param_mappings: paramMappings.length > 0 ? paramMappings : undefined,
         lead_ids: Array.from(selectedIds),
+        // S5-5: campanha PULA quem está em conversa ativa com a NAT. É o default do
+        // backend também — mandar explícito é documentação, não requisito.
+        origem_envio: 'campanha',
       });
       setSendResult(res.data);
     } catch (err: any) {
@@ -522,6 +530,11 @@ export default function AutomacoesPage() {
         channel_id: activeChannelId,
         param_mappings: paramMappings.length > 0 ? paramMappings : undefined,
         lead_ids: [lead.id],
+        // S5-5: aqui o SDR escolheu UMA pessoa e apertou enviar — decisão dele, e o
+        // filtro da NAT não roda. A trava de transferência continua valendo no backend,
+        // que é o que impede duas vozes na mesma thread. SEM esta flag o backend trata
+        // como campanha e pula o envio (default fail-safe).
+        origem_envio: 'individual',
       });
       setSendResult(res.data);
     } catch (err: any) {
@@ -893,6 +906,21 @@ export default function AutomacoesPage() {
                   <div className="mt-2 space-y-1 pt-2 border-t border-gray-100">
                     {sendResult.errors.map((e, i) => (
                       <p key={i} className="text-[11px] text-red-500">{e.name}: {e.error}</p>
+                    ))}
+                  </div>
+                )}
+                {/* S5-5 — pular NÃO é falhar, e por isso não vai em vermelho junto dos
+                    erros: é a informação de que aquelas pessoas estão sendo atendidas
+                    agora, com o caminho para falar com elas. */}
+                {(sendResult.skipped?.length ?? 0) > 0 && (
+                  <div className="mt-2 space-y-1.5 pt-2 border-t border-gray-100">
+                    <p className="text-[12px] font-medium text-amber-700">
+                      {sendResult.skipped!.length} não {sendResult.skipped!.length === 1 ? 'recebeu' : 'receberam'}: já estão em conversa com a Nat
+                    </p>
+                    {sendResult.skipped!.map((p, i) => (
+                      <p key={i} className="text-[11px] text-amber-600">
+                        {p.name} — {p.motivo}
+                      </p>
                     ))}
                   </div>
                 )}

@@ -235,6 +235,12 @@ async def resend_welcome(exact_id: int, db: AsyncSession = Depends(get_db)):
 #
 # Disparo em massa sem login é risco de suspensão da conta WhatsApp, não de conveniência: um
 # POST anônimo daqui manda template para a lista de leads que quiser.
+# O motivo que o SDR lê quando um envio é pulado. Diz o CAMINHO, não só o impedimento:
+# quem tenta falar com essa pessoa por template tem para onde ir, e o que acontece lá.
+MOTIVO_PULO_NAT = ("contato em conversa ativa com a NAT — responda pela tela de Conversas "
+                   "(a trava transfere o agente automaticamente)")
+
+
 @router.post("/bulk-send-template")
 async def bulk_send_template(
     request: dict,
@@ -266,6 +272,27 @@ async def bulk_send_template(
 
     Compatibilidade: se param_mappings não for enviado, usa o campo
     "parameters" antigo (nome + curso).
+
+    origem_envio: "campanha" (padrão) ou "individual".
+
+      Esta rota atende DOIS botões do Hub — o disparo em massa e o `handleSingleSend`
+      (`automacoes/page.tsx`), que manda para um lead só — e o disparo AGENDADO, que entra
+      por `main.py` sem passar por HTTP. Os três são a mesma chamada; o que os separa é
+      esta flag.
+
+      Com "campanha" (e é o que vale quando a flag está AUSENTE, vazia ou desconhecida),
+      todo contato em etapa ativa do agente é PULADO: um lead conversando com a Nat agora
+      não é um lead "sem sucesso de contato", e o template que afirma isso caiu em 20
+      conversas vivas em 27-28/08 — três delas em `escolhendo_slot`, negociando horário.
+
+      Com "individual", o filtro não roda: o SDR escolheu aquela pessoa e apertou enviar,
+      e essa é decisão dele. A trava de transferência (`_silenciar_agente_apos_envio_
+      manual`) continua valendo ali, que é o que impede duas vozes na mesma thread.
+
+      O DEFAULT É O SEGURO, e de propósito: quem chamar a rota por fora sem a flag no
+      máximo tem um envio individual pulado, com o motivo e o caminho no retorno. O
+      contrário — o filtro só valendo quando alguém se lembra de pedir — devolveria
+      exatamente o buraco que ele veio fechar.
     """
     from app.models import Channel, Contact, Message
     from app.sdr_mapping import resolve_sdr_user_id
@@ -312,6 +339,39 @@ async def bulk_send_template(
     sent = 0
     failed = 0
     errors = []
+    # ------------------------------------------------------------------------------------
+    # S5-5 — O DISPARO EM MASSA NÃO ATROPELA CONVERSA VIVA DO AGENTE (28/08/2026)
+    # ------------------------------------------------------------------------------------
+    # MEDIDO em 27-28/08: **20 conversas ativas cortadas em 2 dias** (14 só em 28/08, em 7
+    # rajadas de 10:16 a 15:21). Entre elas 3 leads em `escolhendo_slot` — negociando
+    # horário — e gente que tinha respondido MINUTOS antes:
+    #   Daniela, escolhendo horário 2 h antes;  Cláudia, respondeu 13 min antes;
+    #   Morgana, deu as duas formações 18 min antes;  Marcio, no meio da negociação.
+    # E o template afirma "não tive sucesso em falar com você" 🥺 para quem acabou de falar.
+    #
+    # O CÓDIGO JÁ FAZIA O CERTO ao silenciar (`_silenciar_agente_apos_envio_manual` evita
+    # duas vozes na thread, e registra o motivo). O defeito nunca foi o silenciamento: era
+    # QUEM ENTRA NA LISTA. Um lead que está conversando com a Nat agora não é um lead "sem
+    # sucesso de contato" — é o contrário exato disso.
+    #
+    # POR QUE `len(lead_ids) > 1` E NÃO SEMPRE. Esta MESMA rota atende dois botões do Hub:
+    # o disparo em massa e o `handleSingleSend` (`automacoes/page.tsx:513`), que manda para
+    # UM lead com `lead_ids: [id]`. Um SDR que escolhe uma pessoa e aperta enviar está
+    # respondendo de propósito — decisão dele, legítima, e a trava de transferência continua
+    # valendo ali (o `_silenciar` abaixo roda igual). O filtro é do LOTE, e "lote" é o que
+    # tem mais de um. Vale o mesmo para o disparo AGENDADO, que chega por
+    # `main.py:233` com a lista inteira.
+    pulados = []
+    # `origem_envio` chega do Hub: 'campanha' (disparo em massa e agendado) ou 'individual'
+    # (o `handleSingleSend`, um SDR escolhendo UMA pessoa e apertando enviar).
+    #
+    # DEFAULT FAIL-SAFE: só o valor EXPLÍCITO 'individual' dispensa o filtro. Ausente,
+    # vazio, desconhecido ou escrito errado = campanha = FILTRA. Um chamador de fora que
+    # esqueça a flag tem como pior caso um envio individual PULADO, com o motivo e o
+    # caminho certo no retorno — nunca uma conversa ativa cortada, que é o dano que este
+    # filtro existe para impedir. Errar para o lado de não enviar é barato; errar para o
+    # lado de atropelar custou 20 conversas em 2 dias.
+    individual = str(request.get("origem_envio") or "").strip().lower() == "individual"
 
     for lead in leads:
         phone = lead.phone1
@@ -321,6 +381,25 @@ async def bulk_send_template(
             continue
 
         phone = phone.replace("+", "").replace(" ", "").replace("-", "")
+
+        # S5-5: pula quem está em etapa ATIVA do agente. `estado_de` resolve nas DUAS
+        # grafias do telefone (`app/telefone.py`) — com igualdade crua, os 59% de threads
+        # que chegam sem o 9º dígito passariam direto pelo filtro. `ETAPAS_QUALIFICACAO_
+        # ATIVAS` é a MESMA constante que governa escutar e falar: uma fonte de verdade
+        # para "o agente é dono desta conversa", não uma segunda lista que divergiria.
+        #
+        # ANTES de qualquer chamada à Meta: o pulo não gasta envio, não gasta o `sleep(1)`
+        # do rate limit e não deixa `Message` órfã.
+        if not individual:
+            from app.models import ETAPAS_QUALIFICACAO_ATIVAS
+            from app.qualificacao_fluxo import estado_de
+            ativo = await estado_de(phone, db)
+            if ativo is not None and ativo.etapa in ETAPAS_QUALIFICACAO_ATIVAS:
+                pulados.append({"name": lead.name, "phone": phone, "etapa": ativo.etapa,
+                                "motivo": MOTIVO_PULO_NAT})
+                print(f"⏭️  Disparo PULOU {phone} ({lead.name}): conversa ativa com a NAT "
+                      f"em '{ativo.etapa}' — template '{template_name}' não enviado")
+                continue
 
         # Resolver valores das variáveis
         if param_mappings and len(param_mappings) > 0:
@@ -448,4 +527,11 @@ async def bulk_send_template(
         await asyncio.sleep(1)
 
     await db.commit()
-    return {"sent": sent, "failed": failed, "errors": errors}
+    if pulados:
+        lista = ", ".join(f"{p['name']} {p['phone']} ({p['etapa']})" for p in pulados)
+        print(f"⏭️  Disparo em massa: {len(pulados)} pulado(s) por conversa ativa com a "
+              f"NAT — {lista}")
+    # Chaves NOVAS, nenhuma removida: `sent`/`failed`/`errors` continuam idênticos para o
+    # front (`automacoes/page.tsx`) e para o `result` gravado em `scheduled_messages`.
+    return {"sent": sent, "failed": failed, "errors": errors,
+            "skipped_nat": len(pulados), "skipped": pulados}
