@@ -823,10 +823,19 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession)
     estado.transferido_motivo = motivo
     await db.flush()
 
-    await send_nat_message(estado.contact_wa_id, guard.ETAPA_CONVERSA, db,
-                           guard=guard.guard_de_despedida, corpo_livre=TEXTO_FALLBACK)
+    # S5-3 (varredura): o retorno era descartado aqui também. Levantar NÃO serve — o estado
+    # já é `transferido_humano` e uma exceção desfaria a transferência, que é o desfecho
+    # correto. O que faltava era CONTAR: sem a despedida, o lead ficou sem nenhum aviso de
+    # que alguém ia assumir, e quem precisa saber disso é justamente o SDR que a notificação
+    # abaixo acorda. Então o aviso vai NA notificação, não só no `🔒` do log.
+    saiu, motivo_envio = await enviar_nat(estado.contact_wa_id, guard.ETAPA_CONVERSA, db,
+                                          guard=guard.guard_de_despedida,
+                                          corpo_livre=TEXTO_FALLBACK)
+    aviso = ("" if saiu else
+             f" ⚠️ A despedida NÃO saiu ({motivo_envio}) — o lead não foi avisado de que "
+             f"alguém assumiria.")
     await _notificar(estado, "Agente passou um lead para você",
-                     f"Motivo: {motivo}", db)
+                     f"Motivo: {motivo}.{aviso}", db)
 
 
 # ==========================================================================================
@@ -1567,9 +1576,40 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     # `guard_de_abertura` e não `qualificacao_pode_atuar`: nesta altura a etapa é `concluido`,
     # em que o agente cala de propósito. O lembrete é a exceção combinada — e continua
     # sujeito à chave geral e ao teto por hora.
-    await send_nat_message(wa_id, guard.ETAPA_LEMBRETE_REUNIAO, db,
-                           guard=guard.guard_de_abertura,
-                           parametros=parametros, corpo_livre=corpo)
+    #
+    # ------------------------------------------------------------------------------------
+    # S5-3 — O ENVIO TAMBÉM PRESTA CONTAS (28/08/2026)
+    # ------------------------------------------------------------------------------------
+    # Era `await send_nat_message(...)` com o `bool` DESCARTADO. As quatro pré-checagens
+    # acima já viraram `AcaoIgnorada` no S4-1 — e a docstring desta função comemora
+    # exatamente isso — mas o envio, o único passo que de fato manda a mensagem, continuava
+    # mudo: recusa dele virava `executado` com motivo NULL, a mesma marca de quem enviou.
+    #
+    # MEDIDO em 27-28/08: 15 lembretes `executado`, 13 enviados. Os 2 fantasmas:
+    #   ação 226, Mikaelle, 27/08 09:15 — `teto de envios/hora estourado (22/20)`
+    #   ação  64, Josiqueila, 28/08 08:30 — `contato não existe no banco`
+    # A Mikaelle tinha escrito "gostaria de confirmar o horário" ÀS 09:13. A reunião era às
+    # 09:45. Ninguém soube que o lembrete não saiu.
+    #
+    # O TETO ADIA, NÃO DESCARTA — e aqui isso é mais do que simetria com a abertura. O teto
+    # é contagem MÓVEL de 1h: em 10 minutos ele passa sozinho. No caso da Mikaelle, +10 min
+    # ainda eram 20 minutos antes da reunião: o lembrete teria saído. Descartar por
+    # congestionamento seria perder a mensagem justamente na hora em que ela vale mais.
+    #
+    # SÓ QUE ADIAR TEM PRAZO. `run_at` empurrado para depois do início da reunião mandaria
+    # "sua reunião é hoje às X" depois de X — é a mesma regra da pré-checagem lá em cima, e
+    # por isso a decisão é a mesma: passou da hora, é `AcaoIgnorada`.
+    enviado, motivo_envio = await enviar_nat(wa_id, guard.ETAPA_LEMBRETE_REUNIAO, db,
+                                             guard=guard.guard_de_abertura,
+                                             parametros=parametros, corpo_livre=corpo)
+    if not enviado:
+        if guard.e_teto(motivo_envio):
+            proxima = _agora_sp() + ATRASO_POR_TETO
+            if proxima < reuniao.slot_inicio:
+                raise AcaoAdiada(proxima, f"lembrete não saiu: {motivo_envio}")
+            raise AcaoIgnorada(f"lembrete não saiu: {motivo_envio} — e readiar passaria do "
+                               f"início da reunião ({reuniao.slot_inicio:%d/%m %H:%M})")
+        raise AcaoIgnorada(f"lembrete não saiu: {motivo_envio}")
 
 
 # ==========================================================================================

@@ -761,7 +761,10 @@ async def executa_lembrete(reuniao, agendamento_id=7):
     db.execute = AsyncMock(return_value=MagicMock(
         scalar_one_or_none=MagicMock(return_value=reuniao)))
     motivo = None
-    with patch.object(fluxo, "send_nat_message", new=AsyncMock(return_value=True)) as spy, \
+    # S5-3: o handler passou a ler o retorno do envio, então o dublê é `enviar_nat`
+    # (que devolve `(saiu, motivo)`) e não mais `send_nat_message` (só o bool).
+    # O caminho do envio recusado está em `test_lembrete_envio.py`.
+    with patch.object(fluxo, "enviar_nat", new=AsyncMock(return_value=(True, "ok"))) as spy, \
          patch.object(fluxo, "_corpo_do_template", new=AsyncMock(return_value="corpo")):
         try:
             await fluxo.lembrete_reuniao(
