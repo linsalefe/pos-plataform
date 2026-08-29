@@ -188,17 +188,59 @@ MISSOES = {
         'real, com as palavras dela; nada de "que interessante". E NÃO FAÇA NENHUMA '
         'PERGUNTA: esta é a última etapa de qualificação, e quem fala em seguida é o '
         'sistema, com os horários. Termine dizendo que vai ver os horários disponíveis.'),
+    # ------------------------------------------------------------------------------------
+    # S5-4 — A OFERTA PAROU DE PROMETER O QUE A GRADE NÃO TEM (28/08/2026)
+    # ------------------------------------------------------------------------------------
+    # Três defeitos medidos nas 4 ofertas reais de 27-28/08, todos aqui:
+    #
+    # (a) A ESCAPATÓRIA PROMETIA A NOITE. "que dia e PERÍODO prefere" é convite aberto, e o
+    #     modelo o preenchia com "manhã, tarde ou noite" — enquanto `consultoras.json` é
+    #     09:00-18:30, seg-sex. 3 das 4 ofertas bateram nisso (2 pediram noite, 1 pediu
+    #     sábado), e nas 3 o agente não tinha para onde procurar: repetiu a mesma lista.
+    #
+    # (b) O MODELO INVENTAVA DATA. Caso Marcio, 27/08: "manhã de sábado 27/08 às 12:00" —
+    #     27/08 era quinta, 12:00 não é manhã, e aquele horário nunca foi ofertado. Três
+    #     erros numa frase. O guard de `_agendar` protege o `slot_id` da AÇÃO; o texto da
+    #     MENSAGEM não tem guard nenhum, e é ele que o lead lê. A regra explícita
+    #     ("nem como exemplo") é a única defesa que existe nesse caminho.
+    #
+    # (c) NÃO HAVIA SAÍDA para quem só pode fora da grade. Agora há, e é a que já existia
+    #     no contrato: `transferir_humano`. É a ÚNICA etapa em que a Nat oferece
+    #     transferência por iniciativa própria — o PROMPT_BASE proíbe isso em geral, e a
+    #     ressalva "salvo instrução em contrário na missão" está lá para este caso.
+    #
+    #     EFEITO COLATERAL CONHECIDO, dito aqui para não virar susto: a transferência passa
+    #     por `_fallback`, que loga `🛟`. O RECON usa `grep -cE "🛟|LLM indisponível"` como
+    #     medida de FALHA DE CONTRATO — e a partir daqui um `🛟` pode ser um desfecho
+    #     correto. Quem separa os dois é `transferido_motivo`, não o emoji.
     ETAPA_Q_OFERTANDO_AGENDA: (
         'Ofereça NO MÁXIMO 5 horários, escolhidos entre os do contexto e espalhados entre '
-        'os dias e entre manhã e tarde. NÃO liste todos. Depois dos 5, TERMINE convidando: '
-        'se nenhum servir, que ela diga que dia e período prefere, que você procura. '
-        'Use SOMENTE os horários listados. Quando ela escolher um deles, use '
-        'acao="agendar_slot" e dado_extraido = {"slot_id": "<o id exato do horário '
-        'escolhido, copiado do contexto>"}.'),
+        'os dias e entre manhã e tarde. NÃO liste todos. Escreva cada horário como data e '
+        'hora, e NUNCA o id entre parênteses: ele é instrução interna e não pode aparecer '
+        'na mensagem. Depois dos 5, TERMINE convidando: '
+        'se nenhum servir, que ela diga que dia e período prefere — manhã ou tarde, de '
+        'segunda a sexta — que você procura. '
+        'Use SOMENTE os horários listados, e NUNCA escreva data, hora ou dia da semana que '
+        'não esteja no contexto, nem como exemplo. '
+        'Quando ela escolher um deles, use acao="agendar_slot" e dado_extraido = '
+        '{"slot_id": "<o id exato do horário escolhido, copiado do contexto>"}. '
+        'A agenda é de SEGUNDA A SEXTA, das 09h às 18h30: se ela JÁ TIVER PEDIDO noite ou '
+        'fim de semana, não ofereça horário nenhum e não faça pergunta — diga que para '
+        'esse horário quem combina é a consultora, avise que vai passar o contato para ela '
+        'e use acao="transferir_humano". '
+        'Em qualquer outro caso, a ÚLTIMA FRASE da sua mensagem é o convite descrito '
+        'acima: se nenhum dos 5 servir, que ela diga o dia e o período que prefere.'),
     ETAPA_Q_ESCOLHENDO_SLOT: (
         'A pessoa está confirmando qual horário quer. Use SOMENTE os horários do contexto. '
         'Ao ter certeza de qual é, use acao="agendar_slot" e '
-        'dado_extraido = {"slot_id": "<o id exato copiado do contexto>"}.'),
+        'dado_extraido = {"slot_id": "<o id exato copiado do contexto>"}. '
+        'NUNCA escreva data, hora ou dia da semana que não esteja no contexto, e não '
+        'deduza o dia da semana de uma data: se não está escrito na lista, você não sabe '
+        'qual é. '
+        'A agenda é de SEGUNDA A SEXTA, das 09h às 18h30: se ela pedir noite, fim de '
+        'semana ou um dia/horário fora da lista, não repita a lista, não invente e não '
+        'faça pergunta — diga que para esse horário quem combina é a consultora, avise que '
+        'vai passar o contato para ela e use acao="transferir_humano".'),
 }
 
 # Para onde cada etapa vai quando cumprida. `aguardando_motivacao` não está aqui: o destino

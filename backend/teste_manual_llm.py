@@ -212,6 +212,51 @@ def sem_id_cru(r):
     return not vazou, "nenhum id cru na mensagem" if not vazou else f"vazou {vazou}"
 
 
+FORA_DA_GRADE = ("noite", "sábado", "sabado", "domingo", "fim de semana",
+                 "final de semana", "madrugada")
+
+
+def nao_promete_fora_da_grade(r):
+    """S5-4(a): a grade é 09:00-18:30, SEG-SEX. Prometer noite ou fim de semana é marcar
+    reunião que não vai acontecer — 3 das 4 ofertas reais de 27-28/08 bateram nisso."""
+    m = r["mensagem"].lower()
+    achados = [p for p in FORA_DA_GRADE if p in m]
+    return not achados, ("não promete nada fora da grade" if not achados
+                         else f"PROMETEU {sorted(set(achados))}")
+
+
+ESCAPATORIA = ("se nenhum", "nenhum desses", "nenhum servir", "não servir", "nao servir",
+               "outro dia", "outro horário", "outro horario", "dia e período",
+               "dia e periodo", "qual dia", "que dia")
+
+
+def tem_escapatoria(r):
+    """S5-4(a): a saída para quem não cabe em nenhum dos 5. Apareceu em 4 de 4 ofertas
+    reais de 27-28/08 e é o que impede a conversa de morrer numa lista que não serve.
+
+    CHECAGEM NOVA, e o que ela mediu primeiro foi uma dívida ANTIGA. Até 28/08 a
+    escapatória era só ponto de LEITURA HUMANA neste cenário, e ninguém a contava. Com a
+    missão ORIGINAL, medido em 28/08: **3 de 4 rodadas SEM escapatória**. Com a missão do
+    S5-4 (que nomeia "manhã ou tarde, de segunda a sexta"): 2 de 3 COM.
+
+    Ou seja: esta checagem não regrediu com o S5-4 — ela revelou um buraco que já existia e
+    que a produção não mostrava porque N=4. Ela ainda falha às vezes; é dívida conhecida e
+    medida, não surpresa. Quem for mexer na missão de `ofertando_agenda` mede contra esses
+    números, não contra a impressão de que "antes funcionava"."""
+    m = r["mensagem"].lower()
+    return (any(p in m for p in ESCAPATORIA),
+            "convida a dizer outro dia/período" if any(p in m for p in ESCAPATORIA)
+            else "SEM escapatória — a lista virou beco sem saída")
+
+
+def pede_transferencia(r):
+    """S5-4(c): fora da grade, a saída é a consultora — e a ação tem de casar com o texto."""
+    m = r["mensagem"].lower()
+    cita = any(p in m for p in ("consultora", "consultoria", "equipe", "colega"))
+    return (r["acao"] == "transferir_humano" and cita,
+            f'acao={r["acao"]!r}, cita a consultora={cita}')
+
+
 def cabe_no_teto(r):
     """A resposta não pode estar perto de `MAX_TOKENS` — truncar quebra o JSON inteiro.
 
@@ -336,8 +381,9 @@ CENARIOS = [
             "Horários disponíveis (use SÓ estes)": GRADE_13}),
      hist(("a", "Entendi — você quer se especializar. Vou ver os horários disponíveis.")),
      [contrato, ate_5_horarios, so_horarios_da_grade, sem_id_cru, cabe_no_teto,
-      acao("nenhuma"), sem_valor],
-     ["convida a dizer dia/período preferido se nenhum dos 5 servir"]),
+      acao("nenhuma"), sem_valor, nao_promete_fora_da_grade, tem_escapatoria],
+     ["convida a dizer dia/período preferido se nenhum dos 5 servir",
+      "a escapatória diz manhã/tarde de SEGUNDA A SEXTA — não 'noite', não 'sábado'"]),
 
     ("4.2", "escolhe um horário oferecido", ETAPA_Q_ESCOLHENDO_SLOT,
      ctx(**{"Ano de conclusão": "2019", "Atuação profissional": "CAPS em Recife",
@@ -357,6 +403,37 @@ CENARIOS = [
      [contrato, acao("agendar_slot"), extraiu("slot_id", "d21")],
      ["o typo 27:08 no lugar de 27/08 NÃO atrapalha — em 25/08 ela escreveu assim e o "
       "modelo acertou; este cenário protege esse acerto"]),
+
+    # ---- S5-4 — o que a grade NÃO tem (casos Daniela e Marcio, 27-28/08) ----
+    ("4.4", "só pode à noite (caso Daniela)", ETAPA_Q_ESCOLHENDO_SLOT,
+     ctx(**{"Ano de conclusão": "2019", "Atuação profissional": "CAPS em Recife",
+            "Motivação declarada": "quero me especializar",
+            "Horários disponíveis (use SÓ estes)": GRADE_13}),
+     hist(("a", "Tenho estes: 27/08 às 09:00, 10:30 ou 15:00; 28/08 às 12:00. Qual serve?"),
+          ("u", "só consigo à noite, a partir das 20h")),
+     [contrato, pede_transferencia, so_horarios_da_grade, sem_pergunta],
+     ["NÃO repete a mesma lista que ela acabou de recusar",
+      "avisa que vai passar para a consultora — aviso, não pergunta"]),
+
+    ("4.5", "pede sábado de manhã (caso Marcio)", ETAPA_Q_ESCOLHENDO_SLOT,
+     ctx(**{"Ano de conclusão": "2019", "Atuação profissional": "CAPS em Recife",
+            "Motivação declarada": "quero me especializar",
+            "Horários disponíveis (use SÓ estes)": GRADE_13}),
+     hist(("a", "Tenho estes: 27/08 às 09:00, 10:30 ou 15:00; 28/08 às 12:00. Qual serve?"),
+          ("u", "consegue sábado de manhã?")),
+     [contrato, pede_transferencia, so_horarios_da_grade],
+     ["não inventa 'sábado 27/08 às 12:00' como em 27/08 — três erros numa frase: "
+      "27/08 era quinta, 12:00 não é manhã, e aquele horário não foi ofertado"]),
+
+    ("4.6", "pede um dia da semana que ESTÁ na grade", ETAPA_Q_ESCOLHENDO_SLOT,
+     ctx(**{"Ano de conclusão": "2019", "Atuação profissional": "CAPS em Recife",
+            "Motivação declarada": "quero me especializar",
+            "Horários disponíveis (use SÓ estes)": GRADE_13}),
+     hist(("a", "Tenho estes: 27/08 às 09:00, 10:30 ou 15:00; 28/08 às 12:00. Qual serve?"),
+          ("u", "prefiro no dia 28 de tarde")),
+     [contrato, so_horarios_da_grade, nao_promete_fora_da_grade],
+     ["o pedido CABE na grade: não transfere, oferece os horários de 28/08 à tarde "
+      "(15:00 / 17:15) ou já agenda — a regra do 4.4/4.5 não pode virar gatilho fácil"]),
 ]
 
 
