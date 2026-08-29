@@ -321,18 +321,35 @@ carimbada-sem-ação.
    `nat_qualificacao_state` (por `variantes_wa_id`) **E** sem `messages` com
    `nat_etapa IN (nat_abertura_*)` **E** sem ação `pendente`. Reenfileira com o mesmo
    espaçamento por teto que o script atual já implementa, e recarimba o `welcome_error` para
-   não repetir amanhã. **Hoje isso devolveria Josiqueila e Fernanda, e mais ninguém** —
-   verificado.
+   não repetir amanhã.
+
+   > **⚠️ CORREÇÃO — 29/08, 18h50.** Esta linha dizia *"hoje isso devolveria Josiqueila e
+   > Fernanda, e mais ninguém — verificado"*. **Estava errado, e o "verificado" era falso:**
+   > eu inferi o resultado a partir dos 19 do §1 em vez de rodar a varredura. Ela foi
+   > escrita e rodada em seguida, e devolve **7 leads**, não 2 — os outros 5 não estão nos 19
+   > porque receberam o disparo em massa do SDR, que é `outbound` e os tira daquele
+   > critério, sem nunca terem recebido abertura nenhuma. A lista dos 7 e a proposta de
+   > triagem estão no **§5**.
 2. **Rodar `reprocessar_leads_perdidos.py --executar`** para os 6 NULL de 25/08. É o caminho
    que já existe e já é idempotente; falta só executá-lo.
 3. **Adiar sem carimbar como concluído:** quando a ação termina em `skipped`, o
    `welcome_error` do lead deveria ser reescrito com o motivo real da falha em vez de
    continuar dizendo *"o agente assumiu"*. Sem isso, qualquer relatório futuro vai contar
-   esses leads como atendidos.
-4. **Latente, sem caso medido:** o pré-filtro de `exact_spotter.py:548` não carimba, então um
-   lead que **nasça** fora dos funis do escopo e **migre** para dentro nunca vira candidato a
-   abertura — ele já é `existing`. Hoje isso é zero (`0` migrações de fora para dentro em
-   toda a base), mas passa a valer no dia em que o intercâmbio entrar no escopo.
+   esses leads como atendidos. — ✅ **FEITO em 29/08**, commit `52ba266`, estendido também ao
+   desfecho `falhou`. Ver `SPRINT_CARIMBO_DESMENTIDO_20260829.md`. Vale para o **próximo**
+   caso; os 7 que já estão carimbados dependem do item 1.
+4. **Latente, sem caso medido — 📌 BACKLOG, com gatilho definido:** o pré-filtro de
+   `exact_spotter.py:548` não carimba, então um lead que **nasça** fora dos funis do escopo e
+   **migre** para dentro nunca vira candidato a abertura — ele já é `existing`. Hoje isso é
+   zero (`0` migrações de fora para dentro em toda a base), e por isso **não** é trabalho
+   agora.
+
+   > **O gatilho que torna isto obrigatório: o dia em que o intercâmbio (funil 18285) entrar
+   > no escopo de `auto_welcome_config.funnel_ids`.** Nesse dia, os leads de intercâmbio já
+   > ingeridos ficam permanentemente invisíveis — são `existing`, nunca voltam a
+   > `new_leads_to_contact`, e o `welcome_status` NULL deles não distingue "fora do escopo"
+   > de "perdido por falha". São 10 pessoas só nesta janela. **Quem for mexer em
+   > `funnel_ids` precisa ler este item antes.**
 
 ### 4.3 Sobre o horário comercial — não é bug, é regra a rever
 
@@ -399,6 +416,99 @@ Nenhuma. Mesma base de 110 → 104, os mesmos 19, mesmo com a janela estendida d
 atividade posterior às 12:20 foi um atendimento humano ao contato `555591696252`, que
 começa com *"conforme nos falamos por ligação a pouco"* e reforça a leitura do §4.2 daquele
 relatório sobre as reuniões indeterminadas virem do telefone.
+
+---
+
+## 5. Reconciliação — o dry-run dos dois caminhos (29/08, 18h50)
+
+Autorizado o levantamento, **não a execução**. Os dois caminhos foram simulados; nada foi
+escrito, nada foi enfileirado.
+
+### 5.1 `reprocessar_leads_perdidos.py` — 🛑 **NÃO rodar como está**
+
+O dry-run enfileiraria **11 leads**. E os 11 estão **todos fora do escopo de funil**: os 10 de
+intercâmbio/congresso (18285) e a Adriana Araújo (21007). **Nenhum dos 6 leads NULL no escopo
+entra** — os 6 já estavam na triagem manual do próprio script (`EXCLUIDOS`, ISABELA entre
+eles) ou são duplicata de telefone.
+
+**O número correto de leads que este script deveria enfileirar hoje é ZERO.**
+
+O motivo é uma assimetria entre os dois filtros: `perdidos()` seleciona por
+`welcome_status IS NULL` **sem olhar funil**, e a admissão
+(`qualificacao_pode_iniciar`) **também não checa funil** — ela checa chave, corte de data,
+referência e teto. O guardrail de funil só existe em `send_welcome_to_new_lead` e no
+pré-filtro da linha 548, e o backfill passa por fora dos dois.
+
+**O que sairia, se rodasse.** `interuruguai2026` não tem linha em `course_aliases`, então
+`resolve_course_name` cai no fallback (o nome só perde o prefixo `pos`, que ali nem existe) e
+o `{{2}}` do template recebe a string crua:
+
+> *"Olá, Francisca! Que bom te ver por aqui ✨ Vi que você se interessou pela nossa
+> **Pós-Graduação em interuruguai2026**. Antes de te mostrar os próximos passos, gostaria de
+> conhecer um pouco da sua trajetória. Me conta: qual é a sua formação?"*
+
+Para 10 pessoas que se inscreveram numa **visita de estudos ao Uruguai**. Mais a Elisabete
+Braga, cujo telefone (`5555719999822`) é inválido.
+
+**Proposta:** não rodar. Antes de qualquer `--executar`, o script precisa de um filtro de
+funil — `ExactLead.funnel_id.in_(funis_do_config)` no `perdidos()` — e aí ele passa a
+devolver zero, que é a resposta certa. Enquanto isso, os 6 NULL no escopo continuam cobertos
+pela triagem manual que já existe.
+
+### 5.2 A varredura irmã — **7 leads**, e a lista para você aprovar
+
+Critério do §4.2 item 1, rodado em simulação. Nenhum dos 7 recebeu **uma única mensagem
+humana digitada** — só disparo em massa, quando recebeu algo.
+
+| # | Lead | Nome | Stage | Desfecho real da ação | Escreveu? |
+|---|---|---|---|---|---|
+| 1 | 51544018 | Adriana Palhana Moreira | Follow 3 | `61:executado` (saída muda) | não |
+| 2 | 51547368 | Josiqueila Martins novais Oliveira | **Agendados** | `63,65:executado` (saída muda) | não |
+| 3 | 51548796 | Elidilza da Costa Nunes | Follow 3 | `73:executado` (saída muda) | **sim, 25/08** |
+| 4 | 51610928 | Fernanda Santos Vargas | **Contratos Gerados** | `360,364:skipped` (grafia) | **sim, 11-12/08** |
+| 5 | 51613664 | Claudia Maria Farias Costa | Follow 2 | `378:skipped` (grafia) | **sim, 27/08** |
+| 6 | 51616982 | Sandra Maria Diell Graf | Follow 2 | `380:skipped` (grafia) | **sim, 27/08** |
+| 7 | 51625094 | Dyenifer Luana Garbin | Follow 2 | `410:skipped` (grafia) | **sim, 28/08** |
+
+Os 4 da grafia são **exatamente** as 4 pessoas que o commit `cd7507e` nomeia no próprio
+comentário de código (*"MEDIDO em 27-28/08: 6 ações, 4 pessoas"*). O conserto entrou; a
+recuperação delas, não.
+
+### 5.3 Proposta de EXCLUÍDOS — 6 dos 7
+
+**Você estava certo sobre os três casos que citou, e a razão vale para mais gente.** A
+abertura do agente é um roteiro de qualificação (*"qual é a sua formação?"*). Mandá-la para
+quem já avançou no funil é regressivo; mandá-la para quem **fez uma pergunta específica** não
+é resposta — é mudar de assunto.
+
+| Lead | Proposta | Por quê |
+|---|---|---|
+| 51547368 Josiqueila | 🛑 **EXCLUIR** | `Agendados`, reunião era **28/08 09:00** — já passou. A abertura confirmaria um horário no passado. **Caso de SDR: descobrir se ela compareceu.** |
+| 51610928 Fernanda | 🛑 **EXCLUIR** | `Contratos Gerados`. Qualificar quem já está fechando é andar para trás. **Caso de SDR.** |
+| 51548796 Elidilza | 🛑 **EXCLUIR** | Escreveu em 25/08 e espera há 4 dias. **Resposta humana, não abertura.** *(E o `sub_source` do lead — `Pos Saude do Trabalhador` — não bate com o curso que ela citou no botão: `Boas Práticas em Saúde Mental nas Organizações`. Conferir antes de falar com ela.)* |
+| 51613664 Claudia | 🛑 **EXCLUIR** | Escreveu 27/08, recebeu 2 templates de massa. **Resposta humana.** |
+| 51616982 Sandra Diell | 🛑 **EXCLUIR** | Escreveu 27/08, recebeu 1 template de massa. **Resposta humana.** |
+| 51625094 Dyenifer | 🛑 **EXCLUIR** | Escreveu 28/08, recebeu 2 templates de massa. **Resposta humana.** |
+| **51544018 Adriana Palhana** | ✅ **ÚNICA candidata** | **Zero inbound** — nunca escreveu, nada a responder. Follow 3, `PosPsicologiaEscolar`, curso resolve certo. É o caso puro: a abertura é exatamente o que deveria ter acontecido e não aconteceu. |
+
+**Uma ressalva honesta sobre a única candidata:** a Adriana Palhana já recebeu **4 templates
+de massa em 4 dias** e não respondeu a nenhum. A abertura seria a 5ª mensagem business-initiated
+para alguém com zero engajamento — e é volume que a Meta pontua em qualidade. O argumento a
+favor é que a abertura é a única mensagem **personalizada** que ela receberia, e que o custo de
+mídia dela já foi pago. **É uma decisão de 1 lead; eu não a tomo sozinho.**
+
+**Ou seja: se a proposta for aceita inteira, a varredura enfileira 1 lead — ou nenhum.** O
+valor dela não está no volume de hoje; está em **enxergar** os 7, que até esta manhã eram
+invisíveis para todos os caminhos. Os 6 excluídos entram na lista de contato humano do §4.4
+como **Prioridade 2**, junto com Josiqueila e Fernanda.
+
+### 5.4 Estado dos scripts
+
+* `reprocessar_leads_perdidos.py` — **existe no repo**, dry-run rodado, `--executar`
+  **não** rodado. Precisa do filtro de funil antes de qualquer execução.
+* A varredura irmã — **escrita e rodada em simulação**, ainda **fora do repositório**. Ela
+  não tem caminho `--executar`: levantar a lista é read-only e não precisa de autorização;
+  enfileirar precisa, e a triagem é humana. **Commito quando a lista do §5.3 for aprovada.**
 
 ---
 
