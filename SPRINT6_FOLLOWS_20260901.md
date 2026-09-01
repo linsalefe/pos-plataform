@@ -179,7 +179,8 @@ linha visível no código, não uma configuração escondida.
 
 ## 4. SPRINT D — o follow de 20h
 
-**Subiu desligado.** `follow_enabled=false`, `follow_template=NULL`.
+**Subiu desligado e foi LIGADO no mesmo dia**, depois de escolhido o template (§4b).
+Estado final: `follow_enabled=true`, `follow_template='follow_up'`.
 
 ```
 migrate_follow_20h.py
@@ -249,16 +250,85 @@ afirmando que tentou ligar quando não tentou. Além disso `nat_copy.py:80` regi
 existem **dois** `nat_recuperacao_sdr` aprovados no WABA, com corpos diferentes (`en` e
 `pt_BR`).
 
-**Para ligar, depois de aprovar o texto na Meta:**
+**Para ligar/desligar:**
 
 ```
 PATCH /api/nat/config   {"follow_enabled": true, "follow_template": "<nome aprovado>"}
 ```
 
 O endpoint recusa com **422** quem tentar ligar sem template — mesma regra que já recusa
-ligar a NAT sem corte de data. O handler preenche `{{1}}` = nome e `{{2}}` = curso (a
-convenção de todos os templates do agente) e **recusa acima de 2 variáveis** em vez de
-inventar.
+ligar a NAT sem corte de data.
+
+---
+
+## 4b. Qual template, e por que `follow_up`
+
+Nenhum template novo apareceu no WABA. Dos aprovados, três serviriam — e dois **afirmam
+coisas falsas** 20 horas depois de uma pergunta:
+
+| Template | O que sairia | Veredito |
+|---|---|---|
+| `nat_reativacao_09h` | *"**Bom dia**, Ana! … **Conforme combinado**, estou retornando"* | o follow também dispara à tarde, e nada foi combinado. Ainda tem dois `QUICK_REPLY` que o handler do follow não liga em lugar nenhum |
+| `follow_urgencia` | *"Estamos tentando contato com você **há alguns dias**"* | falso em 20h. E são **3** variáveis (uma delas o mês): o handler recusa em vez de inventar |
+| **`follow_up`** | *"Olá, {{1}}! Tudo bem? 😊 / Aqui é da equipe do CENAT. **{{2}}** / Ficamos à disposição para tirar suas dúvidas! 💬"* | **escolhido** — nada no texto fixo é falso, e o `{{2}}` é texto livre no meio da frase |
+
+Um template que afirma o que não aconteceu é exatamente o defeito que o §3 acabou de
+consertar. Reintroduzi-lo pela porta do lado não faria sentido.
+
+### O `{{2}}` carrega a pergunta que ficou
+
+`RETOMADA_FOLLOW` tem uma frase por etapa ativa. É por etapa e não uma só porque quem sumiu
+no ano de conclusão e quem sumiu escolhendo horário **pararam em lugares diferentes** — um
+"ainda tem interesse?" genérico faria os dois recomeçarem do zero, que é o oposto do que o
+follow existe para fazer.
+
+```
+[aguardando_ano]
+Olá, Ana! Tudo bem? 😊
+Aqui é da equipe do CENAT. Ficou faltando só o ano em que você concluiu a graduação
+— e se não lembrar de cabeça, sem problema, seguimos.
+Ficamos à disposição para tirar suas dúvidas! 💬
+
+[escolhendo_slot]
+Aqui é da equipe do CENAT. Ficou faltando só confirmar o horário da conversa com a
+nossa consultoria — qual deles fica melhor para você?
+```
+
+A de `aguardando_ano` carrega a saída do §5 dentro da própria retomada.
+
+### ⚠️ O contrato de parâmetros do follow é DIFERENTE do resto do agente
+
+```
+nat_abertura_*, nat_lembrete_reuniao   {{1}} = nome   {{2}} = CURSO
+follow (este)                          {{1}} = nome   {{2}} = A PERGUNTA PENDENTE
+```
+
+Quem configurar `follow_template` com um template feito para receber o **curso** no `{{2}}`
+manda a frase no slot errado — a **mesma classe de erro** do `tentativa_contato` (§3). O
+template do follow precisa ter o `{{2}}` como texto livre.
+
+Sem retomada escrita para a etapa, o follow **não sai**. Acima de 2 variáveis, também não.
+
+### O que ligar alcançou hoje: ninguém — e isso é um achado
+
+`nat_scheduled_actions` não tinha **nenhuma** ação `follow_20h` no momento de ligar, porque
+elas só nascem numa abertura ou num inbound **depois do deploy**. O follow começa a valer
+para as conversas daqui para frente.
+
+**Quem ficou de fora são justamente os leads do §4.5 do recon** — os que calaram antes do
+deploy e continuam parados:
+
+| Etapa | Parados agora | **Calados ≥ 20h** | Silêncio mediano |
+|---|---:|---:|---:|
+| `aguardando_ano` | 14 | **8** | 23,9 h |
+| `aguardando_formacao` | 7 | **4** | 29,8 h |
+| `aguardando_motivacao` | 3 | **3** | 29,9 h |
+| `escolhendo_slot` | 4 | **2** | 14,2 h |
+| **total** | **28** | **17** | |
+
+Alcançá-los exige **semear a fila à mão** — uma ação `follow_20h` por contato, vencida. Isso
+manda **17 mensagens para pessoas reais**, e é decisão separada de ligar a flag: está
+registrada aqui, não executada.
 
 ---
 
