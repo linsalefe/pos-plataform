@@ -479,7 +479,11 @@ async def marcar_sem_contato(wa_id: str, db: AsyncSession = Depends(get_db),
 CAMPOS_CONFIG = {"nat_enabled", "nat_start_at", "max_envios_hora",
                  # Eixos do AGENTE de pré-qualificação. Mesmo endpoint, mesma
                  # auditoria — travas SEPARADAS: ligar um não liga o outro.
-                 "qualificacao_enabled", "qualificacao_start_at"}
+                 "qualificacao_enabled", "qualificacao_start_at",
+                 # S6-4 (Sprint D). Terceiro eixo, independente: ligar o agente NÃO liga o
+                 # follow. `follow_template` é o nome do template na Meta — com ele em
+                 # coluna, aprovar o texto é um PATCH e não um deploy.
+                 "follow_enabled", "follow_template"}
 
 
 async def _config_singleton(db: AsyncSession) -> NatConfig:
@@ -545,6 +549,10 @@ def _serializar_config(cfg: NatConfig) -> dict:
         # Mesma regra do `atuando` de baixo, para o outro fluxo.
         "qualificacao_atuando": bool(cfg.qualificacao_enabled
                                      and cfg.qualificacao_start_at is not None),
+        # --- S6-4: o follow, com o mesmo par ligado/atuando dos outros eixos ---
+        "follow_enabled": cfg.follow_enabled,
+        "follow_template": cfg.follow_template,
+        "follow_atuando": bool(cfg.follow_enabled and cfg.follow_template),
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
         # A NAT só atua com os DOIS eixos ligados. Um `nat_enabled=true` com corte nulo
         # parece ligado na tela e não envia nada — a resposta diz o que vale de fato.
@@ -600,6 +608,14 @@ async def patch_nat_config(req: dict, db: AsyncSession = Depends(get_db),
     if "qualificacao_enabled" in req and not isinstance(req["qualificacao_enabled"], bool):
         raise HTTPException(422, "qualificacao_enabled deve ser true ou false.")
 
+    if "follow_enabled" in req and not isinstance(req["follow_enabled"], bool):
+        raise HTTPException(422, "follow_enabled deve ser true ou false.")
+
+    if "follow_template" in req and req["follow_template"] is not None:
+        if not isinstance(req["follow_template"], str) or not req["follow_template"].strip():
+            raise HTTPException(422, "follow_template deve ser o nome do template na Meta, "
+                                     "ou null para apagar.")
+
     novo_corte = (_para_utc_naive(req["nat_start_at"], "nat_start_at")
                   if "nat_start_at" in req else cfg.nat_start_at)
     novo_corte_q = (_para_utc_naive(req["qualificacao_start_at"], "qualificacao_start_at")
@@ -612,6 +628,18 @@ async def patch_nat_config(req: dict, db: AsyncSession = Depends(get_db),
             "Para LIGAR a NAT é preciso um nat_start_at. Sem corte de data o guard bloqueia "
             "todos os leads e a NAT fica ligada sem atuar. Mande os dois juntos: "
             '{"nat_enabled": true, "nat_start_at": "agora"}.')
+
+    # MESMA REGRA DOS OUTROS DOIS EIXOS, com o outro pré-requisito: ligar o follow sem
+    # template é o pior desfecho — painel diz LIGADO e o handler recusa 100% das ações com
+    # "follow_template está vazio". O texto vem da Meta e só existe depois de aprovado.
+    vai_ligar_f = req.get("follow_enabled", cfg.follow_enabled)
+    tpl_final = (req["follow_template"] if "follow_template" in req else cfg.follow_template)
+    if vai_ligar_f and not (tpl_final or "").strip():
+        raise HTTPException(
+            422,
+            "Para LIGAR o follow do agente é preciso um follow_template aprovado na Meta. "
+            "Sem ele o handler recusa todas as ações e o follow fica ligado sem atuar. "
+            'Mande os dois juntos: {"follow_enabled": true, "follow_template": "<nome>"}.')
 
     # Mesma regra do eixo de cima, para o agente: ligar sem corte é o pior desfecho —
     # painel diz LIGADO e a admissão recusa 100% dos leads em "corte de data ausente".
@@ -635,6 +663,10 @@ async def patch_nat_config(req: dict, db: AsyncSession = Depends(get_db),
         cfg.qualificacao_enabled = req["qualificacao_enabled"]
     if "qualificacao_start_at" in req:
         cfg.qualificacao_start_at = novo_corte_q
+    if "follow_enabled" in req:
+        cfg.follow_enabled = req["follow_enabled"]
+    if "follow_template" in req:
+        cfg.follow_template = (req["follow_template"] or "").strip() or None
 
     await db.commit()
     await db.refresh(cfg)

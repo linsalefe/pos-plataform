@@ -39,6 +39,7 @@ Fora delas o agente não escuta (precedência do webhook) e não fala
 e "o agente escuta" não podem divergir.
 """
 import json
+import re
 from datetime import timedelta
 
 from sqlalchemy import func, select
@@ -50,7 +51,8 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         ETAPA_Q_AGUARDANDO_FORMACAO, ETAPA_Q_AGUARDANDO_MOTIVACAO,
                         ETAPA_Q_CONCLUIDO, ETAPA_Q_ESCOLHENDO_SLOT, ETAPA_Q_OFERTANDO_AGENDA,
                         ETAPA_Q_TRANSFERIDO, ETAPAS_QUALIFICACAO_ATIVAS,
-                        ETAPA_Q_ENCERRADO, KIND_ENCERRAR_INATIVO, KIND_LEMBRETE_REUNIAO,
+                        ETAPA_Q_ENCERRADO, KIND_ENCERRAR_INATIVO, KIND_FOLLOW_20H,
+                        KIND_LEMBRETE_REUNIAO,
                         KIND_RESPONDER_PENDENTE, KIND_VIGIAR_RESPOSTA,
                         ACAO_PENDENTE, Agendamento, Contact, Message, Notification,
                         NatQualificacaoState, NatScheduledAction, PASSO_AGENDADO)
@@ -88,6 +90,15 @@ ATRASO_POR_TETO = timedelta(minutes=10)
 # dia" é rotina — muita gente aplica de madrugada e volta no fim de semana. Encerrar cedo
 # demais joga fora quem só demorou a ver o WhatsApp.
 INATIVIDADE_ENCERRA = timedelta(hours=72)
+
+# S6-4 (Sprint D) — quando o agente volta a falar com quem calou. Ver KIND_FOLLOW_20H para a
+# medição que fixou o 20. Fica ABAIXO do encerramento de 72h de propósito: o follow é a
+# última tentativa DENTRO da janela em que a conversa ainda está viva, não um adeus.
+FOLLOW_APOS = timedelta(hours=20)
+
+# Quanto tempo para trás o handler olha atrás de um toque humano. É o MESMO 20h, e não um
+# número novo: a pergunta é "alguém falou com essa pessoa desde que o agente perguntou?".
+FOLLOW_JANELA_HUMANO = FOLLOW_APOS
 
 # ==========================================================================================
 # O VIGIA — P3-A, 26/08/2026
@@ -864,6 +875,8 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession)
     estado.transferido_em = _agora_sp()
     estado.transferido_motivo = motivo
     await db.flush()
+    # S6-4: transferida é transferida. Ver `_cancelar_follow`.
+    await _cancelar_follow(estado.contact_wa_id, "a conversa foi transferida", db)
 
     # S5-3 (varredura): o retorno era descartado aqui também. Levantar NÃO serve — o estado
     # já é `transferido_humano` e uma exceção desfaria a transferência, que é o desfecho
@@ -935,6 +948,10 @@ async def silenciar(contact_wa_id: str, motivo: str, db: AsyncSession, *,
         extras["assumido_por"] = {"id": quem_id, "nome": quem_nome}
         estado.dados_extras = extras
     await db.flush()
+
+    # S6-4: o humano assumiu — o follow do agente não tem mais o que perguntar, e mandá-lo
+    # seria a segunda voz na thread que `silenciar` existe para impedir.
+    await _cancelar_follow(estado.contact_wa_id, "o SDR assumiu a conversa", db)
 
     print(f"🤝 Agente silenciado em {estado.contact_wa_id}: {anterior} → "
           f"{ETAPA_Q_TRANSFERIDO} (motivo={motivo}"
@@ -1114,6 +1131,10 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
     # Arma o relógio da inatividade já na abertura. Sem isto, quem NUNCA responde nunca
     # encerraria — e é justamente esse lead que a régua de follow-up quer receber.
     await _agendar_encerramento(estado, db)
+    # S6-4: e o follow de 20h, no MESMO ponto. É aqui que ele mais importa — dos 39 leads
+    # que calaram e ninguém tocou na janela do RECON, a maior parte calou logo depois da
+    # abertura, ainda em `aguardando_ano` ou `aguardando_formacao`.
+    await _agendar_follow(estado, db)
     print(f"🚀 Agente abriu com {wa_id}: {etapa_msg} → {estado.etapa}")
 
 
@@ -1164,6 +1185,10 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
     # anterior antes de inserir, então isto reagenda em vez de acumular — e o índice único
     # parcial do banco é a rede da mesma regra.
     await _agendar_encerramento(estado, db)
+
+    # S6-4: o follow segue o mesmo relógio — cada mensagem DELA empurra os 20h para frente.
+    # `agendar` cancela o pendente antes de inserir, então isto reagenda em vez de acumular.
+    await _agendar_follow(estado, db)
 
     # E o vigia do P3-A, pela mesma mecânica e no mesmo ponto: dois inbounds seguidos
     # reagendam um vigia só, porque `agendar` cancela o pendente do mesmo (kind, contato)
@@ -1471,6 +1496,8 @@ async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession, *,
     """
     estado.etapa = ETAPA_Q_CONCLUIDO
     await db.flush()
+    # S6-4: reunião marcada — não há pergunta pendente para o follow retomar.
+    await _cancelar_follow(estado.contact_wa_id, "a reunião foi marcada", db)
 
     if confirmar and reuniao is not None:
         from app.agendamento import consultoras as equipe
@@ -1535,6 +1562,8 @@ async def concluir_por_agendamento_externo(contact_wa_id: str, reuniao,
         estado.etapa = ETAPA_Q_CONCLUIDO
         estado.agendamento_id = reuniao.id
         await db.flush()
+        # S6-4: marcou sozinho pela página — mesmo caso do `_concluir`.
+        await _cancelar_follow(estado.contact_wa_id, "a reunião foi marcada na página", db)
 
         from app.agendamento import consultoras as equipe
         consultora = equipe.nome_de(reuniao.sales_rep_email or "")
@@ -1694,6 +1723,60 @@ async def _agendar_encerramento(estado: NatQualificacaoState, db: AsyncSession) 
                            _agora_sp() + INATIVIDADE_ENCERRA, {}, db)
     except Exception as e:
         print(f"⚠️  Agente: encerramento não agendado para {estado.contact_wa_id} "
+              f"({type(e).__name__}: {e})")
+
+
+async def _agendar_follow(estado: NatQualificacaoState, db: AsyncSession) -> None:
+    """(Re)agenda o follow de 20h. Nunca levanta — é higiene, não fluxo.
+
+    AGENDA NA MESMA TRANSAÇÃO DA PERGUNTA, e é por isso que fica colado no
+    `_agendar_encerramento`: os dois pontos de chamada são os mesmos dois — a abertura
+    (`iniciar_qualificacao`, depois do envio confirmado) e cada inbound (`processar_texto`).
+    Um turno que estoura reverte os dois juntos, e é o comportamento certo: se a pergunta não
+    aconteceu, o follow àquela pergunta também não deve existir.
+
+    O AGENDAMENTO É INCONDICIONAL — não olha `follow_enabled`. Quem decide é o HANDLER, na
+    hora de executar. A diferença importa: com a decisão aqui, ligar a flag só começaria a
+    valer para conversas NOVAS, e as que já estivessem esperando ficariam sem follow para
+    sempre. Com a decisão lá, ligar a flag alcança quem já está na fila. O custo é uma linha
+    `pendente` por conversa ativa, que é o que a tabela já carrega para o encerramento.
+
+    IDEMPOTÊNCIA POR CONSTRAINT, e ela já existe: `agendar` cancela o pendente do mesmo
+    (kind, contato) antes de inserir, e `uq_nat_sched_pendente_por_contato` é a rede da mesma
+    regra no banco. Dois inbounds seguidos reagendam UM follow, não acumulam dois. Era este o
+    risco que adiou o Sprint D, e ele estava resolvido antes de a sprint começar.
+    """
+    try:
+        from app.nat_scheduler import agendar as agendar_acao
+        await agendar_acao(KIND_FOLLOW_20H, estado.contact_wa_id,
+                           _agora_sp() + FOLLOW_APOS, {}, db)
+    except Exception as e:
+        print(f"⚠️  Agente: follow não agendado para {estado.contact_wa_id} "
+              f"({type(e).__name__}: {e})")
+
+
+async def _cancelar_follow(contact_wa_id: str, porque: str, db: AsyncSession) -> None:
+    """A conversa saiu das etapas ativas: o follow não tem mais o que perguntar.
+
+    CINCO saídas chamam isto, e são as cinco por onde uma conversa deixa de ser do agente:
+    `silenciar` (o SDR assumiu), `_concluir` (reunião marcada), `_fallback` (transferida) e
+    `encerrar_inativo` (72h). A quinta é o inbound, e essa não aparece como chamada: em
+    `processar_texto` o `_agendar_follow` REAGENDA, e `agendar` cancela antes de inserir.
+
+    Cancelar não é a única defesa, e não deve ser: o handler relê o estado e recusa sozinho
+    se a etapa já não for ativa. Um cancelamento esquecido vira `skipped` com motivo, nunca
+    uma mensagem indevida. Isto aqui é higiene da FILA — para `nat_scheduled_actions` não
+    virar um cemitério de pendentes que nunca vão rodar.
+
+    Nunca levanta, pelo mesmo motivo de sempre: higiene não derruba fluxo.
+    """
+    try:
+        from app.nat_scheduler import cancelar as cancelar_acao
+        quantos = await cancelar_acao(KIND_FOLLOW_20H, contact_wa_id, db)
+        if quantos:
+            print(f"🚫 Agente: follow cancelado para {contact_wa_id} — {porque}")
+    except Exception as e:
+        print(f"⚠️  Agente: follow não cancelado para {contact_wa_id} "
               f"({type(e).__name__}: {e})")
 
 
@@ -1873,6 +1956,171 @@ async def vigiar_resposta(acao: dict, db: AsyncSession) -> None:
           f"gestão (user {destinatario}) avisada")
 
 
+# ==========================================================================================
+# S6-4 (SPRINT D) — O FOLLOW DE 20 HORAS
+# ==========================================================================================
+#
+# O BURACO QUE ELE TAPA (RECON_FOLLOWS_HUMANO_IA_20260901, §4.5)
+# ------------------------------------------------------------------------------------------
+# O agente abriu 118 conversas na janela 24/08-01/09. Em 39 delas o lead calou e NINGUÉM
+# nunca mais mandou nada. Dessas 39, 18 estavam paradas numa etapa ATIVA — 9 esperando o ano
+# de conclusão, 4 a formação, 3 a motivação e 2 ESCOLHENDO O HORÁRIO DA REUNIÃO. Duas pessoas
+# foram deixadas no ar apontando para um slot na agenda. O agente não tinha cadência de
+# follow: ele abre, conversa enquanto o lead responde, e para.
+#
+# QUATRO RECUSAS, cada uma por um motivo diferente
+# ------------------------------------------------------------------------------------------
+#   flag desligada     o follow é decisão de produto, não efeito colateral de deploy
+#   sem template       `{{n}}` vazio é #131008 e a Meta recusa a mensagem INTEIRA; recusar
+#                      aqui troca um erro remoto e opaco por um motivo local e gravado
+#   etapa não ativa    a conversa já não é do agente (humano assumiu, concluiu, encerrou)
+#   alguém já tocou    é a regra que falta em TODO o resto do sistema. A NAT sabe quando o
+#                      SDR digitou (é o `silenciar`), mas NÃO sabe quando uma CAMPANHA passou
+#                      por cima de uma thread que já saiu das etapas ativas. Sem esta
+#                      checagem, o lead receberia o disparo e, horas depois, o follow do
+#                      agente — dois remetentes sobre a mesma coisa.
+#
+# NENHUMA SAÍDA É SILENCIOSA (Risco 3, S4-1): toda recusa é `AcaoIgnorada`, que vira
+# `skipped` com o motivo GRAVADO na ação. `return` mudo viraria `executado` sem motivo,
+# indistinguível de um follow que de fato saiu.
+#
+# FALHA DE REDE NÃO É RECUSA. Se a Meta não responde, a exceção SOBE e o scheduler retenta;
+# só um `fetch_template_body` que devolve None limpo — template ausente ou não aprovado —
+# vira `AcaoIgnorada`. Confundir os dois faria uma oscilação de rede queimar o follow do lead
+# de vez, porque `skipped` é terminal.
+
+
+async def _config_follow(db: AsyncSession) -> tuple[bool, str | None]:
+    """(follow_enabled, follow_template). Falha fechada: sem config, desligado."""
+    from app.models import NatConfig
+    cfg = (await db.execute(select(NatConfig).where(NatConfig.id == 1))).scalar_one_or_none()
+    if cfg is None:
+        return False, None
+    return bool(cfg.follow_enabled), (cfg.follow_template or "").strip() or None
+
+
+async def _corpo_aprovado(nome_template: str, db: AsyncSession) -> str | None:
+    """O corpo BRUTO (com os `{{n}}`) do template aprovado na Meta. None se não existe.
+
+    Diferente de `_corpo_do_template`, que renderiza e engole erro: aqui o corpo bruto é
+    necessário para CONTAR as variáveis antes de preencher, e a exceção precisa subir para o
+    scheduler poder retentar (ver o bloco acima).
+    """
+    from app.models import Channel
+    from app.whatsapp import fetch_template_body
+    canal = (await db.execute(select(Channel).where(Channel.id == 1))).scalar_one_or_none()
+    if canal is None:
+        return None
+    return await fetch_template_body(canal.waba_id, canal.whatsapp_token,
+                                     nome_template, "pt_BR")
+
+
+async def _alguem_falou_depois(contact_wa_id: str, desde, db: AsyncSession) -> bool:
+    """Houve outbound de HUMANO para este contato desde `desde`?
+
+    `nat_etapa IS NULL` é o que separa humano de agente, e é o mesmo critério do RECON: todo
+    envio do agente passa por `nat_sender` e carimba a etapa; nada mais carimba.
+
+    Por VARIANTES do telefone (`app/telefone.py`): 59% das threads chegam sem o 9º dígito, e
+    com igualdade crua o follow não enxergaria o disparo que caiu na outra grafia.
+    """
+    n = (await db.execute(
+        select(func.count()).select_from(Message)
+        .where(Message.contact_wa_id.in_(variantes_wa_id(contact_wa_id)),
+               Message.direction == "outbound",
+               Message.nat_etapa.is_(None),
+               Message.status != "failed",
+               Message.timestamp >= desde))).scalar_one()
+    return (n or 0) > 0
+
+
+def _parametros_do_follow(corpo: str, nome: str, curso: str) -> list | None:
+    """Preenche os `{{n}}` do template aprovado. None se não dá para preencher com verdade.
+
+    O template ainda vai ser submetido à Meta, então o número de variáveis é desconhecido
+    AQUI e conhecido LÁ. A convenção da casa é a mesma em todos os templates do agente
+    (`nat_abertura_*`, `nat_lembrete_reuniao`): `{{1}}` é o nome, `{{2}}` é o curso.
+
+    Sem variável nenhuma devolve `[]`, que é diferente de None: `[]` quer dizer "não há o que
+    preencher e está tudo certo"; None quer dizer "há, e eu não sei com o quê".
+
+    Acima de 2 devolve None em vez de inventar. Um `{{3}}` em branco é #131008; preenchido
+    com um chute, é o agente afirmando algo que não sabe — que é exatamente o defeito do
+    `{{2}}` do `tentativa_contato` consertado no S6-3.
+    """
+    quantas = len(set(re.findall(r"\{\{\s*(\d+)\s*\}\}", corpo or "")))
+    if quantas == 0:
+        return []
+    if quantas == 1:
+        return [nome] if (nome or "").strip() else None
+    if quantas == 2:
+        return [nome, curso] if ((nome or "").strip() and (curso or "").strip()) else None
+    return None
+
+
+@registrar_handler(KIND_FOLLOW_20H)
+async def follow_20h(acao: dict, db: AsyncSession) -> None:
+    """20h de silêncio do lead sobre a NOSSA pergunta → o agente retoma, uma vez.
+
+    RELÊ TUDO, nunca confia no payload (vazio de propósito): entre agendar e executar passam
+    20 horas, e nesse intervalo o lead pode ter respondido — o que REAGENDA esta ação —, um
+    humano pode ter assumido, uma campanha pode ter passado por cima, ou a reunião pode ter
+    sido marcada pela página.
+    """
+    from app.whatsapp import render_template_text
+
+    wa_id = acao["contact_wa_id"]
+    agora = _agora_sp()
+
+    ligado, nome_template = await _config_follow(db)
+    if not ligado:
+        raise AcaoIgnorada("follow_enabled=false — o follow do agente está desligado")
+    if not nome_template:
+        raise AcaoIgnorada("nat_config.follow_template está vazio — o texto do follow ainda "
+                           "não foi submetido à Meta")
+
+    estado = await estado_de(wa_id, db)
+    if estado is None:
+        raise AcaoIgnorada("não tem estado — nada a retomar")
+    if estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
+        raise AcaoIgnorada(f"já está em '{estado.etapa}' — fora das etapas ativas")
+
+    # O caminho normal é o inbound ter REAGENDADO esta ação; isto cobre a corrida em que o
+    # lead responde entre o vencimento e a execução.
+    ultimo = await _ultimo_inbound(wa_id, db)
+    if ultimo is not None and ultimo.timestamp >= agora - FOLLOW_APOS:
+        raise AcaoIgnorada("o lead falou dentro da janela — não há silêncio a retomar")
+
+    if await _alguem_falou_depois(wa_id, agora - FOLLOW_JANELA_HUMANO, db):
+        raise AcaoIgnorada("um humano (ou uma campanha) falou com este contato nas últimas "
+                           "20h — o agente não entra por cima")
+
+    corpo = await _corpo_aprovado(nome_template, db)
+    if not corpo:
+        raise AcaoIgnorada(f"template '{nome_template}' não está aprovado no WABA — nada "
+                           "foi enviado")
+
+    nome, curso = await _nome(estado, db), await _curso(estado, db)
+    parametros = _parametros_do_follow(corpo, nome, curso)
+    if parametros is None:
+        raise AcaoIgnorada(f"template '{nome_template}' pede variáveis que o agente não sabe "
+                           f"preencher sem inventar (nome={nome!r}, curso={curso!r})")
+
+    saiu, motivo = await enviar_nat(
+        contact_wa_id=estado.contact_wa_id, etapa=nome_template, db=db,
+        guard=guard.qualificacao_pode_atuar, parametros=parametros or None,
+        corpo_livre=render_template_text(corpo, parametros) or corpo)
+    if not saiu:
+        # Teto por hora passa sozinho; qualquer outra recusa é definitiva.
+        if guard.e_teto(motivo):
+            raise AcaoAdiada(agora + ATRASO_POR_TETO, motivo)
+        raise AcaoIgnorada(f"envio recusado: {motivo}")
+
+    horas = FOLLOW_APOS.total_seconds() / 3600
+    print(f"🔁 Agente fez follow de {horas:.0f}h em {wa_id} "
+          f"(etapa '{estado.etapa}', template '{nome_template}')")
+
+
 @registrar_handler("encerrar_inativo")
 async def encerrar_inativo(acao: dict, db: AsyncSession) -> None:
     """72h de silêncio numa etapa ativa → `encerrado`.
@@ -1912,6 +2160,9 @@ async def encerrar_inativo(acao: dict, db: AsyncSession) -> None:
     estado.encerrado_motivo = (MOTIVO_SEM_RESPOSTA_AGENTE if nos_calamos
                                else MOTIVO_INATIVIDADE)
     await db.flush()
+    # S6-4: 72h sem resposta. Se um follow ainda estivesse pendente aqui, ele já não teria
+    # etapa ativa para agir — mas deixá-lo na fila é sujeira, e a fila é lida por humanos.
+    await _cancelar_follow(wa_id, "a conversa foi encerrada por inatividade", db)
     horas = INATIVIDADE_ENCERRA.total_seconds() / 3600
     if nos_calamos:
         print(f"🌑 Agente encerrou {wa_id} com motivo '{MOTIVO_SEM_RESPOSTA_AGENTE}' — "

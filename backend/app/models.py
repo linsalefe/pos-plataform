@@ -358,6 +358,22 @@ class NatConfig(Base):
     espontaneo_enabled = Column(Boolean, nullable=False, default=False,
                                 server_default="false")
 
+    # --- S6-4 (Sprint D): o follow do agente, também num eixo próprio ---
+    #
+    # Nasce DESLIGADO e SEM template, e as duas condições são checadas pelo handler: um lead
+    # que hoje fica em silêncio não recebe nada, e passar a receber é decisão de produto,
+    # não efeito colateral de deploy.
+    #
+    # `follow_template` é o nome do template NA META, e está NULO porque o texto ainda vai
+    # ser submetido. Com o nome em coluna, aprovar o template é um UPDATE e não um deploy —
+    # e enquanto for NULL o handler recusa com `skipped` e motivo legível.
+    #
+    # NÃO reusar `nat_recuperacao_sdr` aqui: o corpo diz "Tentamos falar com você há alguns
+    # minutos", falso 20 horas depois, e há DOIS com esse nome aprovados no WABA com corpos
+    # diferentes (ver nat_copy.py:80).
+    follow_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
+    follow_template = Column(String(512), nullable=True)
+
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
@@ -487,6 +503,18 @@ KIND_LEMBRETE_REUNIAO = "lembrete_reuniao"
 # `ETAPA_Q_ENCERRADO` seria constante morta — o mesmo defeito que o ESTADO_NAT_20260809
 # apontou no fluxo velho (`sem_contato` e `encerrado` declaradas e nunca atribuídas).
 KIND_ENCERRAR_INATIVO = "encerrar_inativo"
+
+# S6-4 (Sprint D) — o follow do agente. 20h de silêncio do lead sobre a NOSSA pergunta.
+#
+# O N não é palpite: na janela 24/08-01/09 a taxa de resposta ao follow por faixa de silêncio
+# foi 20-24h → 13,7% (N=124), 24-48h → 10,3%, 48-72h → 7,9% (N=127). A operação humana manda
+# hoje com 45,7h de mediana, ou seja, no balde de 7,9%. E 20h fica ABAIXO da janela de 24h da
+# Meta, então o envio ainda pode sair como texto livre em vez de template pago.
+#
+# UM só, e não uma régua: a taxa por ORDEM do follow cai 17,4% → 11,7% → 7,8% → 6,8% → 0%.
+# O segundo rende menos que o primeiro e o quinto rende zero. Se um dia houver um segundo,
+# que seja medido antes de virar padrão, não depois.
+KIND_FOLLOW_20H = "follow_20h"
 
 # A fala que o teto por hora adiou. Não precisa de migração: o CHECK de
 # `nat_scheduled_actions` é sobre `status`, não sobre `kind`.
