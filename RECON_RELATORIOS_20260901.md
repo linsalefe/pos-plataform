@@ -945,5 +945,226 @@ vira um card à parte, com o rótulo *"temos a formação de X de Y"*.
 
 ---
 
+# SEGUNDA RODADA DE CORREÇÕES (01/09, 21h30)
+
+## C.10 — Os tokens, enumerados um a um. **Encontrei uma pessoa real.**
+
+Você estava certo em exigir a lista. O `alefe` é seguro; o `\mtest` **não é**.
+
+### C.10.1 — Os 10 do `alefe`: todos são o operador
+
+| exact_id | Nome | Telefone | Casa `teste` também? |
+|---:|---|---|---|
+| 31485567 | Álefe Guimel Lins Barbosa | 5583988046720 | não |
+| 48525996 | Alefe Lins | 5583988046720 | não |
+| 49165947 | alefe lins | 5583988045623 | não |
+| 51438278 | Álefe Guimel Lins agenda | 5583988046725 | não |
+| 51438271 | Álefe teste de agenda | 5583988046728 | sim |
+| 51438444 | Álefe Guimel Lins teste | 5583988046729 | sim |
+| 51438018 | Álefe Guimel Lins Barbosa | 5583988046720 | não |
+| 51438436 | Álefe Guimel Lins Barbosa | 5583988046720 | não |
+| 51438282 | Álefe Guimel Lins teste | 5583988046721 | sim |
+| 51548604 | Álefe Guimel Lins Barbosa | 5583988046720 | não |
+
+**Zero pessoas reais.** Todos no bloco de telefones `558398804xxxx` do operador. E **6 dos 10
+não casam `teste`** — sem o token `alefe` eles entrariam como leads reais. O token se
+justifica.
+
+### C.10.2 — Os 43 do `\mtest`: **42 são teste, 1 é uma cliente**
+
+```
+ANA CRISTINA JEFFRES PEREIRA - TESTE   ·  Giovanna teste 2          ·  Isa - teste
+Isa Teste             ·  Isa teste     ·  Isabela Oliveira - Teste  ·  Maria Gabriela teste
+TESTE                 ·  TESTE GABI (×2)  ·  TESTE IMPLEMENTAÇÃO    ·  TESTE ROTEAMENTO
+TESTE SUPORTE RD      ·  TESTE VIC     ·  TESTE VICTORIA            ·  Teste
+Teste - ISA           ·  Teste Isa     ·  Teste Suporte [Tom]       ·  Teste2708
+VICTORIA TESTE        ·  ZZ TESTE ChangeFunnel - ignorar            ·  giovanna zaraga teste (×3)
+giovanna zaraga teste pos grupos       ·  teste                     ·  teste 18
+teste 3 · teste 4 · teste 5            ·  teste giovanna zaraga     ·  teste pos gestao
+teste spotter         ·  teste spotter - não excluir!               ·  teste teste (×3)
+teste200825.          ·  zzz teste     ·  Álefe Guimel Lins teste (×2)  ·  Álefe teste de agenda
+```
+
+> ### ⚠️ `ANA CRISTINA JEFFRES PEREIRA - TESTE` (lead 51507231) **é uma pessoa real.**
+>
+> | Evidência | |
+> |---|---|
+> | `source` | **Landing Page** |
+> | `sub_source` | **PosMulheridades** |
+> | SDR | **Thobias** |
+> | Etapa | **Follow 4** |
+> | Telefone | 5592984118443 (Manaus) — **único na base**, não é telefone de teste |
+> | Mensagens | **8**, sendo **4 inbound dela** |
+>
+> Ela escreveu pelo botão da página de obrigado **duas vezes**, mandou *"bom dia Cenat"* em
+> 24/08, e recebeu a ementa em **31/08**. O sufixo `" - TESTE"` está no nome dela na Exact —
+> alguém anexou, ou o formulário capturou. **O predicado a apagaria de todo relatório, em
+> silêncio.** É exatamente o defeito do `zz`, um nível abaixo.
+
+### C.10.3 — Nenhuma regra mecânica separa sozinha, e a saída é duas cestas
+
+Testei três discriminadores e nenhum fecha:
+
+| Regra | Resultado |
+|---|---|
+| "zero inbound" | deixa **15** duvidosos — 14 deles são testes legítimos nos telefones do próprio time (217, 12 e 10 inbounds) |
+| "telefone carrega ≥2 leads de nome-de-teste" | pega 7 telefones, deixa **12 avulsos** de fora — incluindo `John Doe`, `fafaf` e o `Álefe…teste` em `…721` |
+| nome sozinho | apaga a Ana Cristina |
+
+> **Proposta: o predicado devolve DUAS cestas, e só uma é excluída automaticamente.**
+>
+> ```
+> EXCLUIR (automático):  nome casa  E  ( sem telefone
+>                                       OU zero inbound
+>                                       OU telefone no bloco conhecido de teste )
+> DUVIDOSO (NÃO excluir, mas LISTAR na resposta do endpoint):  o resto
+> ```
+>
+> Medido hoje: **52 excluídos, 1 duvidoso** — a Ana Cristina.
+
+**A escolha do modo de falhar é o ponto.** Um lead de teste que escapa polui um número **de
+leve e de forma visível**; um lead real excluído some **de tudo, para sempre, sem sintoma**.
+A cesta "duvidoso" viaja no JSON (`duvidosos: [...]`) para alguém decidir uma vez, em vez de
+o código decidir todo dia em silêncio.
+
+---
+
+## C.11 — A.6 mede "agora", e a opção (b) **não existe**
+
+Você está certo: `est` lê `s.etapa` do estado **atual**, sem recorte de tempo, enquanto `mk` é
+filtrado por `:ini`/`:fim`.
+
+**A opção (b) — reconstruir a etapa no instante da mensagem — não é cara: é impossível com o
+dado de hoje.** Medido:
+
+| Tabela | Linhas | Contatos | Forma |
+|---|---:|---:|---|
+| `nat_qualificacao_state` | 121 | **121** | **uma linha por contato, `etapa` SOBRESCRITA** |
+| `nat_flow_state` | 0 | 0 | vazia |
+| `nat_button_events` | 195 | 176 | cliques de botão, não etapas |
+
+As únicas marcas de tempo de transição são `transferido_em`, `encerrado_em`, `created_at` e
+`updated_at`. **Não há `etapa_anterior`, não há log de transição.** A etapa em que um lead
+estava em 25/08 não é recuperável.
+
+E o número **não muda com o período** — conferido nas quatro janelas:
+
+| hoje | 7 dias | 30 dias | tudo |
+|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 |
+
+> **Escolho a (a): o card de saúde ignora o seletor e declara "agora" na tela.**
+>
+> Não por preferência — a (b) exigiria uma tabela que não existe. E fingir que o seletor
+> governa um número que ele não governa é pior que declarar o escopo.
+
+Renderização proposta: o bloco de saúde fica **fora** da área que o seletor pinta, com o
+rótulo fixo:
+
+```
+┌─ Saúde da Nat  ·  situação AGORA (não muda com o período) ──────────────┐
+│  Silêncio em etapa ativa        0  ✅   ⓘ margem de 15 min              │
+│  Vigias disparados              0  ✅                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**O que a (b) exigiria** (proposta, fora desta rodada): uma tabela `nat_etapa_events`
+espelhando `exact_stage_events` — `(contact_wa_id, etapa_de, etapa_para, observado_em)`,
+escrita em `_avancar`, `_fallback`, `_concluir`, `silenciar` e `encerrar_inativo`. Migração
+aditiva, ~6 pontos de escrita. Sem ela, **nenhum número histórico de etapa é reconstruível** —
+o que também limita o funil por coorte a "como está hoje".
+
+---
+
+## C.12 — O cache das chaves de teste: **você está certo, a conta não fechava**
+
+`4 rotas × 70 ms = 280 ms` de `translate()` sobre 9 299 nomes **por abertura de página**, e eu
+tinha somado como se fosse uma vez. O erro era meu.
+
+### Por que isto NÃO contradiz o E7
+
+| | E7 (recusado) | C.12 (proposto) |
+|---|---|---|
+| O que guarda | **o número que a gestora lê** | um `frozenset` de 19 strings |
+| Quem vê | a tela | ninguém — é insumo de filtro |
+| Custo de estar velho | a página mostra **um número errado** e ninguém sabe | um lead de teste criado nos últimos 10 min entra na conta |
+| Invalidação | precisa saber quando qualquer mensagem muda | nenhuma — TTL resolve |
+
+**São coisas diferentes.** O E7 recusou cache porque *"pagar complexidade para piorar a
+confiança"* num painel que já tem o problema do "número que muda sozinho". Aqui não há
+confiança em jogo: o conteúdo do cache não é apresentado, e o pior caso é quantificável.
+
+### O pior caso, quantificado
+
+Um lead de teste criado **dentro da janela do TTL** e com mensagens nela. Na prática: o sync
+roda a cada 600 s, e um lead de teste recém-criado tem 1 ou 2 mensagens. Sobre as ~4 400
+mensagens de uma janela de 30 dias, isso é **≈ 0,05%** — e some sozinho no ciclo seguinte.
+
+### O desenho
+
+```python
+# app/relatorios.py
+_TESTE_CACHE: tuple[float, frozenset[str]] | None = None
+TTL_TESTE = 600           # alinhado ao passo do sync_exact_leads: o conjunto só pode
+                          # mudar quando o sync traz um lead novo. Um TTL menor gastaria
+                          # os 70 ms sem chance de ver nada diferente.
+
+async def chaves_de_teste(db) -> frozenset[str]:
+    """As 19 chaves de telefone dos leads de teste. Cache em processo, TTL 600 s.
+
+    NÃO é cache de agregação (ver E7 do RECON_RELATORIOS). O que se guarda aqui é um
+    conjunto de 19 strings que ninguém lê — insumo de um NOT IN. Cachear o número que a
+    gestora lê seria outra decisão, e ela continua recusada.
+
+    O custo evitado é medido: 70 ms por chamada, e a página faz 4 chamadas em paralelo.
+    """
+```
+
+**Orçamento revisado, com números medidos:**
+
+| | Sem cache | Com cache (TTL 600 s) |
+|---|---:|---:|
+| Primeira abertura da página | 4 × 70 + 76 = **356 ms** | 70 + 76 = **146 ms** |
+| Aberturas seguintes (10 min) | **356 ms** | **76 ms** |
+
+*(Nota: com um único processo `uvicorn`, um dicionário de módulo basta. Se um dia houver mais
+de um worker, cada um terá o seu — o que é inofensivo aqui, porque o conteúdo é idêntico.)*
+
+---
+
+## C.13 — Ponto 5 (o T3) — dimensionamento, antes de começar
+
+**Tamanho estimado: recon curto, um documento, ~40 minutos.** E ele provavelmente **não vai
+descobrir a causa — vai confirmar uma que já está registrada.**
+
+Probe rodado (somente leitura):
+
+| | |
+|---|---|
+| T3 na janela | **19** |
+| … sem lead na base | **0** |
+| … sem `sub_source` | 2 |
+| … com `sub_source` que `course_aliases` **não** reconhece | 5 |
+
+> **A sua hipótese (b) — cobertura de `course_aliases` — não se sustenta como causa
+> principal.** Doze dos 19 têm `sub_source` com alias reconhecido (`PosPsicologiaEscolar` 9,
+> `Pos Grupos e Oficinas T2` 2, `Pos Saude do Trabalhador` 1). E há um motivo estrutural:
+> `sub_source` é o **curso**, não a formação do lead — o alias nunca poderia preencher
+> `formacao`.
+
+A formação vem do **formulário da LP (`agendamentos.extras`)** ou do `description` da Exact. E
+já existe achado registrado sobre exatamente isso: **`extras` jsonb nulo engole o formulário —
+o lead da LP que agenda pela página perde a formação e cai no T3. Fix identificado, NÃO
+aplicado.** Se o recon confirmar, o conserto **muda de lugar**: vira dado, não copy — e o
+conserto já está escrito.
+
+**O que o recon curto entregaria:** (a) os 19 nominalmente, com origem e `extras`; (b) o que os
+6 responderam, verbatim; (c) confirmação ou refutação do `extras` nulo como causa; (d) se
+sobrar caso não explicado, aí sim a hipótese de copy.
+
+**Recomendo fazer** — 19 leads é amostra pequena e o achado é de produto, não de tela.
+
+---
+
 *Recon de 01/09/2026, 16h50 SP. Somente leitura — nenhum dado de produção foi alterado,
 nenhuma mensagem foi enviada.*
