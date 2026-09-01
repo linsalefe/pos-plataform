@@ -792,5 +792,158 @@ WHERE coalesce(encerrado_em, transferido_em) BETWEEN :ini AND :fim GROUP BY 1;
 
 ---
 
+# ANEXO A — CORRIGIDO (01/09, 20h)
+
+As seis correções foram aplicadas e **as validações do §1.2 foram refeitas depois delas**.
+Duas mudaram de número. As correções e o que cada uma custou estão abaixo.
+
+## C.1 — O predicado de teste, remedido com desacentuação
+
+`unaccent` **está disponível mas não instalado** (instalar é DDL, fora desta rodada).
+Uso `translate()`, que não precisa de extensão.
+
+| Token | cru | **desacentuado** | Leitura |
+|---|---:|---:|---|
+| `alefe` | 2 | **10** | ⚠️ os 8 a mais são `Álefe…`. **Quatro são `Álefe Guimel Lins Barbosa`, que não contém "teste"** e passava como lead real |
+| `\mtest` | 43 | 43 | igual |
+| `^\s*zz` | 2 | 2 | igual |
+| `teste` | — | 43 | |
+| `john doe` / `fafaf` / `thobias justino` | — | 1 cada | |
+| `smoke` | — | 0 | vive nos telefones, não nos nomes |
+
+**Total do predicado corrigido: 53 leads de teste, 19 chaves de telefone distintas.**
+
+## C.2 — Como excluir teste em query que só toca `messages` (resposta ao §1.3)
+
+`messages` não tem `name`. Medi as duas saídas:
+
+| Saída | Cobertura | Custo |
+|---|---:|---:|
+| Só `TELEFONES_TESTE` (5 números fixos) | **12** de 42 mensagens de teste dos últimos 30 dias | 0 |
+| **Join com `exact_leads` pela chave de telefone** | **42** de 42 | **+70 ms** |
+
+> **A lista fixa cobre 29% e não serve.** O join é obrigatório — e custa 70 ms, que é
+> **quase o orçamento inteiro do painel** (75 ms). O gargalo não é o join: são o `translate()`
+> e o `regexp_replace` rodando sobre os 9 299 nomes. Filtrar o nome antes de calcular a chave
+> não ajuda (medido: 70 ms nos dois jeitos).
+
+**Decisão de desenho:** o conjunto das 19 chaves é calculado **uma vez por request**, em
+`app/relatorios.py`, e passado às queries como array. O painel paga 70 ms **uma vez**, não
+por métrica. Total: **≈ 145 ms**, ainda 14× abaixo do alvo.
+
+*(Se um dia incomodar, o conserto é um índice de expressão sobre o nome desacentuado — DDL,
+fora desta rodada.)*
+
+## C.3 — A.6 (saúde): chave tolerante, contagem por conversa, e a margem
+
+Os dois defeitos do §1.1 são reais. **379 pessoas têm as duas grafias** — é o tamanho exato
+do erro de casar por igualdade.
+
+**Sobre a margem, discordo dos 10 min** e a evidência é a distribuição de latência do próprio
+agente (N=206, desde 24/08, cortando o que passa de 2 h):
+
+| p50 | p95 | **p99** | máx |
+|---:|---:|---:|---:|
+| 3,6 s | 304 s | **855 s (14,3 min)** | 83 min |
+
+Os 10 min do vigia `agente_mudo` marcariam **~1% dos turnos legítimos** — e o vigia tem outro
+trabalho: ele **detecta** agente travado, e um falso positivo lá gera um aviso que alguém lê.
+Aqui é um **invariante de painel** que pisca vermelho para a gestora. Errar para o lado do
+alarme é pior.
+
+Some-se que `ATRASO_POR_TETO = 10 min`: quando o teto por hora adia uma fala, o agente
+legitimamente demora 10 min **mais** o ciclo de 60 s do scheduler.
+
+> **Margem proposta: 15 minutos.** Acima do p99 medido e acima do adiamento por teto.
+
+Conferido com a query corrigida, em todas as margens de 0 a 60 min: **0 em todas** — o
+invariante vale hoje, e a margem só protege contra o falso positivo em janela aberta.
+
+## C.4 — A.4 (funil): a chave calculada passa a ser usada
+
+Corrigido: o `EXISTS` casa por `thr`, e ganhou `i.timestamp <= :fim`.
+
+## C.5 — A.3: o ramo 3 agora testa `origem_ip`
+
+O risco do §1.5 é real e **ainda não se materializou**: dos 5 leads que caem no ramo 3 hoje,
+os 5 têm `origem_ip` preenchido (`ia_incompleta` = **0**). A guarda entra assim mesmo — o
+agente *pode* deixar linha sem chegar a `agendado` (é o caso `SlotIndisponivel` do S5), e
+quando isso acontecer o rótulo mentiria em silêncio. Precedência final: **5 vias**.
+
+## C.6 — Métrica 6 conta conversa
+
+**Confirmado exatamente como o §1.6 diz:** `nat_qualificacao_state` tem **59 linhas com
+`transferido_em` e 59 contatos distintos — zero contatos com mais de uma linha**. Segundo e
+terceiro toque na mesma thread não deixam rastro. O card diz **"conversas cortadas"**, e a
+`limitacao` do JSON registra que reincidência não é contável.
+
+## C.7 — Revalidação do §1.2 DEPOIS das correções
+
+| Conferência | Antes das correções | **Depois** | Mudou? |
+|---|---|---|---|
+| Reuniões 24–29/08 (20 LP / 4 LP-inc / 2 indet / 1 IA) | 27 | **27, mesma quebra** | não — nenhum lead de teste estava nesse conjunto, e `ia_incompleta` = 0 |
+| Mediana IA | 4,2 s · **N=77** | 4,2 s · **N=73** | **N caiu 4** (perguntas de teste); mediana igual |
+| Mediana humano | 1393,3 s · N=38 | 1393,3 s · N=38 | não |
+
+> **A exclusão de teste move o N em ~5% e não move as medianas.** Vale aplicar — mas não é
+> ela que explica a divergência do N=34 publicado (§1.2c segue de pé).
+
+## C.8 — Anexo A.6, versão corrigida
+
+```sql
+-- RELÓGIO: SP. Chave tolerante (379 pessoas têm duas grafias).
+-- MARGEM de 15 min: acima do p99 de resposta do agente (14,3 min) e do ATRASO_POR_TETO.
+-- Conta CONVERSAS, não mensagens. :teste = array das 19 chaves, calculado 1x por request.
+WITH mk AS (
+  SELECT m.direction, m.timestamp AS ts,
+         CASE WHEN length(d.dd) IN (10,11) THEN substr(d.dd,1,2)||right(d.dd,8)
+              ELSE m.contact_wa_id END AS thr
+  FROM messages m,
+  LATERAL (SELECT CASE WHEN m.contact_wa_id LIKE '55%' AND length(m.contact_wa_id) IN (12,13)
+                       THEN substr(m.contact_wa_id,3) ELSE m.contact_wa_id END AS dd) d
+  WHERE m.timestamp >= :ini AND m.timestamp <= :fim
+), est AS (
+  SELECT CASE WHEN length(d.dd) IN (10,11) THEN substr(d.dd,1,2)||right(d.dd,8)
+              ELSE s.contact_wa_id END AS thr
+  FROM nat_qualificacao_state s,
+  LATERAL (SELECT CASE WHEN s.contact_wa_id LIKE '55%' AND length(s.contact_wa_id) IN (12,13)
+                       THEN substr(s.contact_wa_id,3) ELSE s.contact_wa_id END AS dd) d
+  WHERE s.etapa IN ('aguardando_formacao','aguardando_ano','aguardando_atuacao',
+                    'aguardando_motivacao','ofertando_agenda','escolhendo_slot'))
+SELECT count(DISTINCT i.thr) AS conversas_em_silencio
+FROM mk i JOIN est e ON e.thr = i.thr
+WHERE i.direction = 'inbound'
+  AND i.ts <= :fim - interval '15 minutes'          -- <<< a margem
+  AND i.thr <> ALL(:teste)
+  AND NOT EXISTS (SELECT 1 FROM mk o
+                  WHERE o.thr = i.thr AND o.direction='outbound' AND o.ts > i.ts);
+```
+
+## C.9 — Resposta ao P2: o denominador do funil
+
+**A pergunta estava mal posta, e o dado mostra por quê.** `formacao IS NOT NULL` **não é um
+degrau de funil**: em 121 estados, **102 já nascem com a formação preenchida**, vinda do lead
+da Exact — não da conversa. (`dados_extras ? 'formacao'` = **0**; `origem='lp'` = 14,
+`origem='exact'` = 107.)
+
+`models.py` confirma a mecânica: `etapa = aguardando_ano SE havia formação, senão
+aguardando_formacao`. São **duas coortes com roteiros de tamanhos diferentes**, e o funil
+publicado somava as duas:
+
+| Coorte | Abertas | Responderam | Deu ano | Atuação | Motivação | **Agendou** |
+|---|---:|---:|---:|---:|---:|---:|
+| **T1/T2** — formação já conhecida | 102 | 74 | 47 | 42 | 37 | **42** |
+| **T3** — precisa perguntar a formação | 19 | **6** | **0** | **0** | **0** | **0** |
+
+> **O caminho T3 converte zero.** Dezenove aberturas, seis pessoas responderam, e **nenhuma
+> passou da primeira pergunta**. Isso estava escondido dentro do agregado.
+
+**Proposta (decisão de produto — P2 revisado):** o funil da página é mostrado
+**por coorte**, não somado, e o degrau "deu formação" **sai** — ele mede dado que já
+tínhamos, não progresso de conversa. Se a Isa quiser um número de completude de cadastro, ele
+vira um card à parte, com o rótulo *"temos a formação de X de Y"*.
+
+---
+
 *Recon de 01/09/2026, 16h50 SP. Somente leitura — nenhum dado de produção foi alterado,
 nenhuma mensagem foi enviada.*
