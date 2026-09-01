@@ -51,9 +51,10 @@ def _estado(etapa=ETAPA_Q_AGUARDANDO_ANO):
                                 etapa=etapa)
 
 
-def roda_handler(*, ligado=True, template="nat_follow_20h", estado=None,
-                 ultimo_inbound_h=None, humano_falou=False, corpo="Olá {{1}}, sobre {{2}}?",
-                 corpo_erro=None, envio=(True, "")):
+def roda_handler(*, ligado=True, template="follow_up", estado=None,
+                 ultimo_inbound_h=None, humano_falou=False,
+                 corpo="Olá, {{1}}! Aqui é da equipe do CENAT. {{2}} À disposição!",
+                 corpo_erro=None, envio=(True, ""), sem_retomada=False):
     """Roda `follow_20h` e devolve (excecao_ou_None, mock_de_envio)."""
     cfg = MagicMock(follow_enabled=ligado, follow_template=template)
     inbound = None
@@ -70,7 +71,9 @@ def roda_handler(*, ligado=True, template="nat_follow_20h", estado=None,
     db.execute = AsyncMock(return_value=MagicMock(
         scalar_one_or_none=MagicMock(return_value=cfg)))
 
-    with patch.object(qf, "_config_follow",
+    retomadas = {} if sem_retomada else qf.RETOMADA_FOLLOW
+    with patch.object(qf, "RETOMADA_FOLLOW", new=retomadas), \
+         patch.object(qf, "_config_follow",
                       new=AsyncMock(return_value=(ligado, template))), \
          patch.object(qf, "estado_de", new=AsyncMock(return_value=estado)), \
          patch.object(qf, "_ultimo_inbound", new=AsyncMock(return_value=inbound)), \
@@ -78,7 +81,6 @@ def roda_handler(*, ligado=True, template="nat_follow_20h", estado=None,
                       new=AsyncMock(return_value=humano_falou)), \
          patch.object(qf, "_corpo_aprovado", new=AsyncMock(side_effect=corpo_aprovado)), \
          patch.object(qf, "_nome", new=AsyncMock(return_value="Ana")), \
-         patch.object(qf, "_curso", new=AsyncMock(return_value="TEA")), \
          patch.object(qf, "_agora_sp", new=MagicMock(return_value=AGORA)), \
          patch.object(qf, "enviar_nat", new=enviar), \
          patch("app.whatsapp.render_template_text", new=MagicMock(return_value="Olá Ana")):
@@ -133,8 +135,14 @@ print("\n  --- e o caminho feliz, para o teste não provar só ausências ---")
 erro, envio = roda_handler(estado=_estado(ETAPA_Q_ESCOLHENDO_SLOT), ultimo_inbound_h=40)
 checa("etapa ativa + 40h de silêncio + ninguém tocou: ENVIA", erro, None)
 checa("  uma vez", envio.await_count, 1)
-checa("  com o template configurado", envio.await_args.kwargs["etapa"], "nat_follow_20h")
-checa("  e os parâmetros preenchidos", envio.await_args.kwargs["parametros"], ["Ana", "TEA"])
+checa("  com o template configurado", envio.await_args.kwargs["etapa"], "follow_up")
+# O CONTRATO DO FOLLOW: {{2}} é a PERGUNTA PENDENTE, não o curso. É diferente do resto dos
+# templates do agente, e a diferença é o ponto — ver RETOMADA_FOLLOW.
+params = envio.await_args.kwargs["parametros"]
+checa("  {{1}} = o nome", params[0], "Ana")
+checa("  {{2}} = a retomada DA ETAPA em que o lead parou",
+      params[1], " ".join(qf.RETOMADA_FOLLOW[ETAPA_Q_ESCOLHENDO_SLOT].split()))
+checa("  e NÃO o curso (contrato diferente do resto do agente)", "TEA" in params[1], False)
 
 # O motivo vem VERBATIM do guard, não inventado aqui: `e_teto` casa por prefixo, e uma
 # string aproximada faria o teste passar contra um handler que trata o teto errado.
@@ -163,14 +171,34 @@ checa("  e não virou AcaoIgnorada", isinstance(erro, AcaoIgnorada), False)
 print("\n8) Os parâmetros do template aprovado")
 
 f = qf._parametros_do_follow
-checa("sem variáveis: lista vazia (≠ None)", f("Olá! Tudo bem?", "Ana", "TEA"), [])
-checa("uma variável: o nome", f("Olá {{1}}!", "Ana", "TEA"), ["Ana"])
-checa("duas: nome e curso", f("Olá {{1}}, a Pós em {{2}}", "Ana", "TEA"), ["Ana", "TEA"])
-checa("três: recusa em vez de inventar", f("{{1}} {{2}} {{3}}", "Ana", "TEA"), None)
-checa("uma variável e nome vazio: recusa (#131008)", f("Olá {{1}}", "  ", "TEA"), None)
-checa("duas e curso vazio: recusa", f("{{1}} {{2}}", "Ana", ""), None)
+R = "Ficou faltando só o ano."
+checa("sem variáveis: lista vazia (≠ None)", f("Olá! Tudo bem?", "Ana", R), [])
+checa("uma variável: o nome", f("Olá {{1}}!", "Ana", R), ["Ana"])
+checa("duas: nome e a PERGUNTA PENDENTE", f("Olá {{1}}. {{2}}", "Ana", R), ["Ana", R])
+# `follow_urgencia` tem 3 variáveis (uma delas o MÊS) e é justamente o que isto barra.
+checa("três: recusa em vez de inventar", f("{{1}} {{2}} {{3}}", "Ana", R), None)
+checa("uma variável e nome vazio: recusa (#131008)", f("Olá {{1}}", "  ", R), None)
+checa("duas e retomada vazia: recusa", f("{{1}} {{2}}", "Ana", ""), None)
 checa("o mesmo {{1}} repetido conta uma vez",
-      f("Olá {{1}}, tudo bem {{1}}?", "Ana", "TEA"), ["Ana"])
+      f("Olá {{1}}, tudo bem {{1}}?", "Ana", R), ["Ana"])
+# A Meta recusa parâmetro com quebra de linha, e as retomadas nascem de literais quebrados.
+checa("quebra de linha na retomada é colapsada",
+      f("{{1}} {{2}}", "Ana", "Ficou faltando\n   só o ano."), ["Ana", "Ficou faltando só o ano."])
+
+print("\n  --- toda etapa ativa tem uma retomada escrita ---")
+from app.models import ETAPAS_QUALIFICACAO_ATIVAS
+checa("nenhuma etapa ativa fica sem frase",
+      sorted(ETAPAS_QUALIFICACAO_ATIVAS - set(qf.RETOMADA_FOLLOW)), [])
+checa("e nenhuma frase está vazia",
+      [e for e, t in qf.RETOMADA_FOLLOW.items() if not t.strip()], [])
+checa("a retomada do ano carrega a saída do S6-5",
+      "se não lembrar de cabeça, sem problema, seguimos"
+      in qf.RETOMADA_FOLLOW[ETAPA_Q_AGUARDANDO_ANO], True)
+# Sem retomada para a etapa, o follow NÃO manda pergunta genérica.
+erro, envio = roda_handler(estado=_estado(ETAPA_Q_AGUARDANDO_ANO), ultimo_inbound_h=40,
+                           sem_retomada=True)
+checa("etapa sem retomada: recusa em vez de mandar genérico", type(erro), AcaoIgnorada)
+checa("  e nada saiu", envio.await_count, 0)
 
 
 # ==========================================================================================

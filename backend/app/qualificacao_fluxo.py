@@ -299,6 +299,59 @@ MISSOES = {
         'vai passar o contato para ela e use acao="transferir_humano".'),
 }
 
+# ==========================================================================================
+# S6-4b — O QUE O FOLLOW DE 20h DIZ, POR ETAPA
+# ==========================================================================================
+# Vai inteiro no `{{2}}` do template `follow_up`, que é um slot de TEXTO LIVRE no meio da
+# mensagem aprovada:
+#
+#     "Olá, {{1}}! Tudo bem? 😊
+#      Aqui é da equipe do CENAT. {{2}}
+#      Ficamos à disposição para tirar suas dúvidas! 💬"
+#
+# POR QUE ESTE TEMPLATE, E NÃO OS OUTROS DOIS APROVADOS. `nat_reativacao_09h` abre com "Bom
+# dia" (o follow também dispara à tarde) e afirma "Conforme combinado", que não foi
+# combinado; `follow_urgencia` diz "Estamos tentando contato há alguns dias", falso em 20h.
+# Um template que afirma o que não aconteceu é o defeito que o S6-3 acabou de consertar —
+# não faz sentido reintroduzi-lo pela porta do lado.
+#
+# ⚠️ O CONTRATO DE PARÂMETROS DO FOLLOW É DIFERENTE DO RESTO DO AGENTE.
+#
+#     nat_abertura_*, nat_lembrete_reuniao   {{1}} = nome   {{2}} = CURSO
+#     follow (este)                          {{1}} = nome   {{2}} = A PERGUNTA PENDENTE
+#
+# Quem configurar `nat_config.follow_template` com um template feito para receber o CURSO no
+# `{{2}}` vai mandar a frase no slot errado — a mesma classe de erro do `tentativa_contato`.
+# O template do follow tem que ter o `{{2}}` como texto livre. Ver o §5.3 do
+# RECON_FOLLOWS_HUMANO_IA_20260901 e o SPRINT6.
+#
+# A FRASE RETOMA A PERGUNTA QUE FICOU, e é por isso que ela é por ETAPA e não uma só: o lead
+# que sumiu no ano de conclusão e o que sumiu escolhendo horário pararam em lugares
+# diferentes, e um "ainda tem interesse?" genérico faria os dois recomeçarem do zero.
+#
+# `aguardando_ano` carrega a saída do S6-5 dentro da própria retomada — é a etapa onde 37,5%
+# das conversas morriam, e a razão é que a pergunta exige memória.
+RETOMADA_FOLLOW = {
+    ETAPA_Q_AGUARDANDO_FORMACAO: (
+        "Ficou faltando só uma informação para eu separar os horários com a nossa "
+        "consultoria: qual é a sua formação?"),
+    ETAPA_Q_AGUARDANDO_ANO: (
+        "Ficou faltando só o ano em que você concluiu a graduação — e se não lembrar de "
+        "cabeça, sem problema, seguimos."),
+    ETAPA_Q_AGUARDANDO_ATUACAO: (
+        "Ficou faltando só uma informação para eu separar os horários: como e onde você "
+        "atua profissionalmente hoje?"),
+    ETAPA_Q_AGUARDANDO_MOTIVACAO: (
+        "Ficou faltando só uma coisa: o que despertou o seu interesse nesta pós-graduação?"),
+    ETAPA_Q_OFERTANDO_AGENDA: (
+        "Separei horários com a nossa consultoria para conversar com você — me diz qual "
+        "fica melhor e eu já reservo."),
+    ETAPA_Q_ESCOLHENDO_SLOT: (
+        "Ficou faltando só confirmar o horário da conversa com a nossa consultoria — qual "
+        "deles fica melhor para você?"),
+}
+
+
 # Para onde cada etapa vai quando cumprida. `aguardando_motivacao` não está aqui: o destino
 # dela depende de o lead já ter reunião, e isso é decidido em código.
 PROXIMA = {
@@ -2079,27 +2132,35 @@ async def _alguem_falou_depois(contact_wa_id: str, desde, db: AsyncSession) -> b
     return (n or 0) > 0
 
 
-def _parametros_do_follow(corpo: str, nome: str, curso: str) -> list | None:
-    """Preenche os `{{n}}` do template aprovado. None se não dá para preencher com verdade.
+def _parametros_do_follow(corpo: str, nome: str, retomada: str) -> list | None:
+    """Preenche os `{{n}}` do template do follow. None se não dá para preencher com verdade.
 
-    O template ainda vai ser submetido à Meta, então o número de variáveis é desconhecido
-    AQUI e conhecido LÁ. A convenção da casa é a mesma em todos os templates do agente
-    (`nat_abertura_*`, `nat_lembrete_reuniao`): `{{1}}` é o nome, `{{2}}` é o curso.
+    O CONTRATO DO FOLLOW É `{{1}}` = nome e `{{2}}` = A PERGUNTA PENDENTE — e não o curso,
+    como nos outros templates do agente. Ver o bloco de `RETOMADA_FOLLOW`.
 
     Sem variável nenhuma devolve `[]`, que é diferente de None: `[]` quer dizer "não há o que
     preencher e está tudo certo"; None quer dizer "há, e eu não sei com o quê".
 
-    Acima de 2 devolve None em vez de inventar. Um `{{3}}` em branco é #131008; preenchido
-    com um chute, é o agente afirmando algo que não sabe — que é exatamente o defeito do
-    `{{2}}` do `tentativa_contato` consertado no S6-3.
+    Acima de 2 devolve None em vez de inventar. Um `{{3}}` em branco é #131008 e a Meta
+    recusa a mensagem inteira; preenchido com um chute, é o agente afirmando algo que não
+    sabe — que é exatamente o defeito do `{{2}}` do `tentativa_contato` (S6-3). É também o
+    que impede `follow_urgencia` (3 variáveis, uma delas o MÊS) de ser usado por engano.
+
+    ESPAÇO EM BRANCO É COLAPSADO porque a Meta recusa parâmetro com quebra de linha ou
+    tabulação (#132000/#131008, dependendo do caso) — e as retomadas nascem de literais
+    quebrados em várias linhas no código.
     """
+    def limpo(v: str) -> str:
+        return " ".join((v or "").split())
+
     quantas = len(set(re.findall(r"\{\{\s*(\d+)\s*\}\}", corpo or "")))
+    nome, retomada = limpo(nome), limpo(retomada)
     if quantas == 0:
         return []
     if quantas == 1:
-        return [nome] if (nome or "").strip() else None
+        return [nome] if nome else None
     if quantas == 2:
-        return [nome, curso] if ((nome or "").strip() and (curso or "").strip()) else None
+        return [nome, retomada] if (nome and retomada) else None
     return None
 
 
@@ -2145,11 +2206,21 @@ async def follow_20h(acao: dict, db: AsyncSession) -> None:
         raise AcaoIgnorada(f"template '{nome_template}' não está aprovado no WABA — nada "
                            "foi enviado")
 
-    nome, curso = await _nome(estado, db), await _curso(estado, db)
-    parametros = _parametros_do_follow(corpo, nome, curso)
+    nome = await _nome(estado, db)
+    # A frase que RETOMA a pergunta onde ela ficou. Sem retomada para a etapa, o follow não
+    # sai: mandar "ainda tem interesse?" genérico faria o lead recomeçar do zero, e é o
+    # oposto do que o follow existe para fazer.
+    retomada = RETOMADA_FOLLOW.get(estado.etapa)
+    if not retomada:
+        raise AcaoIgnorada(f"não há retomada escrita para a etapa '{estado.etapa}' — o "
+                           "follow não manda pergunta genérica")
+    parametros = _parametros_do_follow(corpo, nome, retomada)
     if parametros is None:
-        raise AcaoIgnorada(f"template '{nome_template}' pede variáveis que o agente não sabe "
-                           f"preencher sem inventar (nome={nome!r}, curso={curso!r})")
+        quantas = len(set(re.findall(r"\{\{\s*(\d+)\s*\}\}", corpo)))
+        raise AcaoIgnorada(
+            f"template '{nome_template}' tem {quantas} variável(is) e o agente não sabe "
+            f"preenchê-las sem inventar. O contrato do follow é {{{{1}}}}=nome e "
+            f"{{{{2}}}}=a pergunta pendente (nome={nome!r})")
 
     saiu, motivo = await enviar_nat(
         contact_wa_id=estado.contact_wa_id, etapa=nome_template, db=db,
