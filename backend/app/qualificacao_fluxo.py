@@ -182,11 +182,56 @@ MISSOES = {
         'dado_extraido = {"formacao": "<o que ela disse>"}. '
         'SE ELA RESPONDER: valide em uma frase e TERMINE perguntando em que ano ela '
         'concluiu essa graduação.'),
+    # ------------------------------------------------------------------------------------
+    # S6-5 — O ANO DE CONCLUSÃO VIROU OPCIONAL (01/09/2026)
+    # ------------------------------------------------------------------------------------
+    # É O MAIOR DEGRAU DO FUNIL, e sozinho ele derruba mais gente que todos os outros
+    # passos somados. Medido na janela 24/08-01/09 (RECON_FOLLOWS_HUMANO_IA_20260901, §4.5):
+    #
+    #     respondeu alguma vez   77
+    #     deu a formação         72        -5
+    #     deu o ANO              45       -27   (-37,5%)   <- aqui
+    #     deu a atuação          40        -5
+    #     deu a motivação        35        -5
+    #
+    # Perder alguém no ano de conclusão não custa o ano: custa a atuação, a motivação e o
+    # agendamento que vinham depois. O dado mais barato do roteiro estava cobrando o preço
+    # mais caro.
+    #
+    # POR QUE ELE TRAVA. "Em que ano você concluiu?" é uma pergunta de MEMÓRIA, e é a única
+    # do roteiro que a pessoa pode não saber responder. Formação, atuação e motivação ela
+    # sabe de cor; o ano de uma graduação de 2004 exige parar e contar. Quem não lembra na
+    # hora não escreve "não lembro" — some.
+    #
+    # A SAÍDA É EXPLÍCITA, E NÃO UMA TOLERÂNCIA CALADA. "não lembro" passa a ser resposta
+    # VÁLIDA (`etapa_cumprida`), e o que ela disse é gravado literalmente: `ano_conclusao =
+    # "não lembra"` diz uma coisa, e NULL diz outra (que ninguém perguntou). A consultora lê
+    # os dois no contexto — ver `_fatos`.
+    #
+    # E O AGENTE NÃO INSISTE. A segunda cobrança é o que transforma uma pergunta difícil em
+    # motivo para sair da conversa.
+    #
+    # ONDE A SAÍDA APARECE, e onde NÃO aparece: quem faz a primeira pergunta é o template de
+    # abertura (aprovado na Meta, imutável daqui) ou o fecho da missão de `aguardando_
+    # formacao`, e os dois seguem perguntando o ano direto. A oferta entra quando o agente
+    # VOLTA a falar nesta etapa — que é exatamente o momento em que a pessoa travou. Levar a
+    # oferta para a primeira pergunta é decisão de produto (mais conversa concluída, menos
+    # ano preenchido) e está isolada numa linha da missão de `aguardando_formacao`.
     ETAPA_Q_AGUARDANDO_ANO: (
-        'Descubra em QUE ANO ela concluiu a graduação. Se ela ainda está cursando, isso '
-        'também serve como resposta. dado_extraido = {"ano_conclusao": "<o que ela disse>"}. '
-        'SE ELA RESPONDER: valide em uma frase e TERMINE perguntando como e onde ela atua '
-        'profissionalmente hoje.'),
+        'Descubra em QUE ANO ela concluiu a graduação. '
+        'dado_extraido = {"ano_conclusao": "<o que ela disse, literalmente>"}. '
+        'ESTA PERGUNTA É OPCIONAL e você NUNCA insiste nela. '
+        'CONTAM COMO RESPOSTA, e todas cumprem a etapa: um ano; "ainda estou cursando"; '
+        '"não lembro", "não sei", "faz muito tempo", "preciso ver o diploma" ou qualquer '
+        'jeito de dizer que ela não tem o ano na cabeça; e também uma aproximação '
+        '("por volta de 2010"). '
+        'SE ELA RESPONDER QUALQUER UMA DESSAS: valide em uma frase, sem cobrar precisão e '
+        'sem pedir para ela conferir depois, e TERMINE perguntando como e onde ela atua '
+        'profissionalmente hoje. '
+        'SE ELA FALAR DE OUTRA COISA (perguntou o preço, desconversou, mudou de assunto): '
+        'responda o que ela trouxe e, ao retomar, ofereça a saída com estas palavras ou '
+        'equivalentes — "se não lembrar de cabeça, sem problema, seguimos". '
+        'NUNCA peça o ano duas vezes na mesma conversa.'),
     ETAPA_Q_AGUARDANDO_ATUACAO: (
         'Descubra COMO E ONDE ela atua profissionalmente hoje. Se estiver fora da área ou '
         'sem atuar, isso também é resposta. dado_extraido = {"atuacao": "<o que ela disse>"}. '
