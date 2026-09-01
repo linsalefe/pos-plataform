@@ -16,6 +16,8 @@ from app.whatsapp import send_text_message, send_template_message, upload_media,
 # Trava unica do template de boas-vindas (a MESMA usada em bulk-send-template).
 from app.welcome_guard import bloquear_se_boas_vindas
 from app.contatos import canonizar, contato_existente, destinatario
+# Quem apertou enviar (ver app/autoria.py — a armadilha do `Depends`).
+from app.autoria import quem_enviou
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -275,6 +277,9 @@ async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db),
             content=req.text,
             timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
+            # S6-1: a MESMA `current_user` que ja calava o agente agora tambem fica gravada.
+            # `template_name` segue NULL aqui — texto livre nao tem template.
+            sent_by=quem_enviou(current_user),
         )
         db.add(message)
         # Depois do add e ANTES do commit: a mesma transação que registra a fala do humano
@@ -326,6 +331,10 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
             content=content_text,
             timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
+            # S6-1: `req.template_name` e o nome APROVADO na Meta, nao o texto renderizado.
+            # E' o que `content` nunca soube dizer.
+            sent_by=quem_enviou(current_user),
+            template_name=req.template_name,
         )
         db.add(message)
         await _silenciar_agente_apos_envio_manual(wa_id, current_user, db)
@@ -386,6 +395,7 @@ async def send_media(
             content=content,
             timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
+            sent_by=quem_enviou(current_user),
         )
         db.add(message)
         await _silenciar_agente_apos_envio_manual(wa_id, current_user, db)

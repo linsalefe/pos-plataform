@@ -70,6 +70,25 @@ class Message(Base):
     # É a coluna que substitui o COLUNA_MARCADOR_ENVIO_NAT = None de nat_guard.
     nat_etapa = Column(Text, nullable=True)
 
+    # --- AUTORIA DO ENVIO (ver migrate_message_autoria.py, S6-1) ---
+    #
+    # sent_by responde "quem apertou enviar", e NULL é resposta, não lacuna: quer dizer
+    # "não foi humano logado" — o agente (nat_sender), a boas-vindas automática
+    # (exact_spotter) e o disparo agendado (roda sem sessão) gravam NULL de propósito.
+    # Inventar um usuário "sistema" apagaria justamente o que a coluna informa.
+    # Quem resolve o valor é `app/autoria.quem_enviou` — ver lá a armadilha do `Depends`.
+    #
+    # template_name é o nome do template NA META. Sem ele, a única forma de saber que
+    # template saiu é `LIKE` sobre o corpo renderizado em `content` — que foi como o
+    # RECON de 01/09 teve que reconstruir 17 famílias, e é o motivo de a medição por
+    # template ter sido impossível antes. NULL = não foi template.
+    #
+    # As duas nascem NULL para TODO o histórico: não houve backfill, porque o dado nunca
+    # existiu em lugar nenhum do banco. A primeira linha preenchida é o primeiro envio
+    # depois do deploy do S6-1.
+    sent_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    template_name = Column(String(512), nullable=True)
+
     # Motivo da falha, vindo de statuses[].errors[] no webhook (ver migrate_message_error.py).
     # Só é preenchido quando a Meta reporta erro; NULL é o caso normal.
     # error_details é onde a Meta explica em linguagem natural — vale mais que o title.

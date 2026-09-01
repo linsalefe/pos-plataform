@@ -460,6 +460,7 @@ async def bulk_send_template(
                 # `canonizar` — resolvido assim numa consulta só, em vez de chamar
                 # `canonizar` e repetir a mesma busca na linha seguinte.
                 from app.contatos import contato_existente
+                from app.autoria import quem_enviou
 
                 eco_meta = result.get("contacts", [{}])[0].get("wa_id", phone)
 
@@ -491,6 +492,16 @@ async def bulk_send_template(
                     content=content_text,
                     timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
                     status="sent",
+                    # S6-1. `quem_enviou` e' obrigatorio aqui, e nao `current_user.id`: esta
+                    # rota tambem e' chamada como funcao Python pelo job de agendados
+                    # (main.py:238), e naquele caminho `current_user` e' o objeto `Depends`,
+                    # nao um User. Ver app/autoria.py.
+                    #
+                    # Disparo agendado grava sent_by NULL, e e' a resposta certa: nao houve
+                    # humano logado no instante do envio. Quem montou o agendamento esta em
+                    # `scheduled_messages.created_by`, que e' outra pergunta.
+                    sent_by=quem_enviou(current_user),
+                    template_name=template_name,
                 )
                 db.add(msg)
                 # FLUSH AQUI, DENTRO DO `try` DESTE LEAD. Sem ele o `msg` fica pendente e

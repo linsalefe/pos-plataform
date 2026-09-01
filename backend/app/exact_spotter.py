@@ -379,6 +379,11 @@ async def send_welcome_to_new_lead(lead_data: dict, db: AsyncSession, config, *,
                      or f"[Template] {nome_curto}, {course}"),
             timestamp=datetime.now(SP_TZ).replace(tzinfo=None),
             status="sent",
+            # S6-1. `sent_by` NULL: a boas-vindas e' automatica, nao ha humano logado — nem
+            # no reenvio manual, que passa por `resend_welcome` e chega aqui sem sessao.
+            # `template_name` vem de `config.template_name`, que e' o mesmo nome usado para
+            # buscar o corpo no WABA 70 linhas acima: uma fonte, nao duas.
+            template_name=template_name,
         ))
 
         # Card no Kanban — checar duplicata antes (protege o reenvio manual com force=True).

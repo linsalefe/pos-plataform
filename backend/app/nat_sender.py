@@ -252,6 +252,15 @@ async def enviar_nat(contact_wa_id: str, etapa: str, db: AsyncSession, *,
             timestamp=_agora_sp(),
             status="sent",
             nat_etapa=etapa,
+            # S6-1. `sent_by` fica NULL de proposito e nao aparece aqui: nao houve humano
+            # logado, e essa e' a informacao. Quem quiser "foi o agente?" pergunta a
+            # `nat_etapa`, que ja responde isso desde a Sprint 3 — duas colunas dizendo a
+            # mesma coisa divergem no primeiro caminho que esquecer uma delas.
+            #
+            # `template_name` so' e' preenchido quando SAIU template: com a janela aberta o
+            # envio e' texto livre, e ai nao ha template nenhum. `etapa` e' exatamente o
+            # nome aprovado na Meta (ver nat_copy.CORPO_APROVADO, indexado por nome).
+            template_name=etapa if tipo_msg == "template" else None,
         ))
         print(f"📤 NAT enviou '{etapa}' para {contact_wa_id} "
               f"({'texto livre' if aberta else 'template'}, janela "
