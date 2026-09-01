@@ -33,8 +33,12 @@ interface SendResult {
   // S5-5: contatos que o backend PULOU por estarem em conversa ativa com a NAT.
   // Opcionais porque um backend anterior a 29/08 não os devolve — a tela não pode
   // quebrar por causa da ordem do deploy.
+  // `skipped_nat` continua significando SO' os pulos por conversa ativa com a Nat — o
+  // backend nao o redefiniu de proposito. O total de pulos e' `skipped_total`.
   skipped_nat?: number;
-  skipped?: { name: string; phone: string; etapa: string; motivo: string }[];
+  skipped_total?: number;
+  skipped_por_regra?: Record<string, number>;
+  skipped?: { name: string; phone: string; etapa: string | null; regra?: string; motivo: string }[];
 }
 
 interface CourseAlias {
@@ -68,6 +72,15 @@ interface AutoWelcomePreview {
 // Template da boas-vindas automática: o backend BLOQUEIA o envio em massa/agendamento dele
 // (HTTP 400). Ele só sai pelo fluxo automático ou pelo reenvio individual do lead.
 const WELCOME_TEMPLATE = 'nat_boasvindas';
+
+// S6-2 — as tres regras de higiene do disparo (backend: app/higiene_disparo.py). O rotulo
+// e' curto de proposito: o motivo COMPLETO, com o caminho para falar com a pessoa, ja' vem
+// por linha no `motivo` de cada pulo.
+const REGRA_LABEL: Record<string, string> = {
+  nat_ativa: 'em conversa com a Nat',
+  recusa: 'pediram para parar',
+  teto: 'já receberam demais esta semana',
+};
 
 const MAPPING_OPTIONS = [
   { value: 'lead_name', label: 'Nome do Lead (1º nome)' },
@@ -914,8 +927,19 @@ export default function AutomacoesPage() {
                     agora, com o caminho para falar com elas. */}
                 {(sendResult.skipped?.length ?? 0) > 0 && (
                   <div className="mt-2 space-y-1.5 pt-2 border-t border-gray-100">
+                    {/* S6-2: sao TRES motivos agora (conversa ativa, recusa, teto de
+                        toques), entao o cabecalho nao pode mais afirmar um so'. Cada linha
+                        ja' traz o motivo dela; aqui fica o resumo por regra. */}
                     <p className="text-[12px] font-medium text-amber-700">
-                      {sendResult.skipped!.length} não {sendResult.skipped!.length === 1 ? 'recebeu' : 'receberam'}: já estão em conversa com a Nat
+                      {sendResult.skipped!.length} não {sendResult.skipped!.length === 1 ? 'recebeu' : 'receberam'}
+                      {sendResult.skipped_por_regra && (
+                        <span className="font-normal">
+                          {' — '}
+                          {Object.entries(sendResult.skipped_por_regra)
+                            .map(([regra, n]) => `${n} ${REGRA_LABEL[regra] ?? regra}`)
+                            .join(', ')}
+                        </span>
+                      )}
                     </p>
                     {sendResult.skipped!.map((p, i) => (
                       <p key={i} className="text-[11px] text-amber-600">

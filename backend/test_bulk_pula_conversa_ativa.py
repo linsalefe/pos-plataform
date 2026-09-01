@@ -92,7 +92,11 @@ def dispara(leads, estados, origem_envio="campanha"):
     if origem_envio is not None:
         pedido["origem_envio"] = origem_envio
 
+    # S6-2: a higiene do disparo (recusa/teto) tem teste proprio —
+    # test_higiene_disparo.py. Aqui ela sai da frente, senao o db-duble responde
+    # qualquer SELECT com um MagicMock truthy e TODO lead vira "recusou".
     with patch("app.qualificacao_fluxo.estado_de", new=AsyncMock(side_effect=estado_de)), \
+         patch("app.higiene_disparo.por_que_pular", new=AsyncMock(return_value=None)), \
          patch("app.whatsapp.send_template_message", new=envio), \
          patch("app.whatsapp.fetch_template_body", new=AsyncMock(return_value="Olá {{1}}")), \
          patch("app.whatsapp.render_template_text", new=MagicMock(return_value="Olá X")), \

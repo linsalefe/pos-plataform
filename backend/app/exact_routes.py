@@ -297,10 +297,14 @@ async def bulk_send_template(
     from app.models import Channel, Contact, Message
     from app.sdr_mapping import resolve_sdr_user_id
     from app.whatsapp import send_template_message, fetch_template_body, render_template_text
+    from app.higiene_disparo import por_que_pular
     from datetime import datetime, timedelta, timezone
     import asyncio
 
     SP_TZ = timezone(timedelta(hours=-3))
+
+    def agora_sp():
+        return datetime.now(SP_TZ).replace(tzinfo=None)
 
     template_name = request.get("template_name")
     language = request.get("language", "pt_BR")
@@ -390,13 +394,31 @@ async def bulk_send_template(
         #
         # ANTES de qualquer chamada à Meta: o pulo não gasta envio, não gasta o `sleep(1)`
         # do rate limit e não deixa `Message` órfã.
+        # S6-2 — HIGIENE (a) e (b). ANTES do filtro da NAT porque a ordem é de
+        # IMPORTÂNCIA, não de custo: a recusa é a única regra que fala de um pedido
+        # explícito da pessoa, e quando duas batem o motivo que o SDR lê tem que ser esse.
+        #
+        # `aplicar_teto=not individual`: a regra do RITMO dispensa o individual pelo mesmo
+        # motivo que o filtro da NAT dispensa (quem olha a thread vê os toques). A regra da
+        # RECUSA não dispensa — quem aperta enviar aqui está olhando a lista da Exact, onde
+        # o "não" do lead não aparece. Ver o docstring de `por_que_pular`.
+        motivo_higiene = await por_que_pular(phone, db, agora=agora_sp(),
+                                             aplicar_teto=not individual)
+        if motivo_higiene is not None:
+            regra, motivo = motivo_higiene
+            pulados.append({"name": lead.name, "phone": phone, "regra": regra,
+                            "etapa": None, "motivo": motivo})
+            print(f"⏭️  Disparo PULOU {phone} ({lead.name}) por '{regra}': {motivo} — "
+                  f"template '{template_name}' não enviado")
+            continue
+
         if not individual:
             from app.models import ETAPAS_QUALIFICACAO_ATIVAS
             from app.qualificacao_fluxo import estado_de
             ativo = await estado_de(phone, db)
             if ativo is not None and ativo.etapa in ETAPAS_QUALIFICACAO_ATIVAS:
-                pulados.append({"name": lead.name, "phone": phone, "etapa": ativo.etapa,
-                                "motivo": MOTIVO_PULO_NAT})
+                pulados.append({"name": lead.name, "phone": phone, "regra": "nat_ativa",
+                                "etapa": ativo.etapa, "motivo": MOTIVO_PULO_NAT})
                 print(f"⏭️  Disparo PULOU {phone} ({lead.name}): conversa ativa com a NAT "
                       f"em '{ativo.etapa}' — template '{template_name}' não enviado")
                 continue
@@ -539,10 +561,20 @@ async def bulk_send_template(
 
     await db.commit()
     if pulados:
-        lista = ", ".join(f"{p['name']} {p['phone']} ({p['etapa']})" for p in pulados)
-        print(f"⏭️  Disparo em massa: {len(pulados)} pulado(s) por conversa ativa com a "
-              f"NAT — {lista}")
+        lista = ", ".join(f"{p['name']} {p['phone']} ({p.get('regra') or 'nat_ativa'})"
+                          for p in pulados)
+        print(f"⏭️  Disparo em massa: {len(pulados)} pulado(s) — {lista}")
     # Chaves NOVAS, nenhuma removida: `sent`/`failed`/`errors` continuam idênticos para o
     # front (`automacoes/page.tsx`) e para o `result` gravado em `scheduled_messages`.
+    #
+    # `skipped_nat` TAMBÉM continua, e continua significando a MESMA coisa de antes — só os
+    # pulos por conversa ativa. Redefini-lo como "total de pulos" mudaria em silêncio o
+    # número que a tela de resultado já mostra e que o `result` dos agendados já gravou.
+    # O total novo entra em `skipped_total`, e a quebra por regra em `skipped_por_regra`.
+    por_regra = {}
+    for p in pulados:
+        por_regra[p.get("regra") or "nat_ativa"] = por_regra.get(p.get("regra") or "nat_ativa", 0) + 1
     return {"sent": sent, "failed": failed, "errors": errors,
-            "skipped_nat": len(pulados), "skipped": pulados}
+            "skipped_nat": por_regra.get("nat_ativa", 0),
+            "skipped_total": len(pulados), "skipped_por_regra": por_regra,
+            "skipped": pulados}
