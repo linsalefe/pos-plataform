@@ -255,7 +255,9 @@ async def bulk_send_template(
       - lead_name: primeiro nome do lead
       - lead_full_name: nome completo do lead
       - lead_course: nome do curso (resolvido via aliases)
-      - sdr_name: nome do SDR do lead
+      - sdr_name: nome do SDR do lead (dono na Exact)
+      - sdr_logado: nome de QUEM ESTA MANDANDO agora (o usuario logado; no disparo
+        agendado, que roda sem sessao, cai em autoria.SDR_PADRAO)
       - fixed_text: texto fixo (usa o campo "value")
 
     Exemplo:
@@ -298,6 +300,7 @@ async def bulk_send_template(
     from app.sdr_mapping import resolve_sdr_user_id
     from app.whatsapp import send_template_message, fetch_template_body, render_template_text
     from app.higiene_disparo import por_que_pular
+    from app.autoria import nome_de_quem_enviou
     from datetime import datetime, timedelta, timezone
     import asyncio
 
@@ -439,7 +442,15 @@ async def bulk_send_template(
                     course = await resolve_course_name(lead.sub_source, db)
                     lead_params.append(course)
                 elif m_type == "sdr_name":
+                    # DONO do lead na Exact. Continua existindo e continua correto para
+                    # templates que falam DE quem cuida do lead.
                     lead_params.append(lead.sdr_name if lead.sdr_name else "Equipe CENAT")
+                elif m_type == "sdr_logado":
+                    # S6-3: QUEM ESTÁ MANDANDO ESTA MENSAGEM. Ver app/autoria.py — é o
+                    # conserto do `{{2}}` do `tentativa_contato`, que em 52% dos envios saiu
+                    # com o nome do CURSO. Nunca vazio: `{{n}}` em branco é #131008 e a
+                    # mensagem inteira não sai.
+                    lead_params.append(nome_de_quem_enviou(current_user))
                 elif m_type == "fixed_text":
                     lead_params.append(m_value if m_value else "")
                 else:

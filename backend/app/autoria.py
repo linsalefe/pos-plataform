@@ -34,3 +34,39 @@ def quem_enviou(current_user) -> int | None:
     da chamada interna e `None`.
     """
     return current_user.id if isinstance(current_user, User) else None
+
+
+# ------------------------------------------------------------------------------------------
+# S6-3 — O NOME DE QUEM ASSINA O TEMPLATE
+# ------------------------------------------------------------------------------------------
+# 43 dos 82 envios de `tentativa_contato` na janela 24/08-01/09 (52%) saíram assinados com o
+# NOME DO CURSO no lugar do nome de quem fala. 42 pessoas leram, literalmente:
+#
+#     "Ola Daiane, é o PsicologiaEscolar do CENAT ✨"
+#     "Ola Vitória, é o Transtorno do Espectro Autista (TEA) do CENAT ✨"
+#
+# A causa está no default posicional da tela (`automacoes/page.tsx:selectTemplate`), que
+# chutava `lead_course` para o segundo `{{n}}` de QUALQUER template. Este mapeamento é a
+# outra metade do conserto: um tipo que diz "quem está mandando", em vez de o operador ter
+# que lembrar de trocar o dropdown.
+#
+# POR QUE NÃO `sdr_name` (que já existia). Aquele resolve `exact_leads.sdr_name` — o DONO do
+# lead na Exact, que é outra pessoa: 4 496 leads são da Victória e 2 091 do Thobias. Um
+# template que diz "tentei falar com você" assinado pelo dono do lead mente quando quem
+# tentou foi outro. Os dois tipos convivem porque respondem a perguntas diferentes:
+# `sdr_name` = de quem é o lead; `sdr_logado` = quem está mandando esta mensagem agora.
+SDR_PADRAO = "Thobias"
+
+
+def nome_de_quem_enviou(current_user) -> str:
+    """Nome para assinar o template. NUNCA vazio.
+
+    O disparo AGENDADO roda sem sessão (ver a armadilha do `Depends` acima) e mesmo assim
+    precisa de um nome: `{{n}}` em branco faz a Meta recusar a mensagem INTEIRA com #131008,
+    e o lead não recebe nada. `SDR_PADRAO` é o operador de plantão da tela de Automações —
+    trocar de pessoa é trocar esta constante, e é de propósito que isso seja uma linha
+    visível no código e não uma configuração escondida.
+    """
+    if isinstance(current_user, User) and (current_user.name or "").strip():
+        return current_user.name.strip()
+    return SDR_PADRAO

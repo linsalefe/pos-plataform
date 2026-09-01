@@ -86,7 +86,8 @@ const MAPPING_OPTIONS = [
   { value: 'lead_name', label: 'Nome do Lead (1º nome)' },
   { value: 'lead_full_name', label: 'Nome completo do Lead' },
   { value: 'lead_course', label: 'Curso (automático)' },
-  { value: 'sdr_name', label: 'Nome do SDR' },
+  { value: 'sdr_name', label: 'SDR dono do lead (Exact)' },
+  { value: 'sdr_logado', label: 'Quem está mandando (você)' },
   { value: 'fixed_text', label: 'Texto fixo' },
 ];
 
@@ -378,15 +379,35 @@ export default function AutomacoesPage() {
     }
   };
 
+  // S6-3 — O DEFAULT PAROU DE CHUTAR POR POSIÇÃO
+  //
+  // O default anterior era `i === 1 -> lead_course` para QUALQUER template. Para o
+  // `tentativa_contato`, cujo corpo é "Ola {{1}}, é o {{2}} do CENAT ✨", isso pôs o nome do
+  // CURSO no lugar do nome de quem fala — em 43 dos 82 envios de 24/08 a 01/09 (52%).
+  // 42 pessoas leram "Ola Daiane, é o PsicologiaEscolar do CENAT".
+  //
+  // O chute não era só errado: era INVISÍVEL. O operador que não abrisse o dropdown não
+  // tinha como saber que a tela tinha decidido por ele.
+  //
+  // Agora o default lê o CORPO. A frase imediatamente antes do `{{n}}` diz se ali vai uma
+  // pessoa ("é o ", "aqui é ", "sou a ", "consultora ") — e é evidência do template, não
+  // suposição sobre a ordem das variáveis. Onde não há essa marca, o comportamento é o de
+  // antes, para não mexer nos templates que já estavam certos.
+  const APRESENTACAO = /(?:é|eh|sou)\s+(?:o|a)\s+$|aqui\s+é\s+(?:o\s+|a\s+)?$|consultor(?:a)?\s+$|atendente\s+$/i;
+
+  const tipoPadrao = (body: string, i: number): string => {
+    if (i === 0) return 'lead_name';
+    // O texto que vem logo antes DESTE placeholder.
+    const antes = (body || '').split(`{{${i + 1}}}`)[0] || '';
+    if (APRESENTACAO.test(antes.slice(-24))) return 'sdr_logado';
+    return i <= 2 ? 'lead_course' : 'fixed_text';
+  };
+
   const selectTemplate = (t: any) => {
     setSelectedTemplate(t);
-    // Inicializar mapeamentos com valores padrão inteligentes
-    const mappings: ParamMapping[] = t.parameters.map((_: string, i: number) => {
-      if (i === 0) return { type: 'lead_name', value: '' };
-      if (i === 1) return { type: 'lead_course', value: '' };
-      if (i === 2) return { type: 'lead_course', value: '' };
-      return { type: 'fixed_text', value: '' };
-    });
+    const mappings: ParamMapping[] = t.parameters.map((_: string, i: number) => (
+      { type: tipoPadrao(t.body, i), value: '' }
+    ));
     setParamMappings(mappings);
   };
 
@@ -405,6 +426,9 @@ export default function AutomacoesPage() {
   const getMappingLabel = (mapping: ParamMapping): string => {
     const opt = MAPPING_OPTIONS.find(o => o.value === mapping.type);
     if (mapping.type === 'fixed_text') return mapping.value || '[Texto fixo]';
+    // O preview mostra o NOME de verdade, não o rótulo do dropdown: é a única chance de
+    // alguém ler "é o Thobias do CENAT" antes de a mensagem sair, e ver que está certo.
+    if (mapping.type === 'sdr_logado') return user?.name || 'você';
     return opt?.label || mapping.type;
   };
 
