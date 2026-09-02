@@ -123,6 +123,7 @@ from app.exact_routes import router as exact_router
 from app.auto_welcome_routes import router as auto_welcome_router
 from app.nat_routes import router as nat_router
 from app.agendamento.routes import router as agendamento_router
+from app.relatorios import router as relatorios_router
 from app.agendamento.cors import (PADRAO_ENV as _SUFIXOS_PADRAO, PREFIXO as _PREFIXO_AGENDAMENTO,
                                   AgendamentoCORSMiddleware)
 from app.exact_spotter import sync_exact_leads
@@ -349,6 +350,7 @@ app.include_router(calendar_router)
 app.include_router(nat_router)
 # Único router PÚBLICO da aplicação — ver o cabeçalho de app/agendamento/routes.py.
 app.include_router(agendamento_router)
+app.include_router(relatorios_router)
 VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
 app.include_router(twilio_router)
 
