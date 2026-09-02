@@ -896,3 +896,54 @@ class ExactStageEvent(Base):
     funnel_id = Column(Integer, nullable=True)
     observado_em = Column(DateTime, nullable=False,
                           server_default=text("(now() AT TIME ZONE 'utc')"))
+
+
+class DisparoSkip(Base):
+    """Uma linha por lead PULADO num disparo de template. O log que a métrica 6 não tinha.
+
+    O QUE ISTO FECHA (RECON_RELATORIOS_20260901 §4.1)
+    ------------------------------------------------------------------------------------------
+    `bulk_send_template` devolve `skipped_total` / `skipped_por_regra` / `skipped` **só no
+    corpo da resposta HTTP**. O único ponto que persistia era `main.py:240`
+    (`sm.result = json.dumps(result)`), no caminho AGENDADO — e o caminho agendado não é
+    usado: `scheduled_messages` tem 4 linhas, todas de junho/2026, zero desde agosto.
+
+    Ou seja, 100% dos disparos dos últimos dias saíram pela porta HTTP, cujo retorno ninguém
+    guarda. O `skipped_por_regra` que o S6-2 construiu existia só na tela de quem apertou o
+    botão, e sumia quando ele fechava a aba. Cada dia sem esta tabela era um dia que nunca
+    vai poder ser relatado — e não havia como PROVAR que o filtro de recusa funciona, só que
+    ele rodou.
+
+    UM PONTO DE ESCRITA COBRE OS DOIS CAMINHOS. `main.py` chama `bulk_send_template` como
+    função Python, não por HTTP; os dois passam pelo mesmo laço. `origem_envio` é o que os
+    separa: 'campanha' (massa e agendado) ou 'individual' (o `handleSingleSend` da tela).
+
+    SEM FK EM `telefone`. O pulo acontece ANTES da criação do contato — `contato_existente`
+    só roda no ramo de envio, ~100 linhas depois. Um lead nunca contatado não tem linha em
+    `contacts`, e uma FK faria o log falhar exatamente nos casos mais interessantes.
+
+    `chave` É GRAVADA, NÃO DERIVADA. Todo agrupamento e todo join do relatório usa a chave
+    tolerante (DDD + últimos 8): 379 pessoas têm as duas grafias do telefone. Derivar em SQL
+    custa `translate()` sobre a tabela inteira; gravar custa uma chamada a
+    `app/telefone.chave_telefone`, que já existe.
+
+    `lead_id` É O `exact_id`, não o `exact_leads.id` — mesma convenção de
+    `agendamentos.lead_id`, para que as duas tabelas cruzem sem tradutor.
+
+    NULL em `sent_by` quer dizer "não houve humano logado" (disparo agendado), pela mesma
+    regra de `messages.sent_by`. Ver app/autoria.py.
+    """
+    __tablename__ = "disparo_skip"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    quando = Column(DateTime, nullable=False)        # naive-SP, o relógio de messages.timestamp
+    telefone = Column(String(20), nullable=False)    # como foi para a Meta
+    chave = Column(String(10), nullable=False)       # DDD + últimos 8
+    lead_id = Column(Integer, nullable=True)         # exact_leads.exact_id
+    nome = Column(String(255), nullable=True)
+    template_name = Column(String(512), nullable=False)
+    regra = Column(String(40), nullable=False)       # 'recusa' | 'teto' | 'nat_ativa'
+    motivo = Column(Text, nullable=True)
+    etapa = Column(String(30), nullable=True)        # só quando regra='nat_ativa'
+    origem_envio = Column(String(20), nullable=False)
+    sent_by = Column(Integer, ForeignKey("users.id"), nullable=True)

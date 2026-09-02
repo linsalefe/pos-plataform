@@ -369,6 +369,35 @@ async def bulk_send_template(
     # tem mais de um. Vale o mesmo para o disparo AGENDADO, que chega por
     # `main.py:233` com a lista inteira.
     pulados = []
+    # ------------------------------------------------------------------------------------
+    # BLOCO 1 da sprint de Relatórios — O PULO PASSA A DEIXAR RASTRO (02/09/2026)
+    # ------------------------------------------------------------------------------------
+    # `pulados` vive e morre nesta chamada: ele vira `skipped`/`skipped_por_regra` no corpo
+    # da resposta HTTP e some quando quem apertou o botão fecha a aba. `skips` é a mesma
+    # informação com destino durável — ver o docstring de `models.DisparoSkip`.
+    #
+    # SÃO DUAS LISTAS, E ISSO NÃO É ESTILO. `pulados` é serializado por
+    # `json.dumps(result)` no `main.py:240` (caminho agendado); um `datetime` dentro dele
+    # estouraria em TypeError e mataria justamente o único caminho que já persistia alguma
+    # coisa. O contrato de `pulados` fica byte a byte como estava.
+    skips = []
+
+    def _skip(lead, phone, regra, motivo, etapa):
+        """Monta a linha do log. NÃO toca na sessão — a gravação é uma só, no fim."""
+        # `quem_enviou` importado AQUI: o import que já existia está dentro do ramo de
+        # ENVIO do laço, e um pulo acontece antes dele — o nome seria local da função e
+        # ainda não estaria ligado. Ver app/autoria.py para o porquê de não ser
+        # `current_user.id`: no caminho agendado isto é o objeto `Depends`, não um User.
+        from app.autoria import quem_enviou
+        from app.models import DisparoSkip
+        from app.telefone import chave_telefone
+        return DisparoSkip(
+            quando=agora_sp(), telefone=phone, chave=chave_telefone(phone),
+            lead_id=lead.exact_id, nome=lead.name, template_name=template_name,
+            regra=regra, motivo=motivo, etapa=etapa,
+            origem_envio="individual" if individual else "campanha",
+            sent_by=quem_enviou(current_user))
+
     # `origem_envio` chega do Hub: 'campanha' (disparo em massa e agendado) ou 'individual'
     # (o `handleSingleSend`, um SDR escolhendo UMA pessoa e apertando enviar).
     #
@@ -411,6 +440,7 @@ async def bulk_send_template(
             regra, motivo = motivo_higiene
             pulados.append({"name": lead.name, "phone": phone, "regra": regra,
                             "etapa": None, "motivo": motivo})
+            skips.append(_skip(lead, phone, regra, motivo, None))
             print(f"⏭️  Disparo PULOU {phone} ({lead.name}) por '{regra}': {motivo} — "
                   f"template '{template_name}' não enviado")
             continue
@@ -422,6 +452,8 @@ async def bulk_send_template(
             if ativo is not None and ativo.etapa in ETAPAS_QUALIFICACAO_ATIVAS:
                 pulados.append({"name": lead.name, "phone": phone, "regra": "nat_ativa",
                                 "etapa": ativo.etapa, "motivo": MOTIVO_PULO_NAT})
+                skips.append(_skip(lead, phone, "nat_ativa", MOTIVO_PULO_NAT,
+                                   ativo.etapa))
                 print(f"⏭️  Disparo PULOU {phone} ({lead.name}): conversa ativa com a NAT "
                       f"em '{ativo.etapa}' — template '{template_name}' não enviado")
                 continue
@@ -570,6 +602,29 @@ async def bulk_send_template(
         # Delay para evitar rate limit do WhatsApp
         await asyncio.sleep(1)
 
+    # GRAVAÇÃO ÚNICA, EM SAVEPOINT, ANTES DO COMMIT DO LOTE.
+    #
+    # POR QUE NO FIM E NÃO POR LEAD: o laço acima flusha DENTRO do `try` de cada lead, de
+    # propósito (ver o comentário do `await db.flush()` lá em cima — foi o bug dos 5×500 de
+    # 28/08). Um `db.add` no meio disso põe um objeto novo na transação de FORA, que é
+    # exatamente o que aquele comentário diz que o savepoint do `_silenciar` NÃO isola.
+    #
+    # POR QUE `begin_nested` E NÃO UM `try` LARGO: o bloco emite SAVEPOINT e, na exceção,
+    # ROLLBACK TO SAVEPOINT — devolvendo a transação externa utilizável. Um `except` largo
+    # em volta de um `db.add` solto deixaria a sessão em PendingRollbackError e mataria o
+    # lote inteiro no commit seguinte.
+    #
+    # FALHA DE LOG É LOG DE FALHA: os envios que saíram, saíram. Os pulos deste lote somem
+    # do log e ninguém fica sem mensagem. Isso cobre inclusive a janela em que este código
+    # suba antes da migração — `relation "disparo_skip" does not exist` cai aqui, com aviso
+    # no stdout e disparo intacto.
+    if skips:
+        try:
+            async with db.begin_nested():
+                db.add_all(skips)
+        except Exception as e:
+            print(f"⚠️  disparo_skip NÃO gravado ({len(skips)} linha(s)): {e} — "
+                  f"o disparo segue.")
     await db.commit()
     if pulados:
         lista = ", ".join(f"{p['name']} {p['phone']} ({p.get('regra') or 'nat_ativa'})"
