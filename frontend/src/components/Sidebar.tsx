@@ -21,6 +21,7 @@ import {
   Calendar as CalendarIcon,
   Phone,
   LayoutTemplate,
+  BarChart3,
 } from 'lucide-react';
 
 const menuItems = [
@@ -35,6 +36,7 @@ const menuItems = [
   { href: '/ai-test', label: 'Teste IA', icon: FlaskConical },
   { href: '/calls', label: 'Ligações', icon: Phone },
   { href: '/agenda', label: 'Agenda', icon: CalendarIcon },
+  { href: '/relatorios', label: 'Relatórios', icon: BarChart3, adminOnly: true },
 ];
 
 export default function Sidebar() {

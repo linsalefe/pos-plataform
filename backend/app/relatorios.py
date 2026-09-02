@@ -172,6 +172,8 @@ FUNIS_VENDAS = (18537, 21007)          # Pós Graduação - Vendas · Vagas Afir
 # que governa escutar e falar.
 from app.models import ETAPAS_QUALIFICACAO_ATIVAS  # noqa: E402
 
+KIND_VIGIAR_RESPOSTA = "vigiar_resposta"   # nat_scheduled_actions.kind do vigia
+
 # MARGEM do invariante de silêncio. O p99 de resposta do agente é 14,3 min (N=206) e
 # `ATRASO_POR_TETO` é 10 min — quando o teto por hora adia uma fala, o agente legitimamente
 # demora 10 min MAIS o ciclo de 60 s do scheduler. Os 10 min do vigia `agente_mudo` são para
@@ -524,8 +526,18 @@ WHERE i.direction = 'inbound' AND i.ts <= :corte_margem
 
 SQL_SAUDE_MOTIVOS = f"""
 -- RELÓGIO: SP (transferido_em, encerrado_em).
+-- O motivo é texto livre e carrega IDENTIFICADORES: "envio recusado: 5537999965494 está em
+-- 'concluido'" e "o LLM escolheu um horário que não foi oferecido ('2026-09-01 09:00')".
+-- Sem normalizar, quatro ocorrências do MESMO motivo viram quatro linhas de n=1 e a tela
+-- mostra doze motivos onde há sete. Normaliza para AGRUPAR; o motivo cru continua no banco.
 SELECT CASE WHEN s.transferido_em IS NOT NULL THEN 'transferido' ELSE 'encerrado' END AS tipo,
-       coalesce(s.transferido_motivo, s.encerrado_motivo, '(sem motivo)') AS motivo,
+       regexp_replace(
+-- ⚠️ CHAVES DUPLICADAS nos quantificadores: esta string é f-string, e `{{10,13}}` sem
+-- escapar é lido como campo de formatação — vira `(10, 13)` e o quantificador
+-- desaparece SEM ERRO. Foi o que aconteceu na primeira escrita disto.
+         regexp_replace(coalesce(s.transferido_motivo, s.encerrado_motivo, '(sem motivo)'),
+                        '\y\d{{10,13}}\y', 'um lead', 'g'),
+         '\(''?(\d{{4}}-\d{{2}}-\d{{2}}[^'')]*|None)''?\)', '(um horário)', 'g') AS motivo,
        count(*) AS n
 FROM nat_qualificacao_state s
 WHERE coalesce(s.transferido_em, s.encerrado_em) BETWEEN :ini AND :fim
@@ -784,6 +796,10 @@ async def ia(periodo: str = PERIODO_Q, db: AsyncSession = Depends(get_db)):
 
     motivos = [dict(r._mapping) for r in (await db.execute(text(SQL_SAUDE_MOTIVOS), q)).all()]
     vigias = [dict(r._mapping) for r in (await db.execute(text(SQL_VIGIAS), q)).all()]
+    # O vigia `vigiar_resposta` DISPARAR é o sintoma de agente travado. Ele ser cancelado é
+    # o caso saudável: a conversa andou e a vigilância deixou de ser necessária.
+    vigias_disparados = sum(v["n"] for v in vigias
+                            if v["kind"] == KIND_VIGIAR_RESPOSTA and v["status"] == "executado")
     sem_resposta = sum(m["n"] for m in motivos if m["motivo"] == "sem_resposta_do_agente")
 
     def degraus(c: dict | None) -> list[dict]:
@@ -836,11 +852,21 @@ async def ia(periodo: str = PERIODO_Q, db: AsyncSession = Depends(get_db)):
                 confianca="alta",
                 definicao="Transferências ao humano e encerramentos, por motivo, no período.",
                 limitacao=None),
-        metrica("saude_vigias", "Vigias do agente",
+        metrica("saude_vigias_disparados", "Vigias que precisaram disparar",
+                vigias_disparados, n=None, relogio="SP (run_at)",
+                confianca="alta" if vigias_disparados == 0 else "media",
+                definicao="O vigia acorda quando o agente recebe uma mensagem e não "
+                          "responde. Ele disparar significa que a Nat travou e alguém "
+                          "precisou ser avisado. Zero é o número certo.",
+                limitacao=None),
+        metrica("saude_acoes", "Ações programadas do agente",
                 vigias, n=sum(v["n"] for v in vigias), relogio="SP (run_at)",
                 confianca="alta",
-                definicao="Ações programadas do agente no período, por tipo e situação — "
-                          "inclui os vigias que detectam agente parado.",
+                definicao="Tudo que o agente agendou para si no período, por tipo e "
+                          "situação: abrir conversa, lembrar da reunião, encerrar por "
+                          "inatividade, vigiar a própria resposta. 'cancelado' é o caso "
+                          "normal — a ação deixou de ser necessária porque a conversa "
+                          "andou.",
                 limitacao=None),
     ], teste)
 
