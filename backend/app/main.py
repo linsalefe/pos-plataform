@@ -267,6 +267,13 @@ async def lifespan(app: FastAPI):
     # agenda. Fila vazia custa um SELECT por minuto.
     from app.nat_scheduler import nat_scheduler_job, INTERVALO_SEGUNDOS as NAT_SCHED_S
     nat_scheduler_task = asyncio.create_task(nat_scheduler_job())
+    # Drenador da fila do RD Station (Fase 1). Sobe SEMPRE, e nasce MUDO: o gate
+    # `RD_ENVIO_ENABLED` vem `false` por padrão, então ele varre a fila, imprime que o envio
+    # está desligado e não faz uma única chamada ao RD. Subir o job junto com o código de
+    # enfileiramento é de propósito — assim a fila é observável no journald desde o primeiro
+    # minuto, antes de qualquer conversão sair.
+    from app.rd_sender import rd_sender_job, INTERVALO_SEGUNDOS as RD_SEND_S
+    rd_sender_task = asyncio.create_task(rd_sender_job())
     # Vigia da saúde de entrega (Fase 4). Sobe SEMPRE e independe da NAT e da boas-vindas
     # estarem desligadas: ele observa TODO template que sai, e a pergunta "a Meta está
     # aceitando o que mandamos?" continua valendo com as automações no chão.
@@ -302,6 +309,9 @@ async def lifespan(app: FastAPI):
     print("✅ Alertas de janela 24h agendados (a cada 5 min)")
     print("✅ Agendamento de templates ativo (checa a cada 60s)")
     print(f"✅ Agendador NAT ativo (checa a cada {NAT_SCHED_S}s)")
+    from app.rd_sender import _envio_ligado as _rd_ligado
+    print(f"✅ Fila do RD Station ativa (checa a cada {RD_SEND_S}s, "
+          f"envio {'LIGADO' if _rd_ligado() else 'DESLIGADO'})")
     print(f"✅ Alerta de saúde de entrega ativo (checa a cada {SAUDE_S // 60} min)")
     print(f"✅ Faxina de agendamento ativa (remove box nosso parado há {FAXINA_IDADE})")
     print(f"✅ Varredura de agente parado ativa (a cada 15 min, régua de "
@@ -313,6 +323,7 @@ async def lifespan(app: FastAPI):
     window_task.cancel()
     scheduled_task.cancel()
     nat_scheduler_task.cancel()
+    rd_sender_task.cancel()
     delivery_health_task.cancel()
     agente_parado_task.cancel()
     faxina_task.cancel()
