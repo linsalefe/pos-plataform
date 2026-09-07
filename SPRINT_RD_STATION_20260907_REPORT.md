@@ -372,3 +372,94 @@ O passo 5 não é mecânico. Duas coisas para olhar **antes** de `RD_ENVIO_ENABL
 Enquanto o gate estiver fechado, o estado é estável: as submissões novas continuam entrando
 como `pendente`, o drenador imprime uma linha por minuto dizendo que o envio está desligado, e
 nada sai.
+
+---
+
+# ADENDO 2 — corte do histórico já agendado (07/09/2026)
+
+Executado a pedido, com confirmação explícita depois do SELECT. É o corte na fila que o
+adendo anterior apontava como pendente: quem já tem reunião marcada não deve entrar na
+nutrição de entrada quando o gate abrir.
+
+## O predicado
+
+```sql
+UPDATE rd_conversoes r
+   SET status = 'skipped', motivo = 'historico_agendado'
+ WHERE r.status = 'pendente'
+   AND EXISTS (SELECT 1 FROM agendamentos a
+                WHERE a.passo = 'agendado'
+                  AND lower(a.email) = substring(r.chave from 7));
+```
+
+`substring(r.chave from 7)` corta o prefixo `email:`. Vale para 100% das linhas `pendente`:
+todas as 233 tinham chave `email:` e nenhuma `tel:` — as `tel:` são, por construção, sempre
+`skipped/sem_email`. O `lower()` do lado de `agendamentos` cobre a única linha da base com
+e-mail em maiúscula.
+
+## Antes e depois
+
+| status | antes | depois |
+|---|---|---|
+| `pendente` | 233 | **119** |
+| `skipped` | 18 | **132** |
+
+`UPDATE 114`, numa transação explícita com `BEGIN`/`COMMIT`. Motivos do `skipped` depois:
+`historico_agendado` 114, `sem_email` 18.
+
+Sanidade conferida após o commit: **zero** linhas `pendente` que ainda casem com o predicado,
+e **zero** linhas com status `enviado`/`falhou` ou `enviado_em` preenchido — o corte não
+enviou nada, e nada tinha sido enviado antes.
+
+Os 119 que restam, e que são o que efetivamente sairá quando `RD_ENVIO_ENABLED=true`:
+
+| `conversion_identifier` | linhas |
+|---|---|
+| formulario-pos-grupos-t2 | 39 |
+| formulario-pos-mulheridades-2 | 18 |
+| formulario-pos-tea | 17 |
+| formulario-pos-sm-trabalhador-7c1bffb18b | 11 |
+| formulario-pos-enfermagem | 9 |
+| formulario-pos-infanto-ead | 7 |
+| formulario-pos-suicidio-t3 | 5 |
+| formulario-pos-psi-na-raps-t3 | 4 |
+| formulario-pos-psicologia-escolar | 4 |
+| formulario-pos-ad-t4 | 2 |
+| formulario-pos-sm-e-dh | 1 |
+| formulario-pos-gestao-t5 | 1 |
+| formulario-pos-psicologia-clinica | 1 |
+
+## ⚠️ PARA O COMERCIAL: 2 pessoas foram cortadas de um curso que NÃO agendaram
+
+O predicado casa por **e-mail em qualquer curso**, não pelo curso da conversão. Foi a decisão
+tomada, e para 112 das 114 linhas ela é exatamente o que se queria: a pessoa agendou reunião
+para o mesmo curso da conversão.
+
+**Duas linhas são diferentes**, e ficam registradas aqui porque ninguém mais vai encontrá-las
+depois — elas agora parecem iguais às outras 112:
+
+| id | e-mail | curso da conversão cortada | curso que ela agendou | agendou em |
+|---|---|---|---|---|
+| 276 | `eli***@gmail.com` | Pos Grupos e Oficinas T2 | Pos TEA V3 | 01/09 |
+| 381 | `jac***@outlook.com` | Pos TEA V3 | Pos Grupos e Oficinas T2 | 23/08 |
+
+São pessoas que aplicaram para **duas** pós, agendaram reunião para uma e nunca para a outra.
+Elas não vão entrar na nutrição do segundo curso — aquele pelo qual demonstraram interesse e
+sobre o qual ninguém falou com elas. Se o comercial quiser trabalhá-las, o caminho é manual: a
+conversa da reunião já marcada, ou devolver as duas linhas para `pendente` com um UPDATE por
+`id`, antes de abrir o gate.
+
+Elas são recuperáveis a qualquer momento — nada foi apagado, só mudou de status:
+
+```sql
+UPDATE rd_conversoes SET status='pendente', motivo=NULL WHERE id IN (276, 381);
+```
+
+## O que isso muda no passo 5
+
+O segundo bloqueio do adendo anterior ("os 233 pendentes são histórico de até 3 semanas")
+está **resolvido**: sobraram 119, e nenhum deles tem reunião agendada. Continua de pé o
+primeiro bloqueio — o checklist dos fluxos dentro do painel do RD (leads que **vão** atender,
+e nenhum fluxo com "Enviar Leads para Integração" apontando para a Exact).
+
+O gate segue fechado. `RD_ENVIO_ENABLED` e `RD_API_KEY` continuam ausentes do `.env`.
