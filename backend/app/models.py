@@ -947,3 +947,96 @@ class DisparoSkip(Base):
     etapa = Column(String(30), nullable=True)        # só quando regra='nat_ativa'
     origem_envio = Column(String(20), nullable=False)
     sent_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+# ==========================================================================================
+# RD STATION — a fila de conversões (Fase 1, 07/09/2026)
+# ==========================================================================================
+#
+# Vocabulário espelhado no CHECK de `migrate_rd_conversoes.py`, mesma regra do ETAPAS_VALIDAS
+# e do status de `nat_scheduled_actions`: divergir daqui faz o INSERT falhar na hora, que é o
+# desfecho desejado — melhor um erro visível que uma linha com status que ninguém drena.
+RD_PENDENTE = "pendente"    # esperando o drenador. É o único estado que o job procura.
+RD_ENVIADO = "enviado"      # o RD respondeu 2xx. `enviado_em` diz quando.
+RD_SKIPPED = "skipped"      # decidimos NÃO enviar, e `motivo` diz por quê. Terminal.
+RD_FALHOU = "falhou"        # o RD recusou, ou 3 tentativas queimaram. Terminal.
+RD_STATUS = (RD_PENDENTE, RD_ENVIADO, RD_SKIPPED, RD_FALHOU)
+
+
+class RdConversao(Base):
+    """Uma conversão a entregar ao RD Station. Outbox: a decisão e o envio são separados.
+
+    ------------------------------------------------------------------------------------------
+    POR QUE OUTBOX, E NÃO UM POST DENTRO DO FLUXO
+    ------------------------------------------------------------------------------------------
+    O ponto de escrita é o meio do agendamento — entre o `db.commit()` que materializa o
+    `Agendamento` e o `BoxesAdd` que reserva o horário na agenda real de uma consultora. Uma
+    chamada HTTP ali dentro somaria a latência do RD ao tempo em que o visitante olha para um
+    botão desabilitado, e um timeout do RD apareceria para ele como falha de agendamento.
+
+    Com a fila, o fluxo só grava uma linha na MESMA transação do agendamento, e a rede é
+    problema de outro processo. É a mesma escolha de `nat_scheduled_actions`, pelo mesmo
+    motivo, e o drenador (`rd_sender.py`) é uma cópia reduzida do `nat_scheduler`.
+
+    ------------------------------------------------------------------------------------------
+    A CHAVE É A PESSOA, NÃO O AGENDAMENTO
+    ------------------------------------------------------------------------------------------
+    `UNIQUE (chave, conversion_identifier)`, e `chave` é `email:<normalizado>` ou
+    `tel:<dígitos>` — nunca `agendamento_id`.
+
+    O fluxo de duas etapas da landing page grava DUAS linhas em `agendamentos` para UMA
+    submissão: `POST /lead` cria a primeira (`lead_criado`) e `POST /agendar` cria a segunda
+    (`agendado`), com ids diferentes. Medido em 07/09: 101 dos 124 e-mails repetidos desde
+    18/08 são exatamente esse par, 107 deles em menos de 30 minutos. Uma UNIQUE por
+    `agendamento_id` aceitaria as duas, e a mesma pessoa viraria duas conversões no RD.
+
+    `agendamento_id` fica na linha, mas como REFERÊNCIA do primeiro que enfileirou — serve
+    para investigar, não para deduplicar. O segundo passo da mesma submissão bate no
+    `ON CONFLICT DO NOTHING` e não reescreve nada, então o id guardado é o do `lead_criado`.
+
+    ------------------------------------------------------------------------------------------
+    SEM FK PARA `agendamentos`
+    ------------------------------------------------------------------------------------------
+    Mesma política das tabelas `nat_*` e de `disparo_skip`: a fila tem de sobreviver ao
+    desaparecimento da linha de origem, e um backfill que enfileire por telefone pode não ter
+    `agendamento_id` nenhum. Uma FK transformaria limpeza de histórico em erro de escrita
+    numa fila que não deveria nem saber que a outra tabela existe.
+
+    ------------------------------------------------------------------------------------------
+    `run_at` E `created_at` SÃO UTC — E AQUI ISSO É EXCEÇÃO
+    ------------------------------------------------------------------------------------------
+    O resto do projeto usa naive-SP (`messages.timestamp`, `agendamentos.slot_inicio`,
+    `nat_scheduled_actions.run_at`), porque aqueles instantes são hora de parede que uma
+    pessoa lê. Este não é: `run_at` só existe para o drenador comparar com "agora", e o
+    `server_default` é `now() AT TIME ZONE 'utc'`, o mesmo de `exact_stage_events.observado_em`.
+
+    Misturar os dois relógios é o defeito que o cabeçalho de `nat_scheduler.py` documenta (SP
+    contra UTC dispara tudo 3h adiantado, em silêncio). Aqui a regra é: **tudo nesta tabela é
+    UTC**, e quem escrever `run_at` em Python escreve `datetime.utcnow()`, nunca `agora_sp()`.
+
+    `payload` é NULL nos `skipped`: não há corpo a enviar, e gravar um payload que ninguém vai
+    postar convidaria alguém a repescar a linha e mandá-la sem e-mail — que é justo o que o
+    `skipped` está dizendo para não fazer.
+    """
+
+    __tablename__ = "rd_conversoes"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # `email:<normalizado>` ou `tel:<dígitos>`. Ver rd_station.chave_de.
+    chave = Column(Text, nullable=False)
+    # A string literal do gatilho no RD. Não é derivada do nome do curso — ver rd_station.py.
+    conversion_identifier = Column(Text, nullable=False)
+    agendamento_id = Column(BigInteger, nullable=True)   # referência, não chave. Sem FK.
+    sub_source = Column(String(100), nullable=True)      # como veio, para investigar um skip
+    payload = Column(JSONB, nullable=True)               # o corpo do POST. NULL nos skipped.
+    status = Column(String(20), nullable=False, default=RD_PENDENTE)
+    # 'sem_email' | 'sem_mapa' | 'email_invalido' nos skipped; texto do erro nos falhou.
+    motivo = Column(Text, nullable=True)
+    tentativas = Column(Integer, nullable=False, default=0)
+    run_at = Column(DateTime, nullable=False,
+                    server_default=text("(now() AT TIME ZONE 'utc')"))
+    # Corpo cru da última resposta do RD, truncado. É o que responde "por que falhou".
+    resposta = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False,
+                        server_default=text("(now() AT TIME ZONE 'utc')"))
+    enviado_em = Column(DateTime, nullable=True)

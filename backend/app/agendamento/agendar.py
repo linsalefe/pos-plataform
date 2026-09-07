@@ -108,6 +108,11 @@ from app.agendamento import client, consultoras as equipe_mod, disponibilidade
 from app.agendamento import extras as extras_mod, origens
 from app.agendamento.grade import Slot
 from app.agendamento.horarios import agora_sp
+# Import no topo, ao contrário do `qualificacao_fluxo` que este módulo carrega tarde: a
+# cadeia de `rd_outbox` é `rd_station` -> httpx/json/os/re, e httpx já vem de `client.py`.
+# Não há nada aqui que puxe `whatsapp` ou o LLM, que é o que a nota de horarios.py:26-27
+# manda evitar no caminho de request da landing page.
+from app import rd_outbox
 from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_INICIADO,
                         PASSO_LEAD_CRIADO, Agendamento)
 
@@ -347,6 +352,20 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     )
     db.add(ag)
     await db.commit()
+
+    # ---- fila do RD Station ---------------------------------------------------------
+    # AQUI, e não depois: este é o primeiro instante em que `ag.id` existe, e ainda estamos
+    # ANTES de qualquer chamada à Exact — a fila não pode depender de o agendamento ter dado
+    # certo, porque o RD quer saber de quem PREENCHEU o formulário, não de quem conseguiu
+    # horário. Quem morre no BoxesAdd também é lead do fluxo de nutrição.
+    #
+    # `enfileirar` não levanta e não commita: grava dentro de um savepoint próprio e a linha
+    # viaja no commit do `_marcar` seguinte. O try/except é cinto e suspensório — se um dia
+    # alguém tirar a garantia de lá, o agendamento continua não caindo por causa da fila.
+    try:
+        await rd_outbox.enfileirar(db, ag)
+    except Exception as e:
+        print(f"❌ rd #{ag.id}: enfileirar falhou — {e}")
 
     # ---- passo 1: o lock, tentando cada consultora ----------------------------------
     # `Boxes are occupied` numa consultora NÃO significa que o horário morreu — significa
@@ -597,6 +616,13 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
     )
     db.add(ag)
     await db.commit()
+
+    # Mesma fila e mesma razão do outro caminho: quem deixou o contato sem escolher horário é
+    # exatamente o lead que o fluxo de nutrição do RD existe para trabalhar. Ver `agendar`.
+    try:
+        await rd_outbox.enfileirar(db, ag)
+    except Exception as e:
+        print(f"❌ rd #{ag.id}: enfileirar falhou — {e}")
 
     try:
         lead_id = await client.criar_lead(
