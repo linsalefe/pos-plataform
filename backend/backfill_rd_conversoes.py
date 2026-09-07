@@ -157,5 +157,10 @@ if __name__ == "__main__":
     # ser digitada por inteiro e de propósito. Sem ela, o padrão é o modo que não muda nada.
     p.add_argument("--executar", action="store_true",
                    help="grava de verdade em rd_conversoes (padrão: dry-run)")
+    # Aceito e ignorado: é o padrão. Existe para que `--dry-run` — que é como o modo está
+    # escrito no plano de deploy e é o que a mão de quem opera vai digitar — não morra num
+    # `unrecognized arguments` no meio de um procedimento de produção.
+    p.add_argument("--dry-run", action="store_true",
+                   help="explícito o que já é o padrão: não grava nada")
     args = p.parse_args()
     asyncio.run(backfill(executar=args.executar))
