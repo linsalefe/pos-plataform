@@ -246,3 +246,129 @@ com o checklist dos fluxos no RD feito.
 Enquanto isso não acontece, o efeito de subir esta branch é: `rd_conversoes` ganha linhas a
 cada submissão da LP, o drenador imprime uma linha por minuto dizendo que o envio está
 desligado, e **nenhuma conversão sai**.
+
+---
+
+# ADENDO — a sequência do CHECKPOINT foi executada (07/09/2026, 16h44 UTC)
+
+Aprovado por "go". Rodei os passos 1, 3 e 4 da sequência. **O passo 5
+(`RD_ENVIO_ENABLED=true`) NÃO foi feito** — ele depende do checklist dos fluxos dentro do RD,
+que é trabalho de quem tem acesso ao painel. **Nenhuma conversão foi enviada.**
+
+## 0. Suítes, antes do deploy
+
+Rodei a suíte nova e as quatro que tocam `agendar.py`, já que o arquivo foi alterado:
+
+| suíte | resultado |
+|---|---|
+| `test_rd_station.py` | **92 asserções, 0 falhas** |
+| `test_agendamento.py` | **33/33** — "Nenhum box criado, nenhum lead cadastrado" |
+| `test_agendamento_origem_agente.py` | verde — "Nada enviado, nada gravado, nenhuma chamada à Exact" |
+| `test_gatilho_abertura.py` | **8/8** |
+| `test_espontaneo.py` | verde — "Nada criado na Exact, nada enviado no WhatsApp" |
+
+**`test_espontaneo.py` escreve no banco real e passou a deixar rastro na fila nova.** Ele criou
+uma linha `skipped/sem_mapa` para o telefone de dublê `550000009901` (o `sub_source`
+`Espontaneo WhatsApp` não está no mapa, e não deve estar — não é uma pós da LP). Removi a linha
+com um `DELETE` pontual antes do deploy. **Fica o aviso: essa suíte agora suja `rd_conversoes`
+e a limpeza dela não sabe disso.**
+
+Foi também a primeira prova de que o hook funciona ponta a ponta contra o Postgres de verdade,
+e não só contra o dublê dos testes.
+
+## 1. Migração — aplicada
+
+`venv/bin/python migrate_rd_conversoes.py`, saída conferida: tabela criada do zero
+(`BEFORE — rd_conversoes existe: False`), 13 colunas, o CHECK e os dois índices no lugar,
+`0 linha(s)` ao final. O CHECK saiu do banco exatamente como esperado:
+
+```
+rd_conversoes_status_valido CHECK (status IN ('pendente','enviado','skipped','falhou'))
+ux_rd_conversoes_chave_ident   UNIQUE (chave, conversion_identifier)
+ix_rd_conversoes_pendente      (run_at) WHERE status = 'pendente'
+```
+
+## 2. `.env` — NÃO tocado
+
+Continua sem `RD_API_KEY` e sem `RD_ENVIO_ENABLED`, como o plano previa (passo do operador). O
+efeito é o desejado: sem a variável, o gate está fechado por padrão.
+
+## 3. Deploy — feito
+
+`main` recebeu a branch com `--no-ff` (merge `bd77f36`) e foi pushada. `systemctl restart
+cenat-backend` executado; serviço `active`, boot limpo, sem traceback. A linha nova no log:
+
+```
+✅ Fila do RD Station ativa (checa a cada 60s, envio DESLIGADO)
+```
+
+E as verificações de startup que já existiam continuam passando — inclusive
+`source 'Landing Page' (id 140648) com as 14 origens da allowlist confirmadas`.
+
+## 4. Backfill — dry-run e real, ambos executados
+
+**Dry-run** leu 384 agendamentos desde 18/08 (um a mais que os 383 do RECON: chegou submissão
+nova no intervalo), projetou 364 `pendente` + 20 `sem_email`, e avisou que após deduplicar por
+`(chave, identifier)` sobrariam ~251 linhas.
+
+**Real** (`--executar`) confirmou a projeção:
+
+| desfecho | linhas |
+|---|---|
+| `pendente` | 233 |
+| `skipped` (todos `sem_email`) | 18 |
+| `duplicado` | 133 |
+| `erro` | **0** |
+| total lido | 384 |
+
+Os 133 `duplicado` são o fluxo de duas etapas da LP funcionando como previsto: 384 agendamentos
+viraram **251 conversões**, uma por pessoa por curso. Conferido no banco: **zero pares
+`(chave, conversion_identifier)` repetidos**, e **zero linhas com status `enviado` ou `falhou`,
+zero com `enviado_em` preenchido** — nada saiu.
+
+Distribuição dos 233 pendentes, que é o que vai sair quando o gate abrir:
+
+| `conversion_identifier` | linhas |
+|---|---|
+| formulario-pos-grupos-t2 | 83 |
+| formulario-pos-tea | 28 |
+| formulario-pos-mulheridades-2 | 27 |
+| formulario-pos-enfermagem | 22 |
+| formulario-pos-sm-trabalhador-7c1bffb18b | 20 |
+| formulario-pos-infanto-ead | 14 |
+| formulario-pos-psi-na-raps-t3 | 10 |
+| formulario-pos-psicologia-escolar | 8 |
+| formulario-pos-suicidio-t3 | 8 |
+| formulario-pos-ad-t4 | 5 |
+| formulario-pos-gestao-t5 | 5 |
+| formulario-pos-psicologia-clinica | 2 |
+| formulario-pos-sm-e-dh | 1 |
+
+**Nenhum `sem_mapa`.** Todo `sub_source` que apareceu na janela está no `rd_conversoes.json` —
+o mapa cobre 100% do tráfego real. `Pos Psicologia Hospitalar` está no mapa e não aparece aqui
+porque nunca teve submissão, o que o RECON já dizia.
+
+Os 18 `sem_email` são o caminho do agente, e batem com o número do RECON (20 linhas do agente
+na janela, das quais 2 são o mesmo par `(tel:, identifier)` de uma tentativa repetida).
+
+## 5. O que falta, e o que precisa de decisão antes
+
+O passo 5 não é mecânico. Duas coisas para olhar **antes** de `RD_ENVIO_ENABLED=true`:
+
+1. **O checklist por fluxo dentro do RD**, que já estava nas observações da sprint: (a) cada
+   fluxo tem "Leads que **vão** atender" com o evento certo — SM trabalhador, RAPS e Suicídio
+   só têm "já atendem"; (b) nenhum fluxo com "Enviar Leads para Integração" apontando para a
+   Exact — Hospitalar e Suicídio ainda têm, e isso criaria lead duplicado no CRM; (c) ao
+   ativar, não incluir quem já atende.
+
+2. **Os 233 pendentes são histórico de até 3 semanas.** Parte dessas pessoas já avançou — tem
+   reunião marcada, foi para o funil de vendas, ou já comprou. Abrir o gate dispara a conversão
+   de ENTRADA para todas elas de uma vez (~5 minutos, a 50/min), e cada uma entra na nutrição
+   como lead novo. Isso é consequência conhecida do backfill, não defeito; mas é uma decisão de
+   marketing, e não minha. Se a escolha for não nutrir quem já avançou, o corte tem de ser
+   feito na fila **antes** de ligar — por exemplo marcando como `skipped` quem já está em
+   `Agendados` ou `Vendidos` na Exact. A fila existe justamente para permitir esse corte.
+
+Enquanto o gate estiver fechado, o estado é estável: as submissões novas continuam entrando
+como `pendente`, o drenador imprime uma linha por minuto dizendo que o envio está desligado, e
+nada sai.
