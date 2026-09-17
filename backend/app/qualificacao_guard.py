@@ -48,8 +48,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.telefone import variantes_wa_id
-from app.models import (ETAPAS_QUALIFICACAO_ATIVAS, Contact, Message, NatConfig,
-                        NatQualificacaoState)
+from app.models import (ETAPAS_QUALIFICACAO_ATIVAS, PASSO_AGENDADO, Agendamento, Contact,
+                        Message, NatConfig, NatQualificacaoState)
 from app.nat_guard import _agora_sp
 
 # Valores de `messages.nat_etapa` que pertencem ao AGENTE. É o que separa o teto por hora
@@ -279,3 +279,90 @@ async def guard_de_abertura(contact: Contact, db: AsyncSession) -> tuple[bool, s
         return True, "ok"
     except Exception as e:
         return bloqueia(f"erro inesperado na abertura: {type(e).__name__}: {e}")
+
+
+# ==========================================================================================
+# DISTÂNCIA MÍNIMA ATÉ A REUNIÃO PARA ABRIR A QUALIFICAÇÃO (18/09/2026)
+# ==========================================================================================
+# Elisangela (`5541996390611`, RECON_NAT_FOLLOWUPS_20260917 §4.3 / Defeito 4): reunião marcada
+# pela página para 14/09 às 10:30, e o agente abriu às 09:00 do mesmo dia perguntando a
+# formação — uma hora e meia antes de ela falar com a consultora. Mesmo no caso "certo" (T1,
+# reunião reconhecida), abrir seis perguntas a quem vai ser atendido daqui a pouco é ruído:
+# a consultora vai perguntar tudo de novo, ao vivo.
+#
+# É ABERTURA, não lembrete: o T-30 continua saindo para essa reunião (ele nasce em
+# `agendar.py:_gatilho_do_agente`, independente do estado do agente).
+MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA = 2
+MOTIVO_REUNIAO_PERTO = "reuniao_em_menos_de_2h"
+
+
+def reuniao_perto_demais(slot_inicio: datetime | None, agora: datetime) -> bool:
+    """A reunião começa nas próximas `MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA` horas?
+
+    Os dois relógios são SP naive (`agendamentos.slot_inicio` e `_agora_sp()`). Reunião que
+    JÁ começou não conta: não é "nas próximas 2h", e a abertura T1 sabe falar de reunião
+    passada tão mal quanto de reunião futura — esse caso não é deste guard.
+    """
+    if slot_inicio is None:
+        return False
+    return agora <= slot_inicio <= agora + timedelta(hours=MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA)
+
+
+# ==========================================================================================
+# GUARD DO LEMBRETE T-30 — separado da admissão, de propósito (18/09/2026)
+# ==========================================================================================
+# Até 18/09 o lembrete saía com `guard_de_abertura`, que checa `qualificacao_enabled`. A
+# pausa de 17/09 (PAUSA_QUALIFICACAO_20260917_REPORT §0) mostrou o preço: desligar o AGENTE
+# calaria o lembrete de TODA reunião — inclusive as que nunca passaram pelo agente, porque o
+# T-30 nasce em `agendar.py:_gatilho_do_agente` para qualquer `PASSO_AGENDADO`. Foi preciso
+# pausar pelo corte de data (start_at=2099) só para não perder os lembretes.
+#
+# O lembrete não é uma fala do agente: é um serviço da reunião. Então o guard dele olha só
+# o que é da reunião — ela existe, ainda não começou, e este lembrete ainda não saiu. Nem
+# chave geral, nem teto por hora (é uma mensagem por reunião, e a pessoa pediu a reunião).
+#
+# É uma FÁBRICA porque a injeção do `nat_sender` é `(contact, db)`, e o guard precisa saber
+# QUAL reunião — o contato pode ter mais de uma linha em `agendamentos`.
+JANELA_LEMBRETE_JA_ENVIADO = timedelta(hours=24)
+
+
+def guard_de_lembrete(reuniao_id: int):
+    """Guard do `lembrete_reuniao` para a reunião `reuniao_id`. Devolve `(contact, db) ->
+    (pode, motivo)`, a assinatura que `enviar_nat(guard=...)` exige.
+
+    As três condições, relidas na hora do envio (entre agendar e executar passaram dias):
+      1. a reunião existe e continua `agendado`;
+      2. ainda não começou — "sua reunião é hoje às X" depois de X é pior que silêncio;
+      3. este contato não recebeu lembrete nas últimas 24h — a reentrega do agendador, ou
+         uma reunião remarcada que deixou a linha antiga viva, não pode virar dois
+         lembretes. Duas reuniões REAIS da mesma pessoa em 24h cairiam aqui também; é o
+         lado seguro do erro.
+    """
+    async def _guard(contact: Contact, db: AsyncSession) -> tuple[bool, str]:
+        def bloqueia(motivo: str) -> tuple[bool, str]:
+            print(f"🔒 Lembrete não saiu ({getattr(contact, 'wa_id', '?')}): {motivo}")
+            return False, motivo
+
+        try:
+            reuniao = (await db.execute(select(Agendamento).where(
+                Agendamento.id == reuniao_id))).scalar_one_or_none()
+            if reuniao is None or reuniao.passo != PASSO_AGENDADO:
+                return bloqueia(f"reunião {reuniao_id} não existe ou não está mais agendada")
+            agora = _agora_sp()
+            if reuniao.slot_inicio is None or reuniao.slot_inicio <= agora:
+                return bloqueia(f"reunião {reuniao_id} já começou — sem lembrete atrasado")
+
+            vs = variantes_wa_id(getattr(contact, "wa_id", None)) or (contact.wa_id,)
+            ja = await db.execute(
+                select(func.count()).select_from(Message).where(
+                    Message.contact_wa_id.in_(vs),
+                    Message.direction == "outbound",
+                    Message.nat_etapa == ETAPA_LEMBRETE_REUNIAO,
+                    Message.timestamp >= agora - JANELA_LEMBRETE_JA_ENVIADO))
+            if int(ja.scalar() or 0) > 0:
+                return bloqueia("lembrete já enviado a este contato nas últimas 24h")
+            return True, "ok"
+        except Exception as e:
+            return bloqueia(f"erro inesperado no guard do lembrete: {type(e).__name__}: {e}")
+
+    return _guard

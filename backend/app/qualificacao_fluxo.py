@@ -1187,6 +1187,15 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
             raise AcaoAdiada(agora + ATRASO_POR_TETO, motivo)
         raise AcaoIgnorada(f"não admitido: {motivo}")
 
+    # REUNIÃO NAS PRÓXIMAS 2H → sem abertura (18/09). Lida por TELEFONE, antes de criar
+    # contato ou estado, para que a saída não deixe nada para o savepoint reverter. O
+    # lembrete T-30 dessa reunião não depende disto (ver `guard.guard_de_lembrete`).
+    perto = await reuniao_de(telefone=wa_id, lead_id=lead_id, agendamento_id=None, db=db)
+    if perto is not None and guard.reuniao_perto_demais(perto.slot_inicio, agora):
+        print(f"⏭️  Agente: {wa_id} tem reunião {perto.id} às {perto.slot_inicio:%d/%m %H:%M} "
+              f"— abertura a menos de {guard.MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA}h não sai")
+        raise AcaoIgnorada(guard.MOTIVO_REUNIAO_PERTO)
+
     contato = await _contato_ou_criar(wa_id, lead_id=lead_id, db=db)
     if contato is None:
         raise AcaoIgnorada("não foi possível resolver nem criar o contato "
@@ -1628,8 +1637,8 @@ async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession, *,
     O GUARD É `guard_de_despedida`, NÃO `guard_de_abertura`. Os dois dispensam etapa ativa,
     mas `guard_de_abertura` carrega o TETO POR HORA, e o P1-B já decidiu essa questão: o
     teto é para business-initiated (abertura), não para a resposta a quem acabou de
-    escrever. O lembrete fica com `guard_de_abertura` de propósito — ele É business-initiated
-    e sai dias depois. Esta confirmação é a última fala de um turno que o lead começou.
+    escrever. O lembrete tem guard próprio desde 18/09 (`guard_de_lembrete`: só o que é da
+    reunião). Esta confirmação é a última fala de um turno que o lead começou.
 
     RECUSA AQUI NÃO É `_fallback` — E NÃO É SILÊNCIO. Sobrou pouco que possa recusar
     (`guard_de_despedida` checa só a chave geral), e o que sobra significa "o agente está
@@ -1807,9 +1816,8 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     parametros = [nome, hora, consultora]
     corpo = await _corpo_do_template(guard.ETAPA_LEMBRETE_REUNIAO, parametros, db)
 
-    # `guard_de_abertura` e não `qualificacao_pode_atuar`: nesta altura a etapa é `concluido`,
-    # em que o agente cala de propósito. O lembrete é a exceção combinada — e continua
-    # sujeito à chave geral e ao teto por hora.
+    # Não é `qualificacao_pode_atuar`: nesta altura a etapa é `concluido`, em que o agente
+    # cala de propósito. O lembrete é a exceção combinada.
     #
     # ------------------------------------------------------------------------------------
     # S5-3 — O ENVIO TAMBÉM PRESTA CONTAS (28/08/2026)
@@ -1833,8 +1841,14 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     # SÓ QUE ADIAR TEM PRAZO. `run_at` empurrado para depois do início da reunião mandaria
     # "sua reunião é hoje às X" depois de X — é a mesma regra da pré-checagem lá em cima, e
     # por isso a decisão é a mesma: passou da hora, é `AcaoIgnorada`.
+    #
+    # 18/09: `guard_de_lembrete(reuniao.id)` no lugar de `guard_de_abertura`. O de abertura
+    # checa `qualificacao_enabled` e o teto por hora — e desligar o agente calava o lembrete
+    # de TODA reunião (PAUSA_QUALIFICACAO_20260917_REPORT §0). O guard próprio olha só a
+    # reunião: existe, não começou, lembrete ainda não saiu. O ramo `e_teto` abaixo fica
+    # por segurança, mas este guard não devolve teto.
     enviado, motivo_envio = await enviar_nat(wa_id, guard.ETAPA_LEMBRETE_REUNIAO, db,
-                                             guard=guard.guard_de_abertura,
+                                             guard=guard.guard_de_lembrete(reuniao.id),
                                              parametros=parametros, corpo_livre=corpo)
     if not enviado:
         if guard.e_teto(motivo_envio):
