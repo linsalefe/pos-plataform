@@ -305,6 +305,15 @@ async def _finalizar(db: AsyncSession, acao_id: int, status: str, agora: datetim
     """
     # `motivo` é escrito SEMPRE, inclusive como NULL: uma ação adiada pelo teto que enfim
     # executa não pode ficar carregando o motivo do adiamento anterior como se ainda valesse.
+    #
+    # Em `falhou` ele é OBRIGATÓRIO. Até 18/09 as duas chamadas de falha passavam sem
+    # motivo, e a exceção só existia no log — que o `echo=True` do engine afoga. Foi assim
+    # que o TypeError do `follow_20h` (RECON_NAT_FOLLOWUPS_20260917 §Defeito 1) produziu 60
+    # linhas `falhou` com `motivo NULL` e ficou 15 dias invisível no banco. Levantar aqui é
+    # o que impede o defeito de voltar por uma terceira chamada esquecida.
+    if status == ACAO_FALHOU and not motivo:
+        raise ValueError(f"ação {acao_id}: `falhou` exige motivo — a exceção não pode viver "
+                         "só no log")
     valores = {"status": status, "motivo": motivo}
     if attempts is not None:
         valores["attempts"] = attempts
@@ -402,7 +411,9 @@ async def _executar_acao(acao: NatScheduledAction, db: AsyncSession, agora: date
 
     handler = _resolver_handler(kind)
     if handler is None:
-        await _finalizar(db, acao_id, ACAO_FALHOU, agora)
+        await _finalizar(db, acao_id, ACAO_FALHOU, agora,
+                         motivo=f"kind {kind!r} sem handler registrado em "
+                                "MODULOS_DE_HANDLERS")
         print(f"⛔ NAT scheduler: kind {kind!r} sem handler (ação {acao_id}) → falhou. "
               f"Registre o módulo em MODULOS_DE_HANDLERS.")
         return ACAO_FALHOU
@@ -436,7 +447,8 @@ async def _executar_acao(acao: NatScheduledAction, db: AsyncSession, agora: date
     except Exception as e:
         tentativas = dados["attempts"] + 1
         if tentativas >= MAX_TENTATIVAS_ACAO:
-            await _finalizar(db, acao_id, ACAO_FALHOU, agora, attempts=tentativas)
+            await _finalizar(db, acao_id, ACAO_FALHOU, agora, attempts=tentativas,
+                             motivo=f"{type(e).__name__}: {e}"[:500])
             # `falhou` esgota as 3 tentativas e sai de circulação — é tão terminal quanto o
             # `skipped`, e deixa o lead exatamente na mesma invisibilidade. O carimbo mente
             # igual, então é desmentido igual.

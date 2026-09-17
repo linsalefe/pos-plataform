@@ -2193,8 +2193,15 @@ async def follow_20h(acao: dict, db: AsyncSession) -> None:
 
     # O caminho normal é o inbound ter REAGENDADO esta ação; isto cobre a corrida em que o
     # lead responde entre o vencimento e a execução.
+    #
+    # `_ultimo_inbound` devolve o `datetime` CRU (é `select(Message.timestamp)` +
+    # `scalar_one_or_none`), não a linha. Até 18/09 esta comparação lia `ultimo.timestamp`
+    # — que num datetime é o MÉTODO — e levantava TypeError em 100% dos leads que já tinham
+    # escrito alguma vez. MEDIDO em 17/09 (RECON_NAT_FOLLOWUPS §Defeito 1): 60 `falhou`,
+    # todos com inbound; 61 `executado`, todos SEM inbound. O follow só alcançava quem
+    # nunca respondeu — o oposto do público que rende (13,7%, ver KIND_FOLLOW_20H).
     ultimo = await _ultimo_inbound(wa_id, db)
-    if ultimo is not None and ultimo.timestamp >= agora - FOLLOW_APOS:
+    if ultimo is not None and ultimo >= agora - FOLLOW_APOS:
         raise AcaoIgnorada("o lead falou dentro da janela — não há silêncio a retomar")
 
     if await _alguem_falou_depois(wa_id, agora - FOLLOW_JANELA_HUMANO, db):
