@@ -105,11 +105,18 @@ async def _qualificacao(wa_id: str, db: AsyncSession) -> dict:
     """
     from app.qualificacao_fluxo import estado_de
 
+    from app.models import ETAPAS_QUALIFICACAO_LEGIVEIS
+
     estado = await estado_de(wa_id, db)
     if estado is None:
-        return {"qualificacao_etapa": None, "pode_assumir_conversa": False}
+        return {"qualificacao_etapa": None, "qualificacao_etapa_legivel": None,
+                "pode_assumir_conversa": False}
     return {
         "qualificacao_etapa": estado.etapa,
+        # O rótulo "Agente: …" da tela (18/09). Etapa sem nome legível mostra a crua — visível,
+        # nunca vazia.
+        "qualificacao_etapa_legivel": ETAPAS_QUALIFICACAO_LEGIVEIS.get(estado.etapa,
+                                                                        estado.etapa),
         "pode_assumir_conversa": estado.etapa in ETAPAS_QUALIFICACAO_ATIVAS,
     }
 
