@@ -736,6 +736,25 @@ ETAPAS_QUALIFICACAO_ATIVAS = frozenset({
     # Entram junto com as missões, na implementação do Bloco A.
 })
 
+# Nome que a TELA mostra para cada etapa do agente (rótulo "Agente: …" na conversa, 18/09).
+# Mora aqui, ao lado das constantes, para que uma etapa nova sem rótulo seja visível no
+# mesmo diff — e para o TSX não carregar uma segunda lista que divergiria.
+ETAPAS_QUALIFICACAO_LEGIVEIS = {
+    ETAPA_Q_AGUARDANDO_FORMACAO: "perguntando a formação",
+    ETAPA_Q_AGUARDANDO_ANO: "perguntando o ano de conclusão",
+    ETAPA_Q_AGUARDANDO_ATUACAO: "perguntando a atuação",
+    ETAPA_Q_AGUARDANDO_MOTIVACAO: "perguntando a motivação",
+    ETAPA_Q_OFERTANDO_AGENDA: "oferecendo horários",
+    ETAPA_Q_ESCOLHENDO_SLOT: "lead escolhendo horário",
+    ETAPA_Q_CONCLUIDO: "concluído (reunião marcada)",
+    ETAPA_Q_TRANSFERIDO: "transferido para humano",
+    ETAPA_Q_ENCERRADO: "encerrado",
+    ETAPA_ESP_CONFIRMANDO_INTERESSE: "espontâneo: confirmando interesse",
+    ETAPA_ESP_COLETANDO_CURSO: "espontâneo: perguntando o curso",
+    ETAPA_ESP_COLETANDO_FORMACAO: "espontâneo: perguntando a formação",
+    ETAPA_ESP_LINK_ENVIADO: "espontâneo: link enviado",
+}
+
 # De qual gatilho o lead veio. Decide de onde a formação é lida: `lp` tem os extras do
 # formulário no nosso banco; `exact` só tem o `description`, que é texto livre.
 ORIGEM_LP = "lp"

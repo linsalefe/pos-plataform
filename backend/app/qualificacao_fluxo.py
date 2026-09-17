@@ -284,6 +284,10 @@ MISSOES = {
         'fim de semana, não ofereça horário nenhum e não faça pergunta — diga que para '
         'esse horário quem combina é a consultora, avise que vai passar o contato para ela '
         'e use acao="transferir_humano". '
+        'SE ELA RECUSAR LIGAÇÃO ou disser que prefere falar por mensagem/WhatsApp e não '
+        'por telefone: NÃO ofereça vídeo, NÃO ofereça outro horário e NÃO pergunte nada. '
+        'Use acao="transferir_humano" e motivo="recusa_ligacao"; a mensagem ao lead é '
+        'escrita pelo sistema, então devolva em "mensagem" apenas "ok". '
         'Em qualquer outro caso, a ÚLTIMA FRASE da sua mensagem é o convite descrito '
         'acima: se nenhum dos 5 servir, que ela diga o dia e o período que prefere.'),
     ETAPA_Q_ESCOLHENDO_SLOT: (
@@ -296,7 +300,11 @@ MISSOES = {
         'A agenda é de SEGUNDA A SEXTA, das 09h às 18h30: se ela pedir noite, fim de '
         'semana ou um dia/horário fora da lista, não repita a lista, não invente e não '
         'faça pergunta — diga que para esse horário quem combina é a consultora, avise que '
-        'vai passar o contato para ela e use acao="transferir_humano".'),
+        'vai passar o contato para ela e use acao="transferir_humano". '
+        'SE ELA RECUSAR LIGAÇÃO ou disser que prefere mensagem/WhatsApp em vez de telefone: '
+        'NÃO ofereça vídeo, NÃO repita horários e NÃO pergunte nada. Use '
+        'acao="transferir_humano" e motivo="recusa_ligacao"; devolva em "mensagem" apenas '
+        '"ok" — o texto ao lead é do sistema.'),
 }
 
 # ==========================================================================================
@@ -560,26 +568,64 @@ async def _historico(contact_wa_id: str, db: AsyncSession) -> list:
     return saida
 
 
-async def _reuniao(estado: NatQualificacaoState, db: AsyncSession):
-    """O agendamento CONFIRMADO deste lead, ou None. Nunca inventa.
+async def reuniao_de(*, telefone: str | None, lead_id: int | None,
+                     agendamento_id: int | None, db: AsyncSession):
+    """A reunião CONFIRMADA desta pessoa, ou None. Nunca inventa.
 
-    Procura pelo `agendamento_id` quando o agente mesmo marcou; senão pelo `lead_id`, que é
-    o caso do lead que agendou sozinho no obrigado.html.
+    Três critérios, nesta ordem:
+      1. `agendamento_id` — o agente mesmo marcou; é o vínculo mais forte.
+      2. **TELEFONE tolerante** (DDD + últimos 8, `app/telefone.py`) — a pessoa agendou
+         sozinha na página, por qualquer um dos seus leads.
+      3. `lead_id` — último recurso, para reunião sem telefone legível (0 casos em 126
+         agendados desde 24/08; não custa).
+
+    ------------------------------------------------------------------------------------
+    POR QUE O TELEFONE PASSOU NA FRENTE DO `lead_id` (18/09/2026)
+    ------------------------------------------------------------------------------------
+    A Exact cria UM LEAD POR APLICAÇÃO. Quem agenda pela página (lead A, reunião com
+    `lead_id = A`) e volta ao formulário dois minutos depois nasce de novo como lead B. O
+    sync enfileira a abertura para B, e até 18/09 esta função procurava
+    `agendamentos.lead_id == B` — nada — e o agente OFERECIA AGENDA a quem já tinha reunião.
+
+    MEDIDO em 17/09 (RECON_NAT_FOLLOWUPS §4): 149 telefones com 2+ leads em 24 dias, 41
+    com reunião, e dois casos reais de oferta duplicada — Luciana Zola (leads 51861228 →
+    51861285, reunião 15/09 09:45, recebeu 5 horários na véspera) e Elisangela (51846973 →
+    51846975, reunião 14/09 10:30; o agente chegou a chamar `fluxo.agendar` e só não
+    duplicou porque a Exact devolveu 400 "Lead is discarded").
+
+    O que identifica a PESSOA é o telefone — é para ele que a mensagem sai. `lead_id`
+    identifica uma aplicação.
     """
-    if estado.agendamento_id:
-        res = await db.execute(select(Agendamento).where(
-            Agendamento.id == estado.agendamento_id))
-        achado = res.scalar_one_or_none()
+    if agendamento_id:
+        achado = (await db.execute(select(Agendamento).where(
+            Agendamento.id == agendamento_id))).scalar_one_or_none()
         if achado is not None:
             return achado
-    if not estado.exact_lead_id:
+
+    from app.telefone import formas_gravadas
+    formas = formas_gravadas(telefone)
+    if formas:
+        achado = (await db.execute(
+            select(Agendamento)
+            .where(Agendamento.telefone.in_(formas),
+                   Agendamento.passo == PASSO_AGENDADO)
+            .order_by(Agendamento.id.desc()).limit(1))).scalar_one_or_none()
+        if achado is not None:
+            return achado
+
+    if not lead_id:
         return None
-    res = await db.execute(
+    return (await db.execute(
         select(Agendamento)
-        .where(Agendamento.lead_id == estado.exact_lead_id,
+        .where(Agendamento.lead_id == lead_id,
                Agendamento.passo == PASSO_AGENDADO)
-        .order_by(Agendamento.id.desc()).limit(1))
-    return res.scalar_one_or_none()
+        .order_by(Agendamento.id.desc()).limit(1))).scalar_one_or_none()
+
+
+async def _reuniao(estado: NatQualificacaoState, db: AsyncSession):
+    """`reuniao_de` a partir do estado. Ver a docstring dela para a ordem dos critérios."""
+    return await reuniao_de(telefone=estado.contact_wa_id, lead_id=estado.exact_lead_id,
+                            agendamento_id=estado.agendamento_id, db=db)
 
 
 async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
@@ -955,8 +1001,14 @@ async def _notificar(estado: NatQualificacaoState, titulo: str, corpo: str,
         print(f"⚠️  Agente: notificação falhou ({type(e).__name__}: {e})")
 
 
-async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession) -> None:
+async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession, *,
+                    texto: str = TEXTO_FALLBACK, aviso_sdr: str | None = None) -> None:
     """LLM caiu, fugiu do contrato, ou pediu o impossível. Encerra o agente para o contato.
+
+    `texto` é a despedida ao lead (padrão `TEXTO_FALLBACK`); `aviso_sdr` substitui o corpo
+    da notificação. Os dois existem para o ramo de recusa de ligação (18/09), em que a
+    transferência é DESEJADA e não uma falha — e o SDR precisa ler "ele quer mensagem", não
+    "Motivo: recusa_ligacao".
 
     A ORDEM IMPORTA: muda a etapa ANTES de enviar. `transferido_humano` está fora de
     ETAPAS_QUALIFICACAO_ATIVAS, então a partir daqui o agente nem escuta nem fala — e é
@@ -983,12 +1035,12 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession)
     # abaixo acorda. Então o aviso vai NA notificação, não só no `🔒` do log.
     saiu, motivo_envio = await enviar_nat(estado.contact_wa_id, guard.ETAPA_CONVERSA, db,
                                           guard=guard.guard_de_despedida,
-                                          corpo_livre=TEXTO_FALLBACK)
+                                          corpo_livre=texto)
     aviso = ("" if saiu else
              f" ⚠️ A despedida NÃO saiu ({motivo_envio}) — o lead não foi avisado de que "
              f"alguém assumiria.")
     await _notificar(estado, "Agente passou um lead para você",
-                     f"Motivo: {motivo}.{aviso}", db)
+                     f"{aviso_sdr or f'Motivo: {motivo}.'}{aviso}", db)
 
 
 # ==========================================================================================
@@ -1148,6 +1200,15 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
         if guard.e_teto(motivo):
             raise AcaoAdiada(agora + ATRASO_POR_TETO, motivo)
         raise AcaoIgnorada(f"não admitido: {motivo}")
+
+    # REUNIÃO NAS PRÓXIMAS 2H → sem abertura (18/09). Lida por TELEFONE, antes de criar
+    # contato ou estado, para que a saída não deixe nada para o savepoint reverter. O
+    # lembrete T-30 dessa reunião não depende disto (ver `guard.guard_de_lembrete`).
+    perto = await reuniao_de(telefone=wa_id, lead_id=lead_id, agendamento_id=None, db=db)
+    if perto is not None and guard.reuniao_perto_demais(perto.slot_inicio, agora):
+        print(f"⏭️  Agente: {wa_id} tem reunião {perto.id} às {perto.slot_inicio:%d/%m %H:%M} "
+              f"— abertura a menos de {guard.MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA}h não sai")
+        raise AcaoIgnorada(guard.MOTIVO_REUNIAO_PERTO)
 
     contato = await _contato_ou_criar(wa_id, lead_id=lead_id, db=db)
     if contato is None:
@@ -1311,6 +1372,15 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
         return True
 
     if resposta["acao"] == "transferir_humano":
+        if resposta.get("motivo") == llm.MOTIVO_RECUSA_LIGACAO:
+            # RAMO DETERMINÍSTICO (18/09): o modelo só marca; o texto e o motivo gravado
+            # são do código. Ver `nat_copy.TEXTO_RECUSA_LIGACAO` e o §3 do recon.
+            from app import nat_copy
+            await _fallback(estado, llm.MOTIVO_RECUSA_LIGACAO, db,
+                            texto=nat_copy.TEXTO_RECUSA_LIGACAO,
+                            aviso_sdr="O lead não quer ligação — quer seguir por mensagem. "
+                                      "Chame por aqui.")
+            return True
         await _fallback(estado, "o LLM pediu transferência (lead quer falar com uma pessoa, "
                                 "remarcar, ou saiu do roteiro)", db)
         return True
@@ -1424,6 +1494,19 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
         print(f"↩️  Agente: slot {slot_id} não está mais livre; reofertando")
         estado.etapa = ETAPA_Q_OFERTANDO_AGENDA
         await _ofertar_agenda(estado, db)
+        return
+
+    # SEGUNDA GUARDA DE "JÁ TEM REUNIÃO" (18/09/2026). A primeira está em `_avancar`, antes
+    # de ofertar. Entre a oferta e a escolha passam minutos — ou um dia, se o follow
+    # retomou —, e nesse intervalo a pessoa pode ter marcado sozinha pela página. Marcar de
+    # novo aqui criaria a segunda reunião com a nossa própria mão. Custa um SELECT, e é o
+    # mesmo desfecho de `_avancar`: confirmar a que existe, não abrir outra.
+    existente = await _reuniao(estado, db)
+    if existente is not None:
+        print(f"↩️  Agente: {estado.contact_wa_id} já tem reunião {existente.id} "
+              f"({existente.slot_inicio:%d/%m %H:%M}) — não marca outra; confirma a existente")
+        estado.agendamento_id = existente.id
+        await _concluir(estado, existente, db, confirmar=True)
         return
 
     contato = await _contato_de(estado.contact_wa_id, db)
@@ -1577,8 +1660,8 @@ async def _concluir(estado: NatQualificacaoState, reuniao, db: AsyncSession, *,
     O GUARD É `guard_de_despedida`, NÃO `guard_de_abertura`. Os dois dispensam etapa ativa,
     mas `guard_de_abertura` carrega o TETO POR HORA, e o P1-B já decidiu essa questão: o
     teto é para business-initiated (abertura), não para a resposta a quem acabou de
-    escrever. O lembrete fica com `guard_de_abertura` de propósito — ele É business-initiated
-    e sai dias depois. Esta confirmação é a última fala de um turno que o lead começou.
+    escrever. O lembrete tem guard próprio desde 18/09 (`guard_de_lembrete`: só o que é da
+    reunião). Esta confirmação é a última fala de um turno que o lead começou.
 
     RECUSA AQUI NÃO É `_fallback` — E NÃO É SILÊNCIO. Sobrou pouco que possa recusar
     (`guard_de_despedida` checa só a chave geral), e o que sobra significa "o agente está
@@ -1751,14 +1834,28 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
         raise AcaoIgnorada(f"reunião {reuniao_id} sem consultora resolvível "
                            f"(sales_rep_email={reuniao.sales_rep_email!r})")
 
+    # O CONTATO PODE NÃO EXISTIR (18/09). O T-30 nasce para TODO agendamento da página
+    # (`agendar.py:_gatilho_do_agente`), mas `contacts` só nascia na abertura do agente ou
+    # na boas-vindas — e com o agente pausado, ninguém o criava. MEDIDO em 17/09 16:45:
+    # ação 2509 (Vera Lima, reunião 528) `skipped: contato não existe no banco`; a pessoa
+    # tinha reunião marcada e não recebeu o lembrete. Mesmo caminho da abertura
+    # (`_contato_ou_criar`: `ai_active=False`, canal da config, dono pelo SDR do lead), e a
+    # mesma regra S5-2: se o contato existe na OUTRA grafia, o envio segue nela.
+    contato = await _contato_ou_criar(wa_id, lead_id=reuniao.lead_id, db=db)
+    if contato is None:
+        raise AcaoIgnorada("não foi possível resolver nem criar o contato "
+                           "(sem canal configurado?)")
+    if contato.wa_id != wa_id:
+        print(f"🔤 Lembrete: {wa_id} já existe como {contato.wa_id} — envio segue nessa grafia")
+        wa_id = contato.wa_id
+
     nome = primeiro_nome(reuniao.nome or "")
     hora = reuniao.slot_inicio.strftime("%H:%M")
     parametros = [nome, hora, consultora]
     corpo = await _corpo_do_template(guard.ETAPA_LEMBRETE_REUNIAO, parametros, db)
 
-    # `guard_de_abertura` e não `qualificacao_pode_atuar`: nesta altura a etapa é `concluido`,
-    # em que o agente cala de propósito. O lembrete é a exceção combinada — e continua
-    # sujeito à chave geral e ao teto por hora.
+    # Não é `qualificacao_pode_atuar`: nesta altura a etapa é `concluido`, em que o agente
+    # cala de propósito. O lembrete é a exceção combinada.
     #
     # ------------------------------------------------------------------------------------
     # S5-3 — O ENVIO TAMBÉM PRESTA CONTAS (28/08/2026)
@@ -1782,8 +1879,14 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     # SÓ QUE ADIAR TEM PRAZO. `run_at` empurrado para depois do início da reunião mandaria
     # "sua reunião é hoje às X" depois de X — é a mesma regra da pré-checagem lá em cima, e
     # por isso a decisão é a mesma: passou da hora, é `AcaoIgnorada`.
+    #
+    # 18/09: `guard_de_lembrete(reuniao.id)` no lugar de `guard_de_abertura`. O de abertura
+    # checa `qualificacao_enabled` e o teto por hora — e desligar o agente calava o lembrete
+    # de TODA reunião (PAUSA_QUALIFICACAO_20260917_REPORT §0). O guard próprio olha só a
+    # reunião: existe, não começou, lembrete ainda não saiu. O ramo `e_teto` abaixo fica
+    # por segurança, mas este guard não devolve teto.
     enviado, motivo_envio = await enviar_nat(wa_id, guard.ETAPA_LEMBRETE_REUNIAO, db,
-                                             guard=guard.guard_de_abertura,
+                                             guard=guard.guard_de_lembrete(reuniao.id),
                                              parametros=parametros, corpo_livre=corpo)
     if not enviado:
         if guard.e_teto(motivo_envio):
@@ -2193,8 +2296,15 @@ async def follow_20h(acao: dict, db: AsyncSession) -> None:
 
     # O caminho normal é o inbound ter REAGENDADO esta ação; isto cobre a corrida em que o
     # lead responde entre o vencimento e a execução.
+    #
+    # `_ultimo_inbound` devolve o `datetime` CRU (é `select(Message.timestamp)` +
+    # `scalar_one_or_none`), não a linha. Até 18/09 esta comparação lia `ultimo.timestamp`
+    # — que num datetime é o MÉTODO — e levantava TypeError em 100% dos leads que já tinham
+    # escrito alguma vez. MEDIDO em 17/09 (RECON_NAT_FOLLOWUPS §Defeito 1): 60 `falhou`,
+    # todos com inbound; 61 `executado`, todos SEM inbound. O follow só alcançava quem
+    # nunca respondeu — o oposto do público que rende (13,7%, ver KIND_FOLLOW_20H).
     ultimo = await _ultimo_inbound(wa_id, db)
-    if ultimo is not None and ultimo.timestamp >= agora - FOLLOW_APOS:
+    if ultimo is not None and ultimo >= agora - FOLLOW_APOS:
         raise AcaoIgnorada("o lead falou dentro da janela — não há silêncio a retomar")
 
     if await _alguem_falou_depois(wa_id, agora - FOLLOW_JANELA_HUMANO, db):

@@ -87,6 +87,14 @@ MAX_TOKENS = 1000
 
 ACOES_VALIDAS = frozenset({"nenhuma", "ofertar_agenda", "agendar_slot", "transferir_humano"})
 
+# `motivo` da transferência, quando a MISSÃO pede um marcador. Fechado de propósito: um
+# valor fora daqui é normalizado para None (transferência comum), nunca gravado cru — o
+# campo vai para `transferido_motivo`, que relatórios agrupam. Hoje só existe um, o ramo
+# determinístico de recusa de ligação (18/09); o dia em que houver outro, entra aqui e na
+# missão que o pede, nada mais.
+MOTIVOS_TRANSFERENCIA_VALIDOS = frozenset({"recusa_ligacao"})
+MOTIVO_RECUSA_LIGACAO = "recusa_ligacao"
+
 # `ofertar_agenda` É ACEITA, MAS NÃO EXISTE PARA O FLUXO — e as duas metades são de propósito.
 #
 # `qualificacao_fluxo.processar_texto` nunca teve ramo para ela: quem oferece a agenda é o
@@ -169,7 +177,8 @@ RESPONDA SOMENTE COM UM OBJETO JSON, sem markdown, exatamente com estas chaves:
 {{"mensagem": "o que enviar à pessoa, em texto puro",
   "etapa_cumprida": true ou false,
   "dado_extraido": {{"campo": "valor"}} ou null,
-  "acao": "nenhuma" | "agendar_slot" | "transferir_humano"}}
+  "acao": "nenhuma" | "agendar_slot" | "transferir_humano",
+  "motivo": null, salvo quando a missão mandar um marcador específico}}
 
 Regras do JSON:
 - "etapa_cumprida" é true SÓ quando a pessoa respondeu de fato o que a missão pedia. \
@@ -177,7 +186,8 @@ Desconversou, perguntou outra coisa, ou respondeu outra coisa? false, e a sua "m
 acolhe o que ela disse e retoma a pergunta.
 - "dado_extraido" traz o que você entendeu da resposta DELA, com o nome de campo que a \
 missão indicar. Nada inferido: só o que ela disse.
-- "acao" é "nenhuma" salvo instrução em contrário na missão."""
+- "acao" é "nenhuma" salvo instrução em contrário na missão.
+- "motivo" é null salvo quando a missão mandar um marcador; nunca invente um."""
 
 
 def _validar(bruto) -> dict | None:
@@ -226,11 +236,20 @@ def _validar(bruto) -> dict | None:
         extraido = {str(k): str(v) for k, v in extraido.items()
                     if v is not None and not isinstance(v, (dict, list))}
 
+    motivo_transf = dados.get("motivo")
+    if motivo_transf is not None and (acao != "transferir_humano"
+                                      or motivo_transf not in MOTIVOS_TRANSFERENCIA_VALIDOS):
+        # Marcador sem transferência, ou fora do enum: não é contrato quebrado (a missão
+        # que o pediu é uma; o modelo pode devolvê-lo onde não cabe). Vira None com log.
+        log.info("🏷️  LLM devolveu motivo=%r com acao=%r — ignorado", motivo_transf, acao)
+        motivo_transf = None
+
     return {
         "mensagem": mensagem.strip(),
         "etapa_cumprida": dados["etapa_cumprida"],
         "dado_extraido": extraido or None,
         "acao": acao,
+        "motivo": motivo_transf,
     }, ""
 
 

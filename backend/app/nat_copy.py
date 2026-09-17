@@ -201,3 +201,23 @@ def texto_livre(chave: str, *, nome: str = "", curso: str = "", formacao: str = 
         return None
     return _preencher(corpo, parametros_template(
         chave, nome=nome, curso=curso, formacao=formacao) or [])
+
+
+# ==========================================================================================
+# AGENTE DE QUALIFICAÇÃO — texto FIXO da recusa de ligação (18/09/2026)
+# ==========================================================================================
+# Míriam, 01/09 15:30 (RECON_NAT_FOLLOWUPS_20260917 §3): ao "Não quero ligação" o LLM
+# improvisou "Quer agendar por vídeo ou prefere que eu passe o contato da consultora para
+# falar por mensagem?" — uma opção que não existe no fluxo, em forma de pergunta, contra
+# duas regras do próprio prompt. A missão de `ofertando_agenda` não tinha ramo para recusa
+# de canal, e o modelo escolheu sozinho.
+#
+# Agora o ramo existe e o texto é ESTE, não do modelo: a promessa ("vou pedir para uma
+# consultora te chamar por mensagem") tem de ser uma que o sistema cumpre — a transferência
+# notifica o SDR, e é o SDR quem escreve. Sem "vídeo", sem novo horário, sem pergunta:
+# é despedida (`acao=transferir_humano`), e pergunta em despedida fica sem resposta.
+#
+# Quando a Isa decidir outro comportamento (produto, item 1 do recon), é aqui e na missão.
+TEXTO_RECUSA_LIGACAO = ("Entendi, sem ligação então. 🙂 Vou pedir para uma consultora te "
+                        "chamar por aqui, por mensagem, para combinar o melhor jeito de "
+                        "seguir. Em breve ela fala com você.")

@@ -106,6 +106,9 @@ interface NatEstado {
   // Replicar a lista de etapas aqui daria dois lugares para ela divergir — e o lado que
   // diverge é o que decide se o SDR consegue calar o robô.
   qualificacao_etapa: string | null;
+  // Nome legível da etapa, vindo do backend (models.ETAPAS_QUALIFICACAO_LEGIVEIS) — a tela
+  // não carrega a lista de etapas, só exibe.
+  qualificacao_etapa_legivel: string | null;
   pode_assumir_conversa: boolean;
 }
 
@@ -1595,11 +1598,16 @@ export default function ConversationsPage() {
                         >
                           <div className="flex items-center gap-2">
                             <span className="text-[16px]">{selectedContact.ai_active ? "🤖" : "👤"}</span>
-                            <span className={`text-[13px] font-medium ${
-                              selectedContact.ai_active ? "text-emerald-700" : "text-gray-500"
-                            }`}>
-                              {selectedContact.ai_active ? "IA Ativa" : "IA Desligada"}
-                            </span>
+                            {/* 18/09: "IA Ativa/Desligada" descrevia um motor comentado
+                                (main.py:737) e confundia a operação — 299 dos 312 contatos
+                                do agente estavam "desligados" (RECON_NAT_FOLLOWUPS §2).
+                                Com estado do agente, o rótulo é a etapa dele; sem estado,
+                                não há rótulo. O toggle e `ai_active` seguem iguais. */}
+                            {natEstado?.qualificacao_etapa_legivel && (
+                              <span className="text-[13px] font-medium text-gray-700">
+                                Agente: {natEstado.qualificacao_etapa_legivel}
+                              </span>
+                            )}
                           </div>
                           <div className={`w-10 h-5 rounded-full transition-all ${selectedContact.ai_active ? "bg-emerald-500" : "bg-gray-300"} relative`}>
                             <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${selectedContact.ai_active ? "left-5" : "left-0.5"}`} />
