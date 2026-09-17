@@ -111,3 +111,26 @@ def chave_telefone(bruto: str | None) -> str:
     if d.startswith("55") and len(d) in (12, 13):
         d = d[2:]
     return d[:2] + d[-8:] if len(d) in (10, 11) else ""
+
+
+def formas_gravadas(bruto: str | None) -> tuple[str, ...]:
+    """Todas as grafias em que este número pode estar GRAVADO numa coluna que não
+    normaliza o DDI — `agendamentos.telefone`, por exemplo, que a landing page grava como
+    o visitante digitou: 11 dígitos sem 55 na maioria (68% das linhas em 17/09), 13 com 55
+    em 3%, 10 dígitos em 1%.
+
+    É `variantes_wa_id` (com e sem o 9º dígito, sempre com DDI) mais a forma SEM DDI de
+    cada uma. Para um `IN (...)`, o que dispensa expressão SQL sobre a coluna e mantém a
+    regra do 9º dígito num lugar só.
+
+        formas_gravadas("5541996390611") -> ("5541996390611", "41996390611",
+                                             "554196390611",  "4196390611")
+
+    Vazio para o que `variantes_wa_id` não sabe ler — e vazio NUNCA casa.
+    """
+    formas: list[str] = []
+    for v in variantes_wa_id(bruto):
+        formas.append(v)
+        if v.startswith("55") and len(v) in (12, 13):
+            formas.append(v[2:])
+    return tuple(dict.fromkeys(formas))

@@ -560,26 +560,64 @@ async def _historico(contact_wa_id: str, db: AsyncSession) -> list:
     return saida
 
 
-async def _reuniao(estado: NatQualificacaoState, db: AsyncSession):
-    """O agendamento CONFIRMADO deste lead, ou None. Nunca inventa.
+async def reuniao_de(*, telefone: str | None, lead_id: int | None,
+                     agendamento_id: int | None, db: AsyncSession):
+    """A reunião CONFIRMADA desta pessoa, ou None. Nunca inventa.
 
-    Procura pelo `agendamento_id` quando o agente mesmo marcou; senão pelo `lead_id`, que é
-    o caso do lead que agendou sozinho no obrigado.html.
+    Três critérios, nesta ordem:
+      1. `agendamento_id` — o agente mesmo marcou; é o vínculo mais forte.
+      2. **TELEFONE tolerante** (DDD + últimos 8, `app/telefone.py`) — a pessoa agendou
+         sozinha na página, por qualquer um dos seus leads.
+      3. `lead_id` — último recurso, para reunião sem telefone legível (0 casos em 126
+         agendados desde 24/08; não custa).
+
+    ------------------------------------------------------------------------------------
+    POR QUE O TELEFONE PASSOU NA FRENTE DO `lead_id` (18/09/2026)
+    ------------------------------------------------------------------------------------
+    A Exact cria UM LEAD POR APLICAÇÃO. Quem agenda pela página (lead A, reunião com
+    `lead_id = A`) e volta ao formulário dois minutos depois nasce de novo como lead B. O
+    sync enfileira a abertura para B, e até 18/09 esta função procurava
+    `agendamentos.lead_id == B` — nada — e o agente OFERECIA AGENDA a quem já tinha reunião.
+
+    MEDIDO em 17/09 (RECON_NAT_FOLLOWUPS §4): 149 telefones com 2+ leads em 24 dias, 41
+    com reunião, e dois casos reais de oferta duplicada — Luciana Zola (leads 51861228 →
+    51861285, reunião 15/09 09:45, recebeu 5 horários na véspera) e Elisangela (51846973 →
+    51846975, reunião 14/09 10:30; o agente chegou a chamar `fluxo.agendar` e só não
+    duplicou porque a Exact devolveu 400 "Lead is discarded").
+
+    O que identifica a PESSOA é o telefone — é para ele que a mensagem sai. `lead_id`
+    identifica uma aplicação.
     """
-    if estado.agendamento_id:
-        res = await db.execute(select(Agendamento).where(
-            Agendamento.id == estado.agendamento_id))
-        achado = res.scalar_one_or_none()
+    if agendamento_id:
+        achado = (await db.execute(select(Agendamento).where(
+            Agendamento.id == agendamento_id))).scalar_one_or_none()
         if achado is not None:
             return achado
-    if not estado.exact_lead_id:
+
+    from app.telefone import formas_gravadas
+    formas = formas_gravadas(telefone)
+    if formas:
+        achado = (await db.execute(
+            select(Agendamento)
+            .where(Agendamento.telefone.in_(formas),
+                   Agendamento.passo == PASSO_AGENDADO)
+            .order_by(Agendamento.id.desc()).limit(1))).scalar_one_or_none()
+        if achado is not None:
+            return achado
+
+    if not lead_id:
         return None
-    res = await db.execute(
+    return (await db.execute(
         select(Agendamento)
-        .where(Agendamento.lead_id == estado.exact_lead_id,
+        .where(Agendamento.lead_id == lead_id,
                Agendamento.passo == PASSO_AGENDADO)
-        .order_by(Agendamento.id.desc()).limit(1))
-    return res.scalar_one_or_none()
+        .order_by(Agendamento.id.desc()).limit(1))).scalar_one_or_none()
+
+
+async def _reuniao(estado: NatQualificacaoState, db: AsyncSession):
+    """`reuniao_de` a partir do estado. Ver a docstring dela para a ordem dos critérios."""
+    return await reuniao_de(telefone=estado.contact_wa_id, lead_id=estado.exact_lead_id,
+                            agendamento_id=estado.agendamento_id, db=db)
 
 
 async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
@@ -1424,6 +1462,19 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
         print(f"↩️  Agente: slot {slot_id} não está mais livre; reofertando")
         estado.etapa = ETAPA_Q_OFERTANDO_AGENDA
         await _ofertar_agenda(estado, db)
+        return
+
+    # SEGUNDA GUARDA DE "JÁ TEM REUNIÃO" (18/09/2026). A primeira está em `_avancar`, antes
+    # de ofertar. Entre a oferta e a escolha passam minutos — ou um dia, se o follow
+    # retomou —, e nesse intervalo a pessoa pode ter marcado sozinha pela página. Marcar de
+    # novo aqui criaria a segunda reunião com a nossa própria mão. Custa um SELECT, e é o
+    # mesmo desfecho de `_avancar`: confirmar a que existe, não abrir outra.
+    existente = await _reuniao(estado, db)
+    if existente is not None:
+        print(f"↩️  Agente: {estado.contact_wa_id} já tem reunião {existente.id} "
+              f"({existente.slot_inicio:%d/%m %H:%M}) — não marca outra; confirma a existente")
+        estado.agendamento_id = existente.id
+        await _concluir(estado, existente, db, confirmar=True)
         return
 
     contato = await _contato_de(estado.contact_wa_id, db)
