@@ -264,6 +264,47 @@ checa("lembrete já enviado nas últimas 24h: não", pode, False)
 
 
 # ==========================================================================================
+print("\n6b) lembrete_reuniao cria o contato quando falta (Vera Lima, ação 2509)")
+
+def lembra(contato_existente):
+    """Roda o handler do lembrete. Devolve (envio mockado, criador mockado, motivo do skip)."""
+    db = _db()
+    r = reuniao(id=528, lead_id=51891289, telefone="51999333063", em=AGORA + timedelta(minutes=30))
+    db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=r)))
+    criado = Contact(wa_id="5551999333063", name="Vera Lima", channel_id=1)
+    criar = AsyncMock(return_value=contato_existente if contato_existente is not ... else criado)
+    envio = AsyncMock(return_value=(True, "ok"))
+    acao = {"contact_wa_id": "5551999333063", "payload": '{"agendamento_id": 528}'}
+    equipe = SimpleNamespace(nome_de=lambda e: "Victória")
+    with patch.dict("sys.modules", {"app.agendamento": SimpleNamespace(consultoras=equipe),
+                                    "app.agendamento.consultoras": equipe}), \
+         patch.object(fluxo, "_agora_sp", new=MagicMock(return_value=AGORA)), \
+         patch.object(fluxo, "_contato_ou_criar", new=criar), \
+         patch.object(fluxo, "_corpo_do_template", new=AsyncMock(return_value="Lembrete")), \
+         patch.object(fluxo, "enviar_nat", new=envio):
+        try:
+            with redirect_stdout(io.StringIO()):
+                asyncio.run(fluxo.lembrete_reuniao(acao, db))
+            return envio, criar, None
+        except sched.AcaoIgnorada as e:
+            return envio, criar, e.motivo
+
+envio, criar, motivo = lembra(contato_existente=...)
+checa("contato ausente: o handler pede para criar, com o lead da reunião",
+      criar.await_args.kwargs.get("lead_id"), 51891289)
+checa("  e o lembrete SAI (era 'contato não existe no banco')", envio.await_count, 1)
+checa("  para a grafia do contato criado", envio.await_args.args[0], "5551999333063")
+
+envio, criar, motivo = lembra(contato_existente=Contact(wa_id="555199333063", name="Vera", channel_id=1))
+checa("contato na OUTRA grafia: o envio segue nela (regra S5-2)",
+      envio.await_args.args[0], "555199333063")
+
+envio, criar, motivo = lembra(contato_existente=None)
+checa("sem canal para criar: skipped com motivo, sem envio", envio.await_count, 0)
+checa("  e o motivo diz o quê", "criar o contato" in (motivo or ""), True)
+
+
+# ==========================================================================================
 print("\n7) recusa de ligação → transferência determinística, texto fixo, sem vídeo")
 
 validado, motivo = llm._validar('{"mensagem": "ok", "etapa_cumprida": false, '

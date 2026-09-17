@@ -1834,6 +1834,21 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
         raise AcaoIgnorada(f"reunião {reuniao_id} sem consultora resolvível "
                            f"(sales_rep_email={reuniao.sales_rep_email!r})")
 
+    # O CONTATO PODE NÃO EXISTIR (18/09). O T-30 nasce para TODO agendamento da página
+    # (`agendar.py:_gatilho_do_agente`), mas `contacts` só nascia na abertura do agente ou
+    # na boas-vindas — e com o agente pausado, ninguém o criava. MEDIDO em 17/09 16:45:
+    # ação 2509 (Vera Lima, reunião 528) `skipped: contato não existe no banco`; a pessoa
+    # tinha reunião marcada e não recebeu o lembrete. Mesmo caminho da abertura
+    # (`_contato_ou_criar`: `ai_active=False`, canal da config, dono pelo SDR do lead), e a
+    # mesma regra S5-2: se o contato existe na OUTRA grafia, o envio segue nela.
+    contato = await _contato_ou_criar(wa_id, lead_id=reuniao.lead_id, db=db)
+    if contato is None:
+        raise AcaoIgnorada("não foi possível resolver nem criar o contato "
+                           "(sem canal configurado?)")
+    if contato.wa_id != wa_id:
+        print(f"🔤 Lembrete: {wa_id} já existe como {contato.wa_id} — envio segue nessa grafia")
+        wa_id = contato.wa_id
+
     nome = primeiro_nome(reuniao.nome or "")
     hora = reuniao.slot_inicio.strftime("%H:%M")
     parametros = [nome, hora, consultora]
