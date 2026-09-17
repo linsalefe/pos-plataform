@@ -284,6 +284,10 @@ MISSOES = {
         'fim de semana, não ofereça horário nenhum e não faça pergunta — diga que para '
         'esse horário quem combina é a consultora, avise que vai passar o contato para ela '
         'e use acao="transferir_humano". '
+        'SE ELA RECUSAR LIGAÇÃO ou disser que prefere falar por mensagem/WhatsApp e não '
+        'por telefone: NÃO ofereça vídeo, NÃO ofereça outro horário e NÃO pergunte nada. '
+        'Use acao="transferir_humano" e motivo="recusa_ligacao"; a mensagem ao lead é '
+        'escrita pelo sistema, então devolva em "mensagem" apenas "ok". '
         'Em qualquer outro caso, a ÚLTIMA FRASE da sua mensagem é o convite descrito '
         'acima: se nenhum dos 5 servir, que ela diga o dia e o período que prefere.'),
     ETAPA_Q_ESCOLHENDO_SLOT: (
@@ -296,7 +300,11 @@ MISSOES = {
         'A agenda é de SEGUNDA A SEXTA, das 09h às 18h30: se ela pedir noite, fim de '
         'semana ou um dia/horário fora da lista, não repita a lista, não invente e não '
         'faça pergunta — diga que para esse horário quem combina é a consultora, avise que '
-        'vai passar o contato para ela e use acao="transferir_humano".'),
+        'vai passar o contato para ela e use acao="transferir_humano". '
+        'SE ELA RECUSAR LIGAÇÃO ou disser que prefere mensagem/WhatsApp em vez de telefone: '
+        'NÃO ofereça vídeo, NÃO repita horários e NÃO pergunte nada. Use '
+        'acao="transferir_humano" e motivo="recusa_ligacao"; devolva em "mensagem" apenas '
+        '"ok" — o texto ao lead é do sistema.'),
 }
 
 # ==========================================================================================
@@ -993,8 +1001,14 @@ async def _notificar(estado: NatQualificacaoState, titulo: str, corpo: str,
         print(f"⚠️  Agente: notificação falhou ({type(e).__name__}: {e})")
 
 
-async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession) -> None:
+async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession, *,
+                    texto: str = TEXTO_FALLBACK, aviso_sdr: str | None = None) -> None:
     """LLM caiu, fugiu do contrato, ou pediu o impossível. Encerra o agente para o contato.
+
+    `texto` é a despedida ao lead (padrão `TEXTO_FALLBACK`); `aviso_sdr` substitui o corpo
+    da notificação. Os dois existem para o ramo de recusa de ligação (18/09), em que a
+    transferência é DESEJADA e não uma falha — e o SDR precisa ler "ele quer mensagem", não
+    "Motivo: recusa_ligacao".
 
     A ORDEM IMPORTA: muda a etapa ANTES de enviar. `transferido_humano` está fora de
     ETAPAS_QUALIFICACAO_ATIVAS, então a partir daqui o agente nem escuta nem fala — e é
@@ -1021,12 +1035,12 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession)
     # abaixo acorda. Então o aviso vai NA notificação, não só no `🔒` do log.
     saiu, motivo_envio = await enviar_nat(estado.contact_wa_id, guard.ETAPA_CONVERSA, db,
                                           guard=guard.guard_de_despedida,
-                                          corpo_livre=TEXTO_FALLBACK)
+                                          corpo_livre=texto)
     aviso = ("" if saiu else
              f" ⚠️ A despedida NÃO saiu ({motivo_envio}) — o lead não foi avisado de que "
              f"alguém assumiria.")
     await _notificar(estado, "Agente passou um lead para você",
-                     f"Motivo: {motivo}.{aviso}", db)
+                     f"{aviso_sdr or f'Motivo: {motivo}.'}{aviso}", db)
 
 
 # ==========================================================================================
@@ -1358,6 +1372,15 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
         return True
 
     if resposta["acao"] == "transferir_humano":
+        if resposta.get("motivo") == llm.MOTIVO_RECUSA_LIGACAO:
+            # RAMO DETERMINÍSTICO (18/09): o modelo só marca; o texto e o motivo gravado
+            # são do código. Ver `nat_copy.TEXTO_RECUSA_LIGACAO` e o §3 do recon.
+            from app import nat_copy
+            await _fallback(estado, llm.MOTIVO_RECUSA_LIGACAO, db,
+                            texto=nat_copy.TEXTO_RECUSA_LIGACAO,
+                            aviso_sdr="O lead não quer ligação — quer seguir por mensagem. "
+                                      "Chame por aqui.")
+            return True
         await _fallback(estado, "o LLM pediu transferência (lead quer falar com uma pessoa, "
                                 "remarcar, ou saiu do roteiro)", db)
         return True
