@@ -105,7 +105,6 @@ async def _recusou(variantes: tuple[str, ...], desde: datetime,
     return r.scalar_one_or_none()
 
 
-
 async def por_que_pular(wa_id: str, db: AsyncSession, *,
                         agora: datetime) -> tuple[str, str] | None:
     """`(regra, motivo)` se este contato não deve receber o disparo. None se pode.
