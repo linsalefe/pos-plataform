@@ -120,7 +120,7 @@ async def ninguem_pula(*a, **k):
     return None
 
 
-async def michele_recusou(wa, db, *, agora, aplicar_teto=True):
+async def michele_recusou(wa, db, *, agora):
     return ("recusa", 'o lead pediu para parar — ele disse: "Não tenho mais interesse"') \
         if wa == "5541999888777" else None
 
@@ -197,11 +197,11 @@ print("\n4) O caminho AGENDADO grava sent_by NULL — e não estoura")
 from fastapi import Depends  # noqa: E402  (o import é a demonstração)
 
 r4, linhas4, _ = dispara([_lead(5, 51600005, "Lead agendado", "5511966665555")],
-                         lambda *a, **k: ("teto", "já recebeu 3 templates"),
+                         lambda *a, **k: ("recusa", "o lead pediu para parar"),
                          current_user=Depends(lambda: None))
 checa("gravou a linha mesmo sem sessão", len(linhas4), 1)
 checa("  com sent_by NULL — não houve humano logado", linhas4[0].sent_by, None)
-checa("  e a regra do teto preservada", linhas4[0].regra, "teto")
+checa("  e a regra preservada", linhas4[0].regra, "recusa")
 
 
 # ==========================================================================================

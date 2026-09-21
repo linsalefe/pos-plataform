@@ -92,7 +92,7 @@ def dispara(leads, estados, origem_envio="campanha"):
     if origem_envio is not None:
         pedido["origem_envio"] = origem_envio
 
-    # S6-2: a higiene do disparo (recusa/teto) tem teste proprio —
+    # S6-2: a higiene do disparo (recusa) tem teste proprio —
     # test_higiene_disparo.py. Aqui ela sai da frente, senao o db-duble responde
     # qualquer SELECT com um MagicMock truthy e TODO lead vira "recusou".
     with patch("app.qualificacao_fluxo.estado_de", new=AsyncMock(side_effect=estado_de)), \

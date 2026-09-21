@@ -426,16 +426,14 @@ async def bulk_send_template(
         #
         # ANTES de qualquer chamada à Meta: o pulo não gasta envio, não gasta o `sleep(1)`
         # do rate limit e não deixa `Message` órfã.
-        # S6-2 — HIGIENE (a) e (b). ANTES do filtro da NAT porque a ordem é de
+        # S6-2 — HIGIENE (a), a recusa. ANTES do filtro da NAT porque a ordem é de
         # IMPORTÂNCIA, não de custo: a recusa é a única regra que fala de um pedido
         # explícito da pessoa, e quando duas batem o motivo que o SDR lê tem que ser esse.
         #
-        # `aplicar_teto=not individual`: a regra do RITMO dispensa o individual pelo mesmo
-        # motivo que o filtro da NAT dispensa (quem olha a thread vê os toques). A regra da
-        # RECUSA não dispensa — quem aperta enviar aqui está olhando a lista da Exact, onde
-        # o "não" do lead não aparece. Ver o docstring de `por_que_pular`.
-        motivo_higiene = await por_que_pular(phone, db, agora=agora_sp(),
-                                             aplicar_teto=not individual)
+        # Vale também no individual — quem aperta enviar aqui está olhando a lista da
+        # Exact, onde o "não" do lead não aparece. Ver o docstring de `por_que_pular`.
+        # (A regra (b), teto de 3 templates/7d, saiu em 21/09: o processo prevê 9 follows.)
+        motivo_higiene = await por_que_pular(phone, db, agora=agora_sp())
         if motivo_higiene is not None:
             regra, motivo = motivo_higiene
             pulados.append({"name": lead.name, "phone": phone, "regra": regra,
