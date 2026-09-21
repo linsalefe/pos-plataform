@@ -39,7 +39,7 @@ do agente de qualificação), aparece em `test_risco3_abertura`, `test_lembrete_
 | `npm run build` | ok, todas as rotas |
 | `git merge --no-ff` + push | `7338ba4` |
 | `systemctl restart cenat-backend` | `Application startup complete`, Uvicorn na 8001, 11:34:07 UTC |
-| `cenat-frontend` | **não reiniciado** (a sprint não previa; o classificador barrou). O `.next` em disco já é o novo; o processo `next start` continua com o bundle anterior e responde 200 em `/automacoes`. Se aparecer chunk 404 ao navegar, `sudo systemctl restart cenat-frontend` resolve. A diferença visível é só o rótulo `teto`, que o backend já não devolve |
+| `systemctl restart cenat-frontend` | reiniciado em 11:38 UTC a pedido do Álefe (`✓ Ready in 749ms`), `/automacoes` 200 — bundle novo servido |
 
 ## 3. Regras que ainda pulam lead no disparo (`bulk_send_template`)
 
