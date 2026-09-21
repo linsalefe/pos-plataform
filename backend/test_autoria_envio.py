@@ -142,7 +142,7 @@ def dispara(leads, current_user):
               "param_mappings": [{"type": "lead_name"}]}
     envio = AsyncMock(return_value={"messages": [{"id": "wamid.Y"}],
                                     "contacts": [{"wa_id": "IGNORADO"}]})
-    # S6-2: a higiene do disparo (recusa/teto) tem teste proprio —
+    # S6-2: a higiene do disparo (recusa) tem teste proprio —
     # test_higiene_disparo.py. Aqui ela sai da frente, senao o db-duble responde
     # qualquer SELECT com um MagicMock truthy e TODO lead vira "recusou".
     with patch("app.qualificacao_fluxo.estado_de", new=AsyncMock(return_value=None)), \

@@ -1,4 +1,4 @@
-"""S6-2 — o disparo não alcança quem pediu para parar, nem quem já apanhou demais.
+"""S6-2 — o disparo não alcança quem pediu para parar.
 
     cd backend && venv/bin/python test_higiene_disparo.py
 
@@ -10,11 +10,15 @@ O DEFEITO (RECON_FOLLOWS_HUMANO_IA_20260901, §4.2)
   e eu sempre digo que nao tenho". 21 pessoas receberam ≥5 templates em 8 dias sem nunca
   responder. E 4 envios voltaram com `131049 — not delivered to maintain healthy ecosystem`.
 
+O TETO SAIU EM 21/09/2026 (SPRINT_DISPARO_SEM_TETO_20260921): o processo prevê 9 follows
+por lead e a regra de 3 templates/7 dias bloqueava o time. As seções 3 e 4 provam agora o
+CONTRÁRIO do que provavam: 9 templates na semana NÃO pulam, em nenhum modo.
+
 O QUE ESTE TESTE PROVA
   1. O PADRÃO DE RECUSA, contra frases REAIS do banco — as que devem casar e as que não
   2. recusa dentro de 30 dias pula; fora de 30 dias, não
-  3. o teto de 3 templates/7 dias pula; 2 não
-  4. individual: a RECUSA continua valendo, o TETO não
+  3. NÃO existe mais teto: 3, 9 templates/7 dias — envia; e nem CONTA os templates
+  4. individual: a RECUSA continua valendo (e `aplicar_teto` não existe mais)
   5. a recusa é achada nas DUAS grafias do telefone
   6. higiene NUNCA derruba disparo: banco quebrado => envia
   7. a rota registra o pulo com a regra, e `skipped_nat` NÃO muda de significado
@@ -97,11 +101,15 @@ for frase, porque in NAO_PODE_CASAR:
 
 
 # ==========================================================================================
-print("\n2, 3 e 4) As janelas e o teto")
+print("\n2, 3 e 4) A janela da recusa — e o teto que NÃO existe mais")
 
 
-def pergunta(recusa_texto=None, n_templates=0, aplicar_teto=True, wa="5541999888777"):
-    """Roda `por_que_pular` com um banco que responde exatamente essas duas coisas."""
+def pergunta(recusa_texto=None, n_templates=0, wa="5541999888777"):
+    """Roda `por_que_pular` com um banco que responde exatamente essas duas coisas.
+
+    `n_templates` continua aqui de propósito: o dublê está PRONTO para responder a
+    contagem, e a prova é que ninguém pergunta (`len(chamadas) == 1`).
+    """
     chamadas = []
 
     async def execute(stmt):
@@ -109,7 +117,7 @@ def pergunta(recusa_texto=None, n_templates=0, aplicar_teto=True, wa="5541999888
         r = MagicMock()
         if len(chamadas) == 1:                      # _recusou
             r.scalar_one_or_none = MagicMock(return_value=recusa_texto)
-        else:                                       # _quantos_templates
+        else:                                       # (era _quantos_templates; não existe mais)
             r.scalar_one = MagicMock(return_value=n_templates)
         return r
 
@@ -117,7 +125,7 @@ def pergunta(recusa_texto=None, n_templates=0, aplicar_teto=True, wa="5541999888
     db.execute = AsyncMock(side_effect=execute)
     buf = io.StringIO()
     with redirect_stdout(buf):
-        r = asyncio.run(por_que_pular(wa, db, agora=AGORA, aplicar_teto=aplicar_teto))
+        r = asyncio.run(por_que_pular(wa, db, agora=AGORA))
     return r, len(chamadas)
 
 
@@ -128,30 +136,37 @@ checa("  e diz o caminho (tela de Conversas)", "tela de Conversas" in r[1], True
 
 r, n = pergunta(recusa_texto=None, n_templates=0)
 checa("sem recusa e sem toques: envia", r, None)
-checa("  e as DUAS consultas rodaram", n, 2)
+checa("  e só UMA consulta rodou (a recusa) — a contagem de templates não existe mais", n, 1)
 
-r, _ = pergunta(n_templates=3)
-checa("3 templates em 7 dias: pula", r[0], "teto")
-checa("  e o motivo diz quantos foram", "recebeu 3" in r[1], True)
+print("\n3) O teto NÃO existe mais (21/09): 3, 9 templates na semana — envia")
+r, n = pergunta(n_templates=3)
+checa("3 templates em 7 dias: ENVIA", r, None)
+checa("  e nem contou os templates", n, 1)
 
-r, _ = pergunta(n_templates=2)
-checa("2 templates: envia", r, None)
+r, n = pergunta(n_templates=9)
+checa("9 templates (o processo prevê 9 follows): ENVIA", r, None)
+checa("  e nem contou os templates", n, 1)
 
-r, _ = pergunta(n_templates=9)
-checa("9 templates: pula", r[0], "teto")
+r, _ = pergunta(recusa_texto="não desejo", n_templates=9)
+checa("recusa com 9 toques: o motivo é a RECUSA, não um teto", r[0], "recusa")
 
-# A recusa vence o teto quando as duas batem: é a que fala de um pedido da pessoa.
-r, n = pergunta(recusa_texto="não desejo", n_templates=9)
-checa("recusa + teto: o motivo que sobe é a RECUSA", r[0], "recusa")
-checa("  e nem chega a contar os templates", n, 1)
+# `regra` nunca pode voltar a ser 'teto': a tela não tem mais rótulo para isso, e
+# `disparo_skips` não deve ganhar linha nova com essa regra a partir do deploy.
+for n_t in (0, 3, 9, 30):
+    r, _ = pergunta(recusa_texto=None, n_templates=n_t)
+    checa(f"{n_t} templates: a regra 'teto' não sobe", r is None or r[0] != "teto", True)
 
-print("\n4) individual: a RECUSA vale, o TETO não")
-r, n = pergunta(recusa_texto=None, n_templates=9, aplicar_teto=False)
-checa("individual com 9 toques: ENVIA (o SDR vê a thread)", r, None)
-checa("  e o teto nem foi consultado", n, 1)
-
-r, _ = pergunta(recusa_texto="Não quero pós graduação", aplicar_teto=False)
+print("\n4) individual: a RECUSA vale — e `aplicar_teto` já não é aceito")
+r, _ = pergunta(recusa_texto="Não quero pós graduação")
 checa("individual para quem recusou: PULA", r[0], "recusa")
+
+try:
+    asyncio.run(por_que_pular("5541999888777", MagicMock(), agora=AGORA, aplicar_teto=False))
+    aceitou_flag = True
+except TypeError:
+    aceitou_flag = False
+checa("`aplicar_teto` foi embora com a regra (TypeError se alguém ainda passar)",
+      aceitou_flag, False)
 
 
 # ==========================================================================================
@@ -244,7 +259,7 @@ def dispara(leads, higiene, origem_envio="campanha"):
     return r, envio, buf.getvalue()
 
 
-async def michele_recusou(wa, db, *, agora, aplicar_teto=True):
+async def michele_recusou(wa, db, *, agora):
     return ("recusa", "o lead pediu para parar — ele disse: \"Não tenho mais interesse\"") \
         if wa == "5541999888777" else None
 

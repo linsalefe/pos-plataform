@@ -1,6 +1,21 @@
 """S6-2 — quem NÃO entra num disparo. Extensão do filtro de 28/08.
 
-Três regras, uma pergunta: `por_que_pular(wa_id, db)` devolve o motivo, ou None.
+Uma pergunta: `por_que_pular(wa_id, db)` devolve o motivo, ou None. Desde 21/09 só a
+regra (a), a recusa, mora aqui; a (c), `nat_ativa`, continua em `exact_routes.py`.
+
+O TETO DE 3 TEMPLATES / 7 DIAS FOI REMOVIDO EM 21/09/2026 (decisão do Álefe)
+------------------------------------------------------------------------------------------
+A regra (b) pulava quem tinha recebido 3 ou mais templates outbound (status <> 'failed',
+contando os do agente junto) nos últimos 7 dias, em campanha e agendado; o individual já
+não a aplicava. O processo comercial prevê ATÉ 9 FOLLOWS POR LEAD, e a regra bloqueava o
+trabalho do time no meio da régua. Foi REMOVIDA, não configurada: sem `nat_config`, sem
+override. O risco da nota de qualidade do número na Meta fica assumido pelo comercial.
+
+O que ela media enquanto existiu (RECON_NAT_FOLLOWUPS_20260917, §1.3): entre 02/09 e
+17/09, **44 pulos em 44 leads** — 43 no lote de 02/09 18h (111 selecionados, 47 enviados)
+e 1 em 14/09. Linhas antigas de `disparo_skips` com `regra = 'teto'` são histórico e ficam;
+nenhuma nova entra a partir do deploy. Se a Meta reduzir o limite diário de conversas
+iniciadas, esse é o primeiro sinal de que o teto fazia falta.
 
 O DEFEITO QUE ISTO FECHA (RECON_FOLLOWS_HUMANO_IA_20260901, §4.2)
 ------------------------------------------------------------------------------------------
@@ -20,7 +35,8 @@ destinatário de nós. O ativo em risco é o número, não a campanha.
 
 A CAMPANHA NÃO LÊ A CONVERSA — e é isso, exatamente, que estas regras corrigem. O filtro de
 28/08 (regra c) já perguntava "o agente está falando com essa pessoa agora?". Faltava
-perguntar "essa pessoa já pediu para parar?" e "quantas vezes já batemos nela esta semana?".
+perguntar "essa pessoa já pediu para parar?" (e, até 21/09, "quantas vezes já batemos nela
+esta semana?" — ver o registro da remoção acima).
 
 O PADRÃO DE RECUSA FOI VALIDADO CONTRA O CORPUS INTEIRO, NÃO IMAGINADO
 ------------------------------------------------------------------------------------------
@@ -47,7 +63,7 @@ faz barulho: some um lead real de todas as campanhas por 30 dias, e ninguém per
 """
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Message
@@ -68,17 +84,11 @@ PADRAO_RECUSA = (
     r"|n[ãa]o seguir com"
 )
 
-# --- (b) teto de toques -------------------------------------------------------------------
-JANELA_TETO = timedelta(days=7)
-TETO_TEMPLATES = 3
-
 # Os motivos dizem o CAMINHO, não só o impedimento — mesma regra do MOTIVO_PULO_NAT: quem
 # lê o retorno da rota precisa saber o que fazer com aquela pessoa, não só que ela ficou de
 # fora.
 MOTIVO_RECUSA = ("o lead pediu para parar nos últimos 30 dias — se precisar falar com ele, "
                  "responda pela tela de Conversas, onde dá para ler o que ele disse")
-MOTIVO_TETO = (f"já recebeu {TETO_TEMPLATES} templates ou mais nos últimos 7 dias — deixe "
-               "esta pessoa descansar ou fale com ela pela tela de Conversas")
 
 
 async def _recusou(variantes: tuple[str, ...], desde: datetime,
@@ -95,32 +105,15 @@ async def _recusou(variantes: tuple[str, ...], desde: datetime,
     return r.scalar_one_or_none()
 
 
-async def _quantos_templates(variantes: tuple[str, ...], desde: datetime,
-                             db: AsyncSession) -> int:
-    """Templates que ESTA PESSOA recebeu na janela, venham de quem vierem.
-
-    Conta os do agente junto, de propósito. O lead não distingue quem mandou: ele conta
-    mensagens. Um contador só do lado humano diria "só mandei 2" para quem recebeu 5.
-    `status <> 'failed'` porque o que não foi entregue não incomodou ninguém.
-    """
-    r = await db.execute(
-        select(func.count())
-        .select_from(Message)
-        .where(Message.contact_wa_id.in_(variantes),
-               Message.direction == "outbound",
-               Message.message_type == "template",
-               Message.status != "failed",
-               Message.timestamp >= desde))
-    return r.scalar_one() or 0
-
-
-async def por_que_pular(wa_id: str, db: AsyncSession, *, agora: datetime,
-                        aplicar_teto: bool = True) -> tuple[str, str] | None:
+async def por_que_pular(wa_id: str, db: AsyncSession, *,
+                        agora: datetime) -> tuple[str, str] | None:
     """`(regra, motivo)` se este contato não deve receber o disparo. None se pode.
 
-    `aplicar_teto=False` desliga só a regra (b) — é o que o envio INDIVIDUAL usa.
+    Vale em TODOS os modos — campanha, agendado e individual. (Até 21/09 havia um
+    `aplicar_teto` que desligava a regra (b) no individual; a regra foi embora e a flag com
+    ela.)
 
-    POR QUE (a) VALE TAMBÉM NO INDIVIDUAL E (b) NÃO
+    POR QUE (a) VALE TAMBÉM NO INDIVIDUAL
     --------------------------------------------------------------------------------------
     O filtro de 28/08 dispensa o individual porque "o SDR escolheu aquela pessoa e apertou
     enviar, e essa é decisão dele". Vale para o RITMO: quem olha a thread vê os toques.
@@ -135,9 +128,9 @@ async def por_que_pular(wa_id: str, db: AsyncSession, *, agora: datetime,
     exatamente o que o SDR fez com a Michele em 26/08, e aquilo estava certo — o que errou
     foi a lista voltar por cima três dias depois.
 
-    ORDEM DAS REGRAS = ordem de importância, e a mais barata NÃO vem primeiro de propósito:
-    a recusa é a única que fala de um pedido explícito da pessoa. Se duas regras batem, o
-    motivo que o SDR lê é o que mais importa que ele saiba.
+    ORDEM DAS REGRAS = ordem de importância: a recusa roda antes da `nat_ativa` (na rota)
+    porque é a única que fala de um pedido explícito da pessoa. Se duas batem, o motivo que
+    o SDR lê é o que mais importa que ele saiba.
 
     NUNCA LEVANTA. Higiene que derruba disparo é pior que disparo sem higiene: um erro aqui
     tem que deixar a mensagem sair, não segurar o lote. Falha => None (não pula) + log.
@@ -151,11 +144,6 @@ async def por_que_pular(wa_id: str, db: AsyncSession, *, agora: datetime,
         if recusa is not None:
             trecho = " ".join(recusa.split())[:80]
             return "recusa", f'{MOTIVO_RECUSA} — ele disse: "{trecho}"'
-
-        if aplicar_teto:
-            n = await _quantos_templates(variantes, agora - JANELA_TETO, db)
-            if n >= TETO_TEMPLATES:
-                return "teto", f"{MOTIVO_TETO} (recebeu {n})"
 
         return None
     except Exception as e:

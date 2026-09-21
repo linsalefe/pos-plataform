@@ -73,13 +73,14 @@ interface AutoWelcomePreview {
 // (HTTP 400). Ele só sai pelo fluxo automático ou pelo reenvio individual do lead.
 const WELCOME_TEMPLATE = 'nat_boasvindas';
 
-// S6-2 — as tres regras de higiene do disparo (backend: app/higiene_disparo.py). O rotulo
-// e' curto de proposito: o motivo COMPLETO, com o caminho para falar com a pessoa, ja' vem
-// por linha no `motivo` de cada pulo.
+// S6-2 — as regras de higiene do disparo (backend: app/higiene_disparo.py e o filtro
+// `nat_ativa` em exact_routes.py). O rotulo e' curto de proposito: o motivo COMPLETO, com o
+// caminho para falar com a pessoa, ja' vem por linha no `motivo` de cada pulo.
+// O teto de 3 templates/7 dias saiu em 21/09 (o processo preve 9 follows): o backend nao
+// devolve mais `teto`, e uma regra desconhecida cai no proprio nome, sem quebrar.
 const REGRA_LABEL: Record<string, string> = {
   nat_ativa: 'em conversa com a Nat',
   recusa: 'pediram para parar',
-  teto: 'já receberam demais esta semana',
 };
 
 const MAPPING_OPTIONS = [
@@ -951,9 +952,9 @@ export default function AutomacoesPage() {
                     agora, com o caminho para falar com elas. */}
                 {(sendResult.skipped?.length ?? 0) > 0 && (
                   <div className="mt-2 space-y-1.5 pt-2 border-t border-gray-100">
-                    {/* S6-2: sao TRES motivos agora (conversa ativa, recusa, teto de
-                        toques), entao o cabecalho nao pode mais afirmar um so'. Cada linha
-                        ja' traz o motivo dela; aqui fica o resumo por regra. */}
+                    {/* S6-2: sao DOIS motivos (conversa ativa, recusa), entao o cabecalho
+                        nao pode afirmar um so'. Cada linha ja' traz o motivo dela; aqui
+                        fica o resumo por regra. */}
                     <p className="text-[12px] font-medium text-amber-700">
                       {sendResult.skipped!.length} não {sendResult.skipped!.length === 1 ? 'recebeu' : 'receberam'}
                       {sendResult.skipped_por_regra && (
