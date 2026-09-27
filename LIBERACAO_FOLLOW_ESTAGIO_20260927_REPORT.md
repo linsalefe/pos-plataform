@@ -97,8 +97,11 @@ SELECT status, left(motivo, 40), count(*) FROM follow_estagio_envios GROUP BY 1,
 
 * O primeiro sinal de que o teto faz falta é o erro `131049` da Meta (limite de frequência) —
   e ele NÃO é pulado pelo disparo.
-* Para desligar: `FOLLOW_ESTAGIO_ENABLED=false` no `backend/.env` + restart. O cursor continua
-  andando só quando ligado; eventos de Follow entre desligar e religar são consumidos na volta.
+* Para desligar: `FOLLOW_ESTAGIO_ENABLED=false` no `backend/.env` + restart. **Atenção ao
+  religar:** desligado, o job não toca no banco e o cursor PARA (`follow_estagio.py:620`). Na
+  volta, todo lead que entrou em Follow durante a pausa recebe o template de uma vez — é
+  recuperação de queda, por desenho. Se a pausa for longa e isso não for desejado, avançar o
+  cursor para o `MAX(id)` de `exact_stage_events` ANTES de religar.
 * Os eventos de Follow que chegaram entre o deploy (14:03) e a liberação (17:24) foram **zero**,
   então a allowlist não comeu nenhum follow real.
 
