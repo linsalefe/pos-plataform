@@ -1059,3 +1059,177 @@ class RdConversao(Base):
     created_at = Column(DateTime, nullable=False,
                         server_default=text("(now() AT TIME ZONE 'utc')"))
     enviado_em = Column(DateTime, nullable=True)
+
+
+# ==========================================================================================
+# FOLLOW POR ESTÁGIO DA EXACT (27/09/2026)
+# ==========================================================================================
+#
+# Vocabulário espelhado no CHECK de `migrate_follow_estagio.py`, mesma regra do `RD_STATUS`
+# acima: as duas definições nascem desta lista, e divergir faz o INSERT falhar na hora em vez
+# de gravar um status que ninguém drena.
+FE_PENDENTE = "pendente"   # esperando o drenador. É o único estado que o job procura.
+FE_ENVIADO = "enviado"     # `bulk_send_template` devolveu `sent >= 1`. `enviado_em` diz quando.
+FE_SKIPPED = "skipped"     # o bulk PULOU (recusa, nat_ativa, opt_out_meta) ou faltou dado
+                           # nosso (sem_sdr, sem_telefone). `motivo` diz qual. Terminal.
+FE_FALHOU = "falhou"       # exceção, ou a Meta recusou. `motivo` é OBRIGATÓRIO. Terminal.
+FE_STATUS = (FE_PENDENTE, FE_ENVIADO, FE_SKIPPED, FE_FALHOU)
+
+
+class FollowEstagioEnvio(Base):
+    """Um follow a mandar (ou já mandado) porque o lead entrou num estágio na Exact.
+
+    ==========================================================================================
+    POR QUE TABELA PRÓPRIA E NÃO `nat_scheduled_actions`
+    ==========================================================================================
+    `nat_scheduler.agendar()` (`nat_scheduler.py:205`) **CANCELA o pendente anterior do mesmo
+    `(kind, contact_wa_id)`** antes de inserir, e o índice
+    `uq_nat_sched_pendente_por_contato` reforça isso no banco. Essa semântica ("no máximo um
+    pendente por tipo por contato") está certa para o que ela serve — reagendar um lembrete
+    substitui, não acumula.
+
+    Aqui ela seria um defeito silencioso: um lead que entra em `Follow 3` e, antes do job
+    rodar, é movido para `Follow 4` teria o `Follow 3` **cancelado**, e receberia só o último.
+    Medido: 45 leads entraram em `" Follows 9"` numa única passada de 18/09, e movimentos
+    encadeados no mesmo minuto são a norma (§1.3 e §1.4 do recon).
+
+    Daria para contornar embutindo o estágio no `kind` (`follow_estagio_3`), mas aí `kind`
+    deixaria de ser um tipo e passaria a ser uma chave composta, e a UNIQUE que importa —
+    "uma vez por estágio por lead, PARA SEMPRE" — continuaria impossível, porque a de lá é
+    parcial em `status='pendente'`: a linha sai do índice ao ser executada, e a reentrada
+    passaria.
+
+    ==========================================================================================
+    A UNIQUE É `(lead_exact_id, estagio_id)` — UMA VEZ POR ESTÁGIO, NÃO POR ENTRADA
+    ==========================================================================================
+    Não é parcial e não tem `evento_id`: é a regra de negócio inteira num índice.
+
+    §4.3 do recon: **28 pares (lead, estágio) se repetem em 30 dias**, em 20 leads, e o padrão
+    observado é o vaivém do fim da escada —
+
+        14/09  Follows 8  ->  Follows 9
+        17/09   Follows 9 -> Follows 8      (voltou)
+        18/09  Follows 8  ->  Follows 9     (entrou DE NOVO)
+
+    `mensagem_follow9` é a despedida: "entendo que não há mais interesse … e encerro aqui meu
+    contato". "Uma vez por entrada" a mandaria DUAS VEZES em 32 horas. É a Michele de 26/08
+    outra vez (`higiene_disparo.py`), com a nossa assinatura em cima. Custo de "por estágio":
+    28 envios a menos em 30 dias (2,2 %), e são exatamente os que não se quer mandar.
+
+    `evento_id` fica na linha como REFERÊNCIA do primeiro evento que a criou — serve para
+    investigar, não para deduplicar. O segundo evento bate no `ON CONFLICT DO NOTHING` e não
+    reescreve nada, então o id guardado é o da primeira entrada.
+
+    ==========================================================================================
+    `estagio_id` É A COLUNA DA UNIQUE, E O NOME VIAJA AO LADO
+    ==========================================================================================
+    `estagio_id` vem do `follow_estagios.json` (o id em `GET /v3/stages`), não do evento — o
+    evento só tem o nome (`exact_stage_events.stage_para`, `varchar(50)`). O id é estável;
+    renomear a etapa na Exact não reabre um estágio já enviado.
+
+    `estagio_nome` é o nome **como estava no mapa no momento do envio**. É histórico, como o
+    `Reagendamento.` que `exact_stage_events` guarda e que o `/v3/LeadStages` já reescreveu
+    para `Reagendamento - IA` (§1.2 do recon). Sem ele, um rename apaga a leitura do passado.
+
+    ==========================================================================================
+    SEM FK PARA `exact_leads` NEM PARA `exact_stage_events`
+    ==========================================================================================
+    Mesma política de `RdConversao`, das tabelas `nat_*` e de `disparo_skip`. `lead_exact_id`
+    é o `exact_leads.exact_id` (o id na Exact), não o PK local — é o que `exact_stage_events`
+    usa, e é o que sobrevive a um espelho recriado. Há 10 leads no nosso espelho que a Exact
+    já não tem (9 901 contra 9 891, medido em 27/09): uma FK transformaria faxina de
+    histórico em erro de escrita.
+
+    ATENÇÃO ao chamar `bulk_send_template`: o `lead_ids` dele é **`exact_leads.id` (PK
+    local)**, não este `lead_exact_id`. Confundir os dois é um lote vazio silencioso — a rota
+    faz `WHERE ExactLead.id.in_(lead_ids)`, não encontra nada e devolve `sent=0` sem erro.
+
+    ==========================================================================================
+    `telefone` É CÓPIA, E ISSO É DE PROPÓSITO
+    ==========================================================================================
+    É o `exact_leads.phone1` no instante em que a linha nasceu. Serve para a allowlist do modo
+    de teste e para o log. Não é a chave de nada: a canonização das duas grafias (12/13
+    dígitos) é feita pela rota, contra o eco da Meta (`exact_routes.py:531`). Guardar aqui
+    evita reler o lead só para decidir se ele está na allowlist.
+
+    ==========================================================================================
+    FUSO: TUDO UTC NESTA TABELA
+    ==========================================================================================
+    Mesma exceção deliberada de `RdConversao`, e pela mesma razão: `created_at` e `enviado_em`
+    só existem para o drenador e para auditoria, não são hora de parede que alguém lê. O
+    `server_default` é `now() AT TIME ZONE 'utc'`, igual ao de
+    `exact_stage_events.observado_em` — que é justamente a coluna com que estas linhas serão
+    cruzadas. Misturar SP e UTC aqui daria 3h de deslocamento em silêncio.
+
+    O `messages.timestamp` que a rota grava continua em SP, porque aquele é lido na tela de
+    Conversas. As duas regras convivem porque cada tabela declara a sua.
+    """
+    __tablename__ = "follow_estagio_envios"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # `exact_leads.exact_id`, o id do lead NA EXACT. Ver a seção "SEM FK" acima.
+    lead_exact_id = Column(BigInteger, nullable=False)
+    telefone = Column(String(30), nullable=True)
+    # A chave estável do degrau, vinda do JSON. Junto com `lead_exact_id`, é a UNIQUE.
+    estagio_id = Column(Integer, nullable=False)
+    estagio_nome = Column(String(50), nullable=True)
+    template = Column(String(512), nullable=False)
+    # Referência para investigar, nunca para deduplicar. Sem FK (a tabela de eventos pode ser
+    # podada, e a linha de follow tem de sobreviver a isso).
+    evento_id = Column(BigInteger, nullable=True)
+    status = Column(String(20), nullable=False, default=FE_PENDENTE)
+    # Obrigatório em `falhou` e em `skipped` — padrão da sprint de 18/09 (`falhou` sem motivo
+    # foi o que fez os 60 `follow_20h` quebrados serem indiagnosticáveis por um mês).
+    motivo = Column(Text, nullable=True)
+    # O retorno de `bulk_send_template` em JSON, truncado. É o que responde "por que pulou".
+    resposta = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False,
+                        server_default=text("(now() AT TIME ZONE 'utc')"))
+    enviado_em = Column(DateTime, nullable=True)
+
+
+class FollowEstagioCursor(Base):
+    """A marca d'água: o último `exact_stage_events.id` que o job já olhou. UMA linha (id=1).
+
+    ==========================================================================================
+    POR QUE MARCA D'ÁGUA E NÃO "EVENTOS DAS ÚLTIMAS N HORAS"
+    ==========================================================================================
+    Uma janela de tempo tem os dois modos de falha ao mesmo tempo: se o processo ficar 20 min
+    fora do ar, a janela de 10 min perde os eventos do buraco para sempre; e se a janela for
+    generosa, cada passada relê os mesmos eventos e depende da UNIQUE para não duplicar —
+    transformando o índice, que é a rede de segurança, no mecanismo.
+
+    Com o cursor, "já vi" é um fato gravado. Restart não reprocessa, e uma queda longa é
+    recuperada sozinha na primeira passada depois de voltar.
+
+    ==========================================================================================
+    INICIALIZADO COM `MAX(id)` NA MIGRAÇÃO — E ISTO É ESSENCIAL
+    ==========================================================================================
+    `ultimo_evento_id` nasce com o `MAX(id)` de `exact_stage_events` no momento da migração,
+    **não com 0**. Com 0, a primeira passada varreria o histórico inteiro e enfileiraria um
+    follow para cada entrada em estágio já ocorrida: 1 255 templates em 30 dias de histórico,
+    de uma vez, para leads que já foram descartados, já compraram ou já receberam a despedida.
+    É o defeito que "gatilho por EVENTO e não por ESTADO" existe para evitar, e ele voltaria
+    pela porta do cursor.
+
+    O gate `FOLLOW_ESTAGIO_ENABLED=false` não protege disso sozinho: ele impede o envio
+    enquanto estiver fechado, mas o dia em que abrir o cursor ainda estaria em 0.
+
+    ==========================================================================================
+    UMA LINHA, `id = 1`
+    ==========================================================================================
+    Mesmo padrão de `nat_config` e `auto_welcome_config`: singleton por convenção, não por
+    constraint. O job faz `UPDATE ... WHERE id = 1` e só avança o cursor DEPOIS de ter
+    inserido (ou conflitado) as linhas daquele lote, na mesma transação — se o commit falhar,
+    o cursor não anda e o lote volta na passada seguinte.
+
+    Avançar o cursor ANTES de enfileirar perderia eventos em silêncio. Avançar depois do
+    ENVIO (e não do enfileiramento) seria pior: um envio lento seguraria o cursor e a passada
+    seguinte releria os mesmos eventos.
+    """
+    __tablename__ = "follow_estagio_cursor"
+
+    id = Column(Integer, primary_key=True, default=1)
+    ultimo_evento_id = Column(BigInteger, nullable=False, default=0)
+    atualizado_em = Column(DateTime, nullable=False,
+                           server_default=text("(now() AT TIME ZONE 'utc')"))
