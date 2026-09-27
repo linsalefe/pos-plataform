@@ -531,7 +531,10 @@ checa("  e não commitou", db.commit.await_count, 0)
 
 resumo, sqls, _, db = le_eventos(cursor=90000, eventos=[])
 checa("nenhum evento novo: resumo vazio", resumo, {})
-checa("  e o cursor NÃO foi movido", [s for s, _ in sqls if "UPDATE" in s], [])
+# `"UPDATE" in s` seria frouxo: casa com o `FOR UPDATE` da própria leitura do cursor. O que
+# importa é que NÃO houve `UPDATE follow_estagio_cursor`.
+checa("  e o cursor NÃO foi movido",
+      [s for s, _ in sqls if s.startswith("UPDATE follow_estagio_cursor")], [])
 checa("  e não commitou", db.commit.await_count, 0)
 
 resumo, sqls, _, db = le_eventos(cursor=90000,
