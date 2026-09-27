@@ -1049,6 +1049,8 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession,
 
 MOTIVO_ASSUMIDO_SDR = "assumido_sdr"
 MOTIVO_OUTBOUND_MANUAL = "outbound_manual_sdr"
+# 27/09: o disparo (campanha ou individual) encerra o agente em vez de ser pulado por ele.
+MOTIVO_DISPARO_MANUAL = "disparo_manual"
 
 
 async def silenciar(contact_wa_id: str, motivo: str, db: AsyncSession, *,

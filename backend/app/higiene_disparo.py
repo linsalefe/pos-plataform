@@ -1,8 +1,9 @@
 """S6-2 — quem NÃO entra num disparo. Extensão do filtro de 28/08.
 
 Uma pergunta: `por_que_pular(wa_id, db)` devolve o motivo, ou None. Desde 27/09 moram aqui
-a regra (a), a recusa que o LEAD escreveu, e a (d), o opt-out que a META registrou; a (c),
-`nat_ativa`, continua em `exact_routes.py`.
+a regra (a), a recusa que o LEAD escreveu, e a (d), o opt-out que a META registrou. A (c),
+`nat_ativa`, SAIU em 27/09: o disparo agora encerra o agente em vez de ser pulado por ele
+(`exact_routes.bulk_send_template`, motivo `disparo_manual`).
 
 O OPT-OUT DA META — REGRA (d), 27/09/2026
 ------------------------------------------------------------------------------------------
