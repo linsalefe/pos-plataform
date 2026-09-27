@@ -183,7 +183,50 @@ está ativo e que os follows dos leads reais estão sendo **descartados** durant
 14:06:43  ⏱️  follow por estágio: {'estagios_no_mapa': 9}
 ```
 
-Cadência exata, resumo idêntico, nenhum erro. O job está em regime.
+Cadência exata, resumo idêntico, nenhum erro. O job está em regime — **11 ciclos** entre
+14:04:43 e 14:14:43, todos com o mesmo resumo.
+
+### A passada do sync, às 14:14:18
+
+```
+🔄 Sync Exact Spotter: {'total_synced': 9891, 'new': 0, 'updated': 9891, 'welcome_sent': 0, ...}
+14:14:43  ⏱️  follow por estágio: {'estagios_no_mapa': 9}
+```
+
+9 891 leads varridos, **0 novos, 0 eventos de estágio**. O cursor continua em 4259 e
+`follow_estagio_envios` continua vazia — correto: sem transição, não há nada a enfileirar.
+
+### **HOJE É DOMINGO — e por isso não haverá evento natural nenhum**
+
+Isto não estava previsto no roteiro e muda como o teste tem de ser lido.
+
+```
+$ TZ=America/Sao_Paulo date        Sunday, 27/09 11:14
+
+último evento do 18535:
+ 4259 | <NULL> -> Entrada | 00:10 SP     <- lead chegando pela LP de madrugada, não arrasto de SDR
+```
+
+Atividade de estágio por dia da semana no 18535, últimos 30 dias:
+
+| Dom | Seg | Ter | Qua | Qui | Sex | Sáb |
+|---:|---:|---:|---:|---:|---:|---:|
+| **54** | 530 | 463 | 384 | 386 | 426 | 78 |
+
+Domingo tem **54 eventos em 30 dias (2,3 %)**, e são quase todos `<NULL> -> Entrada` — lead
+novo entrando pela landing page, que não é estágio de follow e não dispara nada.
+
+**Consequências práticas:**
+
+1. **O job está verificado em regime, mas ainda não foi exercitado contra um evento real.** O
+   caminho de leitura e envio está coberto pelos testes (232 asserções), não por tráfego de
+   produção. A primeira prova real vem do primeiro arrasto de card.
+2. **O Álefe pode testar agora mesmo** — o arrasto dele É o evento, e o sync o vê em até
+   ~10 min independentemente do dia. A janela de horário não existe neste job, de propósito
+   (decisão de 27/09), então domingo não atrapalha o teste.
+3. **`fora_da_allowlist` só vai aparecer na segunda.** É o contador dos leads reais que
+   passaram por um estágio e não receberam por causa do modo de teste. Hoje ele fica em zero
+   porque ninguém move card no domingo — não porque o filtro não esteja funcionando.
 
 ---
 
