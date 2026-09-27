@@ -1201,14 +1201,15 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
             raise AcaoAdiada(agora + ATRASO_POR_TETO, motivo)
         raise AcaoIgnorada(f"não admitido: {motivo}")
 
-    # REUNIÃO NAS PRÓXIMAS 2H → sem abertura (18/09). Lida por TELEFONE, antes de criar
-    # contato ou estado, para que a saída não deixe nada para o savepoint reverter. O
-    # lembrete T-30 dessa reunião não depende disto (ver `guard.guard_de_lembrete`).
-    perto = await reuniao_de(telefone=wa_id, lead_id=lead_id, agendamento_id=None, db=db)
-    if perto is not None and guard.reuniao_perto_demais(perto.slot_inicio, agora):
-        print(f"⏭️  Agente: {wa_id} tem reunião {perto.id} às {perto.slot_inicio:%d/%m %H:%M} "
-              f"— abertura a menos de {guard.MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA}h não sai")
-        raise AcaoIgnorada(guard.MOTIVO_REUNIAO_PERTO)
+    # JÁ TEM REUNIÃO MARCADA → sem abertura (27/09; era "nas próximas 2h" desde 18/09). Lida
+    # por TELEFONE tolerante (`reuniao_de`), antes de criar contato ou estado, para que a
+    # saída não deixe nada para o savepoint reverter. O lembrete T-30 dessa reunião não
+    # depende disto (ver `guard.guard_de_lembrete`).
+    marcada = await reuniao_de(telefone=wa_id, lead_id=lead_id, agendamento_id=None, db=db)
+    if marcada is not None and guard.reuniao_futura(marcada.slot_inicio, agora):
+        print(f"⏭️  Agente: {wa_id} já tem reunião {marcada.id} em "
+              f"{marcada.slot_inicio:%d/%m %H:%M} — abertura não sai")
+        raise AcaoIgnorada(guard.MOTIVO_JA_AGENDADO)
 
     contato = await _contato_ou_criar(wa_id, lead_id=lead_id, db=db)
     if contato is None:
@@ -1323,6 +1324,39 @@ async def _corpo_do_template(nome_template: str, parametros: list,
 # O NÚCLEO: UMA MENSAGEM DO LEAD
 # ==========================================================================================
 
+# O que fica na fila de um estado ativo e morre com ele. O `lembrete_reuniao` NÃO está aqui:
+# ele é serviço da reunião, não fala do agente (ver `guard.guard_de_lembrete`).
+KINDS_DA_CONVERSA = (KIND_ENCERRAR_INATIVO, KIND_FOLLOW_20H, KIND_VIGIAR_RESPOSTA,
+                     KIND_RESPONDER_PENDENTE)
+
+
+async def _encerrar_por_agendamento(estado: NatQualificacaoState, reuniao,
+                                    db: AsyncSession) -> None:
+    """A pessoa marcou pelo site com o agente no meio da conversa → `encerrado`, calado.
+
+    SEM MENSAGEM AO LEAD. Não é `concluir_por_agendamento_externo`: aquele é o booking pela
+    página do TOKEN que a própria Nat mandou, e a confirmação no chat fecha o que ela abriu.
+    Aqui a pessoa marcou por fora — a LP gera outro lead — e o que ela recebe do nosso lado
+    é o lembrete T-30, que nasce em `agendar.py:_gatilho_do_agente` e não depende disto.
+
+    Cancela os pendentes da conversa (`KINDS_DA_CONVERSA`), não o lembrete.
+    """
+    anterior = estado.etapa
+    estado.etapa = ETAPA_Q_ENCERRADO
+    estado.encerrado_em = _agora_sp()
+    estado.encerrado_motivo = guard.MOTIVO_AGENDOU_NO_MEIO
+    await db.flush()
+    for kind in KINDS_DA_CONVERSA:
+        try:
+            await nat_cancelar(kind, estado.contact_wa_id, db)
+        except Exception as e:
+            print(f"⚠️  Agente: {kind} não cancelado para {estado.contact_wa_id} "
+                  f"({type(e).__name__}: {e})")
+    print(f"📅 Agente encerrou {estado.contact_wa_id} em '{anterior}': marcou reunião "
+          f"{reuniao.id} para {reuniao.slot_inicio:%d/%m %H:%M} no meio da conversa "
+          f"(motivo={guard.MOTIVO_AGENDOU_NO_MEIO}) — nenhuma mensagem enviada")
+
+
 def texto_nota_recusa(quando) -> str:
     """A observação da recusa de ligação na Exact. `quando` é SP naive (`_agora_sp()`)."""
     return (f"[NAT] Lead recusou ligação pelo WhatsApp em {quando:%d/%m %H:%M}. "
@@ -1345,6 +1379,14 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
 
     estado.ultimo_wa_message_id = wa_message_id
     await db.flush()
+
+    # 27/09 — MARCOU PELO SITE NO MEIO DA CONVERSA. A abertura já não sai para quem tem
+    # reunião (`MOTIVO_JA_AGENDADO`); isto é o mesmo fato descoberto depois dela. ANTES de
+    # reagendar encerramento/follow/vigia, senão o turno deixaria pendentes novos para trás.
+    marcada = await _reuniao(estado, db)
+    if marcada is not None and guard.reuniao_futura(marcada.slot_inicio, _agora_sp()):
+        await _encerrar_por_agendamento(estado, marcada, db)
+        return True
 
     # O relógio da inatividade reinicia a cada mensagem DELA. `agendar` cancela o pendente
     # anterior antes de inserir, então isto reagenda em vez de acumular — e o índice único
