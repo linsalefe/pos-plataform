@@ -426,17 +426,24 @@ async def _finalizar(db, linha_id: int, *, status: str, motivo: str | None = Non
 def _desfecho_do_bulk(resultado: dict) -> tuple[str, str | None]:
     """Traduz o retorno de `bulk_send_template` em `(status, motivo)`.
 
-    O retorno é sempre um dict com `sent`, `failed`, `errors`, `skipped_total`,
-    `skipped_por_regra` e `pulados` (`exact_routes.py:641`). Com UM lead, exatamente um dos
-    três caminhos aconteceu:
+    O retorno é sempre um dict com as seis chaves de `exact_routes.py:647-650`: `sent`,
+    `failed`, `errors`, `skipped_nat`, `skipped_total`, `skipped_por_regra` e **`skipped`**.
+    Com UM lead, exatamente um dos três caminhos aconteceu:
 
         sent == 1                 -> `enviado`. A Meta aceitou.
-        skipped_total >= 1        -> `skipped`, com a regra e o motivo que o bulk já escreveu
+        skipped                   -> `skipped`, com a regra e o motivo que o bulk já escreveu
                                      (`recusa`, `nat_ativa`, `opt_out_meta`). O mesmo motivo
                                      já está em `disparo_skip`; copiar para cá é para quem
                                      olha o follow não precisar cruzar duas tabelas.
         resto (failed, ou sent=0) -> `falhou`, com o erro da Meta. `errors[0]['error']` é o
                                      que a Meta devolveu.
+
+    **A lista de pulos chama-se `skipped`, não `pulados`.** Dentro da rota a variável local é
+    `pulados`, mas a chave do JSON é `skipped` — e ler a chave errada não daria erro: daria
+    `[]`, e todo pulo (recusa, opt-out, conversa ativa) cairia no ramo de `falhou` com "sem
+    `sent` e sem erro". A linha diria "falhou" para um lead que foi CORRETAMENTE poupado, e
+    ninguém investigaria um `falhou` de motivo genérico. `skipped_total` é o cinto de
+    segurança: se um dia a chave mudar de nome, o total ainda acusa que houve pulo.
 
     A ordem importa: `sent` primeiro. Um lote de um não pode ter enviado E pulado, mas se a
     rota mudar um dia, "saiu mensagem" é o fato que domina — marcar `skipped` uma linha cuja
@@ -445,14 +452,14 @@ def _desfecho_do_bulk(resultado: dict) -> tuple[str, str | None]:
     if (resultado.get("sent") or 0) >= 1:
         return FE_ENVIADO, None
 
-    pulados = resultado.get("pulados") or []
-    if pulados:
-        p = pulados[0]
+    pulos = resultado.get("skipped") or []
+    if pulos:
+        p = pulos[0]
         regra = p.get("regra") or "?"
         return FE_SKIPPED, f"{regra}: {p.get('motivo') or '(sem motivo)'}"
     if (resultado.get("skipped_total") or 0) >= 1:
-        # Defensivo: `skipped_total` sem `pulados` não deveria existir, mas um `skipped` mudo
-        # é melhor que um `falhou` mudo, e a regra vem do dicionário agregado.
+        # Defensivo: `skipped_total` sem a lista `skipped` não deveria existir, mas um
+        # `skipped` mudo é melhor que um `falhou` mudo, e a regra vem do dicionário agregado.
         regras = ", ".join((resultado.get("skipped_por_regra") or {}).keys()) or "?"
         return FE_SKIPPED, f"pulado pelo disparo ({regras})"
 
