@@ -1,0 +1,14 @@
+{
+  "funnel_id": 18535,
+  "estagios": {
+    "129985": {"nome": "Follow 1",   "template": "mensagem_flow",      "params": ["nome", "sdr", "curso"]},
+    "129984": {"nome": "Follow 2",   "template": "mensagens_flows2",   "params": ["nome", "curso"]},
+    "129983": {"nome": "Follow 3",   "template": "mensagem_follow3",   "params": ["nome", "curso"]},
+    "129955": {"nome": "Follow 4",   "template": "mensagem_follow4",   "params": ["nome"]},
+    "129967": {"nome": "Follows 5",  "template": "mensagem_follow5",   "params": ["nome", "curso"]},
+    "174517": {"nome": "Follows 6",  "template": "mansagem_follows6",  "params": ["nome", "curso"]},
+    "174516": {"nome": " Follows 7", "template": "mensagem_follow7",   "params": ["nome", "mes"]},
+    "174515": {"nome": "Follows 8",  "template": "mensagem_follow8",   "params": ["nome", "curso"]},
+    "174514": {"nome": " Follows 9", "template": "mensagem_follow9",   "params": ["nome"]}
+  }
+}
