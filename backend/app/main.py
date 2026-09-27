@@ -274,6 +274,17 @@ async def lifespan(app: FastAPI):
     # minuto, antes de qualquer conversão sair.
     from app.rd_sender import rd_sender_job, INTERVALO_SEGUNDOS as RD_SEND_S
     rd_sender_task = asyncio.create_task(rd_sender_job())
+    # Follow automático por estágio da Exact (27/09). Sobe SEMPRE e nasce MUDO, pela mesma
+    # razão do rd_sender acima: o gate `FOLLOW_ESTAGIO_ENABLED` vem `false` por padrão, e com
+    # ele fechado o job NÃO TOCA NO BANCO — nem para ler eventos. Subir junto com o código é o
+    # que torna o gate observável no journald desde o primeiro minuto.
+    #
+    # Ele NÃO substitui nada hoje: os follows continuam saindo pela tela de Automações. Ligar
+    # é editar o `.env` — e antes disso rodar `migrate_follow_estagio.py`, sem o qual o job
+    # recusa processar (cursor ausente = falha fechada, não zero).
+    from app.follow_estagio import follow_estagio_job, INTERVALO_SEGUNDOS as FOLLOW_EST_S
+    from app.follow_estagio import _ligado as _follow_estagio_ligado, allowlist as _follow_allow
+    follow_estagio_task = asyncio.create_task(follow_estagio_job())
     # Vigia da saúde de entrega (Fase 4). Sobe SEMPRE e independe da NAT e da boas-vindas
     # estarem desligadas: ele observa TODO template que sai, e a pergunta "a Meta está
     # aceitando o que mandamos?" continua valendo com as automações no chão.
@@ -313,6 +324,10 @@ async def lifespan(app: FastAPI):
     print(f"✅ Fila do RD Station ativa (checa a cada {RD_SEND_S}s, "
           f"envio {'LIGADO' if _rd_ligado() else 'DESLIGADO'})")
     print(f"✅ Alerta de saúde de entrega ativo (checa a cada {SAUDE_S // 60} min)")
+    _fe_allow = _follow_allow()
+    print(f"✅ Follow por estágio da Exact (checa a cada {FOLLOW_EST_S}s, "
+          f"envio {'LIGADO' if _follow_estagio_ligado() else 'DESLIGADO'}"
+          + (f", MODO DE TESTE com {len(_fe_allow)} telefone(s)" if _fe_allow else "") + ")")
     print(f"✅ Faxina de agendamento ativa (remove box nosso parado há {FAXINA_IDADE})")
     print(f"✅ Varredura de agente parado ativa (a cada 15 min, régua de "
           f"{int(PARADO_ESPERA.total_seconds() // 60)} min — só notifica)")
@@ -324,6 +339,7 @@ async def lifespan(app: FastAPI):
     scheduled_task.cancel()
     nat_scheduler_task.cancel()
     rd_sender_task.cancel()
+    follow_estagio_task.cancel()
     delivery_health_task.cancel()
     agente_parado_task.cancel()
     faxina_task.cancel()
