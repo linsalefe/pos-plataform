@@ -472,7 +472,17 @@ abaixo do cursor quando ele nascer, e aqueles follows não saem.
 
 # Roteiro de teste (o que conferir em cada passo)
 
-Com `FOLLOW_ESTAGIO_SOMENTE_TELEFONES=83988046720`, os dois leads do Álefe em `Agendados`:
+> ⚠️ **OS DOIS LEADS ABAIXO NÃO EXISTEM NA EXACT.** Descoberto em 27/09 ao executar o teste —
+> ver `TESTE_FOLLOW_ESTAGIO_20260927_REPORT.md` §2. `51438018` e `51438436` foram apagados da
+> Exact em 18/08 e só sobrevivem no nosso espelho, com `synced_at` congelado naquela data.
+> A tabela veio do §5.2 do recon, que leu `exact_leads` sem cruzar com a Exact.
+>
+> **E a API da Exact não move estágio intra-funil** (§3 daquele relatório: `LeadsUpdate` 404,
+> `SkipSteps` 404, `ChangeFunnel` 400). O arrasto é manual, e é preciso um lead NOVO e não
+> descartado — os 7 do Álefe que existem estão todos `Descartado`. Caminho limpo: preencher o
+> formulário da landing page com o telefone dele.
+
+Com `FOLLOW_ESTAGIO_SOMENTE_TELEFONES=83988046720`, ~~os dois leads do Álefe em `Agendados`~~:
 
 | `lead_ids` | `exact_id` | `sub_source` | curso que vai renderizar |
 |---:|---:|---|---|

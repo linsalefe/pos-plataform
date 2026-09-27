@@ -761,7 +761,20 @@ para todo relatório.
 
 ## 5.2 — Leads na Exact com esse telefone
 
-**Nove, todos no funil 18535**, e portanto o sync já os traz (não é preciso criar nada):
+> ⚠️ **CORRIGIDO EM 27/09 (mesmo dia), por `TESTE_FOLLOW_ESTAGIO_20260927_REPORT.md` §2.**
+> A tabela abaixo foi lida de `exact_leads` — o nosso ESPELHO — e **não** foi cruzada com a
+> Exact. Na Exact são **SETE**, não nove: `51438018` (local 9127) e `51438436` (local 9134)
+> **foram apagados da Exact em 18/08** (`DELETE /LeadsDelete/{id}`, na faxina da sprint de
+> agendamento) e sobrevivem aqui só porque o espelho não apaga nada. O `synced_at` dos dois
+> está congelado em 18/08 02:38, contra 14:24 de hoje nos outros.
+>
+> E os **sete que existem estão todos `Descartado`** — `ChangeFunnel` recusa lead descartado
+> (`400 "Lead is discarded"`), então nenhum deles serve para o teste da escada.
+>
+> A recomendação de usar 9127/9134 viajou daqui para `SPRINT_FOLLOW_ESTAGIO_20260927_REPORT.md`
+> e para o roteiro de teste, e é **inválida**. Lead de espelho não é lead da Exact.
+
+**Nove no ESPELHO, sete na Exact** (a coluna "existe na Exact" foi acrescentada na correção):
 
 | `lead_ids` (PK local) | `exact_id` | nome | estágio hoje | `sub_source` |
 |---:|---:|---|---|---|
@@ -769,15 +782,17 @@ para todo relatório.
 | 1975 | 32196408 | a | Descartado | pospsihospitalar |
 | 2124 | 31485567 | Álefe Guimel Lins Barbosa | Descartado | PosAutolesao…Turma3 |
 | 2524 | 48525996 | Alefe Lins | Descartado | posat |
-| **9127** | **51438018** | Álefe Guimel Lins Barbosa | **Agendados** | PosMulheridades |
-| **9134** | **51438436** | Álefe Guimel Lins Barbosa | **Agendados** | Pos Saude do Trabalhador |
+| **9127** | **51438018** | Álefe Guimel Lins Barbosa | **Agendados** | PosMulheridades — ⚠️ **APAGADO DA EXACT EM 18/08** |
+| **9134** | **51438436** | Álefe Guimel Lins Barbosa | **Agendados** | Pos Saude do Trabalhador — ⚠️ **APAGADO DA EXACT EM 18/08** |
 | 9285 | 51548604 | Álefe Guimel Lins Barbosa | Descartado | Pos Saude do Trabalhador |
 | 9289 | 51550281 | zzz teste | Descartado | Pos Saude do Trabalhador |
 | 9324 | 51600542 | teste | Descartado | Pos Saude do Trabalhador |
 
-**Nenhum está em estágio de follow.** Para percorrer a escada basta arrastar **51438018** ou
-**51438436** (hoje em `Agendados`) por `Follow 1` … `" Follows 9"`. `Agendados -> Follow 1` é
-um movimento que a base já registra como rotineiro (5 casos nos 30 dias).
+~~**Nenhum está em estágio de follow.** Para percorrer a escada basta arrastar **51438018** ou
+**51438436** (hoje em `Agendados`) por `Follow 1` … `" Follows 9"`.~~ — **INVÁLIDO:** os dois
+não existem na Exact (ver o aviso acima). Para percorrer a escada é preciso um lead NOVO e não
+descartado; o caminho limpo é o Álefe preencher o formulário da landing page com o telefone
+dele, o que cria o lead em `Entrada` do 18535 pelo caminho real.
 
 Três notas para o teste:
 
