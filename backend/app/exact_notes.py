@@ -14,14 +14,15 @@ O `description` do `LeadsAdd` seria a outra porta, mas ele só existe na CRIAÇ�
 `LeadsUpdate` que o declara dá 404 (TESTE_FOLLOW_ESTAGIO_20260927_REPORT §3). E sobrescrever
 a descrição apagaria o e-mail e os extras que a LP grava ali.
 
-`exact_spotter.add_timeline_comment` já faz o mesmo POST desde julho (resumo do atendimento,
-anotação do NAT). Esta função é a mesma chamada com o contrato que a sprint pediu — log
+`exact_spotter.add_timeline_comment` já monta o mesmo POST (resumo do atendimento, anotação
+do NAT). Esta função é a mesma chamada com o contrato que a sprint pediu — log
 `❌ exact_note #<lead_id>` e prefixo `[NAT]` — e com timeout curto por padrão, porque o
 chamador da recusa roda dentro do webhook da Meta.
 
-A rota vai em `/timelineAdd` (t minúsculo), a grafia que `add_timeline_comment` usa em
-produção desde julho — o `$metadata` escreve `TimelineAdd`. Não troco uma grafia provada por
-outra que só o contrato declara.
+A rota vai em `/timelineAdd` (t minúsculo), a grafia do `add_timeline_comment`; o `$metadata`
+escreve `TimelineAdd`. ATENÇÃO: o journald (desde 30/03) não tem NENHUMA linha de sucesso nem
+de erro daquela função — a rota nunca foi exercida em produção com log. Por isso a Fase 0 da
+sprint exige a prova ao vivo num lead de teste antes do merge.
 
 ==========================================================================================
 BEST-EFFORT: NUNCA LEVANTA, NUNCA FAZ RETRY, SEMPRE LOGA
