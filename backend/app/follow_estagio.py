@@ -49,8 +49,8 @@ houve humano logado, que é a informação certa.
 Com isso vêm de graça, sem uma linha aqui:
 
   * a recusa de 30 dias e o novo `opt_out_meta` (`higiene_disparo.por_que_pular`);
-  * o pulo por conversa ativa do agente (`nat_ativa`) — vale porque mandamos
-    `origem_envio="campanha"`;
+  * ~~o pulo por conversa ativa do agente (`nat_ativa`)~~ — SAIU em 27/09: desde então o
+    envio ENCERRA o agente do lead (`disparo_manual`), inclusive o deste job;
   * a canonização das duas grafias do telefone contra o eco da Meta, que é o que evita a
     `ForeignKeyViolation` dos 5 × HTTP 500 de 28/08;
   * a criação do `Contact` e o vínculo do SDR;
@@ -134,6 +134,24 @@ CANAL_ID = 1
 IDIOMA = "pt_BR"
 
 MOTIVO_SEM_TELEFONE = ("o lead não tem phone1 na Exact — preencha o telefone e mova de novo")
+
+
+def _agora_sp() -> datetime:
+    """Hora de parede de São Paulo, naive — só para o texto da observação que o SDR lê."""
+    from app.nat_guard import _agora_sp as agora_sp
+    return agora_sp()
+
+
+def texto_nota_follow(estagio_nome: str | None, template: str, quando: datetime) -> str:
+    """A observação do follow na Exact. `quando` é SP naive.
+
+    O nome do estágio JÁ traz a palavra ("Follow 3", " Follows 9" — com o espaço à esquerda
+    da Exact, que sai no `strip`). Por isso não se escreve "Follow <nome>", que daria
+    "Follow Follow 3".
+    """
+    nome = (estagio_nome or "").strip() or "?"
+    return (f"[NAT] {nome} enviado pela IA em {quando:%d/%m %H:%M} "
+            f"(template {template}).")
 
 
 def _agora_utc() -> datetime:
@@ -563,6 +581,14 @@ async def _enviar_uma(db, linha) -> str:
     if status == FE_ENVIADO:
         print(f"✅ follow #{linha.id}: '{entrada['template']}' enviado para lead "
               f"{linha.lead_exact_id} ({lead.name!r}) em {linha.estagio_nome!r}")
+        # 27/09: a observação na timeline do lead na Exact, onde o SDR trabalha. DEPOIS do
+        # `_finalizar`: o UPDATE para `enviado` já está na transação, e `drenar` faz o commit
+        # logo que esta função volta. A nota é só HTTP — não toca na sessão e nunca levanta —,
+        # então não tem como mudar o status. Custo: até 5 s a mais por linha se a Exact travar.
+        from app.exact_notes import registrar_observacao
+        await registrar_observacao(
+            linha.lead_exact_id,
+            texto_nota_follow(linha.estagio_nome, entrada["template"], _agora_sp()))
     elif status == FE_SKIPPED:
         print(f"⏭️  follow #{linha.id}: lead {linha.lead_exact_id} em "
               f"{linha.estagio_nome!r} PULADO pelo disparo — {motivo}")
