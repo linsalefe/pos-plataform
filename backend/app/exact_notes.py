@@ -10,6 +10,8 @@ histórico: `TimelineAdd`, `ListTimeline`, `QualificationHistories`, `CallsHisto
     TimelineAdd     TimelineODataDTO     {leadId: Int32, userId: Int32, text: String}
     ListTimeline    ListTimelineODataDTO {id, leadId, text, createdAt, user}   <- a leitura
 
+A leitura é `GET /ListTimeline(<leadId>)` — com `$filter` ou `?leadId=` dá 404.
+
 O `description` do `LeadsAdd` seria a outra porta, mas ele só existe na CRIAÇÃO — o
 `LeadsUpdate` que o declara dá 404 (TESTE_FOLLOW_ESTAGIO_20260927_REPORT §3). E sobrescrever
 a descrição apagaria o e-mail e os extras que a LP grava ali.
@@ -19,10 +21,17 @@ do NAT). Esta função é a mesma chamada com o contrato que a sprint pediu — 
 `❌ exact_note #<lead_id>` e prefixo `[NAT]` — e com timeout curto por padrão, porque o
 chamador da recusa roda dentro do webhook da Meta.
 
-A rota vai em `/timelineAdd` (t minúsculo), a grafia do `add_timeline_comment`; o `$metadata`
-escreve `TimelineAdd`. ATENÇÃO: o journald (desde 30/03) não tem NENHUMA linha de sucesso nem
-de erro daquela função — a rota nunca foi exercida em produção com log. Por isso a Fase 0 da
-sprint exige a prova ao vivo num lead de teste antes do merge.
+PROVADO AO VIVO em 27/09 (Fase 0, lead de teste 52262377):
+
+    POST /timelineAdd {"leadId":52262377,"userId":415875,...} -> 400 "User not found."
+    POST /timelineAdd {"leadId":52262377,"userId":415967,...} -> 201 {"value": true}
+    GET  /ListTimeline(52262377) -> a nota aparece, autor 415967, com o sufixo
+         " [Comentário inserido via API]" que a própria Exact acrescenta
+
+O `userId` NÃO PODE SER O `EXACT_BOT_USER_ID` (415875) do `exact_spotter`: é a Victória SDR
+(`processoseletivo+sdr@`), hoje INATIVA na Exact, e a Exact recusa a nota inteira. O autor é
+`EXACT_NOTE_USER_ID` (env), com default 415967 — o usuário `comercial@`, ativo em `/Sellers`.
+É quem aparece como autor da nota para o SDR; trocar é mudar a env, sem deploy de código.
 
 ==========================================================================================
 BEST-EFFORT: NUNCA LEVANTA, NUNCA FAZ RETRY, SEMPRE LOGA
@@ -36,10 +45,23 @@ Nenhum chamador deve ler o retorno para decidir nada; ele existe para teste e lo
 """
 import httpx
 
-from app.exact_spotter import BASE_URL, EXACT_BOT_USER_ID, get_headers
+import os
+
+from app.exact_spotter import BASE_URL, get_headers
 
 # Prefixo de toda nota automática: o SDR distingue a nota do agente da nota de um colega.
 PREFIXO = "[NAT]"
+
+# Autor da nota na Exact. Ver "PROVADO AO VIVO" acima: tem de ser um usuário ATIVO.
+USUARIO_PADRAO = 415967
+
+
+def _autor() -> int:
+    try:
+        return int(os.getenv("EXACT_NOTE_USER_ID") or USUARIO_PADRAO)
+    except ValueError:
+        return USUARIO_PADRAO
+
 
 # 5 s, e não os 15 s do `add_timeline_comment`: a nota de recusa é gravada dentro do
 # processamento do webhook da Meta — mesmo motivo do `timeout=5` do nat_flow.
@@ -62,7 +84,7 @@ async def registrar_observacao(lead_id: int | None, texto: str, *,
         print(f"❌ exact_note #{lead_id}: sem lead_id da Exact — observação não gravada")
         return False
     try:
-        corpo = {"leadId": int(lead_id), "userId": EXACT_BOT_USER_ID,
+        corpo = {"leadId": int(lead_id), "userId": _autor(),
                  "text": com_prefixo(texto)}
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(f"{BASE_URL}/timelineAdd", headers=get_headers(),
