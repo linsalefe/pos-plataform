@@ -343,7 +343,10 @@ def turno(resposta_llm):
          patch.object(fluxo, "_cancelar_follow", new=AsyncMock()), \
          patch.object(fluxo, "_notificar", new=notif), \
          patch.object(fluxo, "enviar_nat", new=envio), \
-         patch.object(llm, "conversar", new=AsyncMock(return_value=resposta_llm)):
+         patch.object(llm, "conversar", new=AsyncMock(return_value=resposta_llm)), \
+         patch.object(fluxo, "_reuniao", new=AsyncMock(return_value=None)), \
+         patch("app.exact_notes.registrar_observacao", new=AsyncMock(return_value=True)):
+        # 27/09: a recusa agora grava na Exact (dublê acima) e o turno consulta a reunião.
         with redirect_stdout(io.StringIO()):
             asyncio.run(fluxo.processar_texto(WA, "Não quero ligação", "wamid.1", db))
     return estado, envio, notif

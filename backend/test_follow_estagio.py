@@ -600,8 +600,13 @@ def envia(linha, lead, retorno=None, excecao=None):
     db = MagicMock()
     db.execute = AsyncMock(side_effect=execute)
     bulk = AsyncMock(return_value=retorno, side_effect=excecao)
-    with patch("app.exact_routes.bulk_send_template", new=bulk):
+    # 27/09: `enviado` agora grava observação na Exact — dublê, senão o teste postaria na
+    # timeline de um lead de verdade.
+    nota = AsyncMock(return_value=True)
+    with patch("app.exact_routes.bulk_send_template", new=bulk), \
+         patch("app.exact_notes.registrar_observacao", new=nota):
         status, log = mudo(fe._enviar_uma, db, linha)
+    envia.nota = nota
     payload = bulk.await_args.args[0] if bulk.await_count else None
     envia.args = bulk.await_args.args if bulk.await_count else ()
     envia.kwargs = bulk.await_args.kwargs if bulk.await_count else {}
