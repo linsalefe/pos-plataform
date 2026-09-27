@@ -50,7 +50,7 @@ Com isso vêm de graça, sem uma linha aqui:
 
   * a recusa de 30 dias e o novo `opt_out_meta` (`higiene_disparo.por_que_pular`);
   * ~~o pulo por conversa ativa do agente (`nat_ativa`)~~ — SAIU em 27/09: desde então o
-    envio ENCERRA o agente do lead (`disparo_manual`), inclusive o deste job;
+    envio ENCERRA o agente do lead, e este job passa `motivo_agente="follow_estagio"`;
   * a canonização das duas grafias do telefone contra o eco da Meta, que é o que evita a
     `ForeignKeyViolation` dos 5 × HTTP 500 de 28/08;
   * a criação do `Contact` e o vínculo do SDR;
@@ -558,6 +558,9 @@ async def _enviar_uma(db, linha) -> str:
         "lead_ids": [lead.id],
         "param_mappings": mappings,
         "origem_envio": "campanha",
+        # 27/09: o envio ENCERRA o agente do lead antes de sair (mesma função do takeover
+        # humano), com motivo próprio. Regra única: ação do SDR encerra o agente.
+        "motivo_agente": "follow_estagio",
     }
 
     try:

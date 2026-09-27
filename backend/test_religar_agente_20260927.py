@@ -14,8 +14,9 @@ O QUE CADA GRUPO PROVA
      reunião passada não bloqueia; a constante das 2h não existe mais
   4. inbound com reunião futura -> `encerrado`/'agendou_no_meio', pendentes da conversa
      cancelados (não o lembrete), nenhuma mensagem, LLM não chamado
-  5. `bulk_send_template` não pula mais por `nat_ativa`: silencia com 'disparo_manual' ANTES
-     de enviar, em campanha e em individual
+  5. `bulk_send_template` não pula mais por `nat_ativa`: silencia ANTES de enviar, em
+     campanha e em individual — 'disparo_manual', ou 'follow_estagio' vindo do job de follow;
+     `add_timeline_comment` usa o mesmo autor ativo das notas
   6. follow por estágio: `enviado` grava observação; falha da nota não muda o status
 """
 import asyncio
@@ -126,6 +127,7 @@ url, corpo = _Cliente.chamadas[0]
 checa("  POST em /timelineAdd", url.endswith("/timelineAdd"), True)
 checa("  corpo {leadId, userId, text}", sorted(corpo), ["leadId", "text", "userId"])
 checa("  leadId é o id da Exact", corpo["leadId"], LEAD)
+checa("  userId é o autor ATIVO (415875 dava 400 'User not found')", corpo["userId"], 415967)
 checa("  texto ganha o prefixo [NAT]", corpo["text"], "[NAT] Follow 3 enviado")
 (r, _) = nota(ok_resp, texto="[NAT] já prefixado")
 checa("  prefixo não duplica", _Cliente.chamadas[0][1]["text"], "[NAT] já prefixado")
@@ -276,7 +278,7 @@ checa("não consulta mais ETAPAS_QUALIFICACAO_ATIVAS",
 checa("não cria mais pulo com regra 'nat_ativa'", '"regra": "nat_ativa"' in corpo_bulk, False)
 checa("MOTIVO_PULO_NAT removido", hasattr(exact_routes, "MOTIVO_PULO_NAT"), False)
 checa("motivo novo", fluxo.MOTIVO_DISPARO_MANUAL, "disparo_manual")
-i_silencia = corpo_bulk.index("motivo=MOTIVO_DISPARO_MANUAL")
+i_silencia = corpo_bulk.index("motivo=motivo_agente)")
 i_envio = corpo_bulk.index("send_template_message(")
 i_higiene = corpo_bulk.index("por_que_pular(")
 checa("silenciar vem ANTES do envio à Meta", i_silencia < i_envio, True)
@@ -284,6 +286,21 @@ checa("  e DEPOIS da higiene (quem é pulado por recusa não perde o agente)",
       i_higiene < i_silencia, True)
 checa("  fora de qualquer `if not individual` (vale nos dois modos)",
       "if not individual" in corpo_bulk[:i_silencia], False)
+checa("motivo do follow", fluxo.MOTIVO_FOLLOW_ESTAGIO, "follow_estagio")
+checa("bulk só aceita motivo_agente conhecido (senão disparo_manual)",
+      "if motivo_agente not in (MOTIVO_DISPARO_MANUAL, MOTIVO_FOLLOW_ESTAGIO)" in corpo_bulk, True)
+
+# add_timeline_comment (NAT, ai_engine) usa o MESMO autor das notas.
+from app import exact_spotter  # noqa: E402
+
+checa("exact_spotter não tem mais o 415875 fixo", hasattr(exact_spotter, "EXACT_BOT_USER_ID"),
+      False)
+_Cliente.chamadas = []
+with patch.object(exact_spotter.httpx, "AsyncClient", new=_Cliente(ok_resp)):
+    mudo(exact_spotter.add_timeline_comment(LEAD, "resumo"))
+checa("add_timeline_comment manda userId=415967", _Cliente.chamadas[0][1]["userId"], 415967)
+with patch.dict("os.environ", {"EXACT_NOTE_USER_ID": "443275"}):
+    checa("EXACT_NOTE_USER_ID troca o autor sem deploy", exact_spotter.autor_das_notas(), 443275)
 
 # Comportamento do helper: repassa o motivo para `silenciar`.
 from app import routes  # noqa: E402
@@ -327,7 +344,9 @@ def envia(retorno, nota_ok=True):
     linha = MagicMock(id=1, lead_exact_id=LEAD, estagio_id=129983, estagio_nome="Follow 3")
     nota = AsyncMock(return_value=nota_ok)
     fin = AsyncMock()
-    with patch("app.exact_routes.bulk_send_template", new=AsyncMock(return_value=retorno)), \
+    bulk = AsyncMock(return_value=retorno)
+    envia.bulk = bulk
+    with patch("app.exact_routes.bulk_send_template", new=bulk), \
          patch("app.exact_notes.registrar_observacao", new=nota), \
          patch.object(fe, "montar_mappings", new=MagicMock(return_value=([], None))), \
          patch.object(fe, "_finalizar", new=fin):
@@ -338,6 +357,8 @@ def envia(retorno, nota_ok=True):
 ENVIADO = {"sent": 1, "failed": 0, "errors": [], "skipped": [], "skipped_total": 0,
            "skipped_por_regra": {}, "skipped_nat": 0}
 status, nota, fin = envia(ENVIADO)
+checa("payload do follow leva motivo_agente='follow_estagio'",
+      envia.bulk.await_args.args[0].get("motivo_agente"), "follow_estagio")
 checa("enviado -> nota gravada", nota.await_count, 1)
 checa("  no lead da Exact da linha", nota.await_args.args[0], LEAD)
 checa("  com o nome do estágio", nota.await_args.args[1].startswith("[NAT] Follow 3 enviado"),

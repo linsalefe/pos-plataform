@@ -405,6 +405,11 @@ async def bulk_send_template(
     # lado de atropelar custou 20 conversas em 2 dias.
     individual = str(request.get("origem_envio") or "").strip().lower() == "individual"
 
+    from app.qualificacao_fluxo import MOTIVO_DISPARO_MANUAL, MOTIVO_FOLLOW_ESTAGIO
+    motivo_agente = request.get("motivo_agente")
+    if motivo_agente not in (MOTIVO_DISPARO_MANUAL, MOTIVO_FOLLOW_ESTAGIO):
+        motivo_agente = MOTIVO_DISPARO_MANUAL
+
     for lead in leads:
         phone = lead.phone1
         if not phone:
@@ -445,9 +450,12 @@ async def bulk_send_template(
         # É a MESMA função do takeover humano (`silenciar`, via o helper de routes.py), só
         # com o motivo `disparo_manual`. No-op barato para quem não tem estado ativo.
         # `disparo_skip` não recebe mais `nat_ativa`; `skipped_nat` segue na resposta (0).
-        from app.qualificacao_fluxo import MOTIVO_DISPARO_MANUAL
+        #
+        # O follow por estágio passa `motivo_agente="follow_estagio"` no payload: mesma regra
+        # (ação do SDR — arrastar o card — encerra o agente), motivo próprio para relatório.
+        # Só valores conhecidos; qualquer outra coisa vira `disparo_manual`.
         await _silenciar_agente_apos_envio_manual(phone, current_user, db,
-                                                  motivo=MOTIVO_DISPARO_MANUAL)
+                                                  motivo=motivo_agente)
 
         # Resolver valores das variáveis
         if param_mappings and len(param_mappings) > 0:

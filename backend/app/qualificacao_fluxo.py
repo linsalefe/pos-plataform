@@ -1051,6 +1051,8 @@ MOTIVO_ASSUMIDO_SDR = "assumido_sdr"
 MOTIVO_OUTBOUND_MANUAL = "outbound_manual_sdr"
 # 27/09: o disparo (campanha ou individual) encerra o agente em vez de ser pulado por ele.
 MOTIVO_DISPARO_MANUAL = "disparo_manual"
+# 27/09: o follow por estágio (o SDR arrastou o card) encerra o agente pela mesma função.
+MOTIVO_FOLLOW_ESTAGIO = "follow_estagio"
 
 
 async def silenciar(contact_wa_id: str, motivo: str, db: AsyncSession, *,

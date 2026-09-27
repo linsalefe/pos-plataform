@@ -28,9 +28,10 @@ PROVADO AO VIVO em 27/09 (Fase 0, lead de teste 52262377):
     GET  /ListTimeline(52262377) -> a nota aparece, autor 415967, com o sufixo
          " [Comentário inserido via API]" que a própria Exact acrescenta
 
-O `userId` NÃO PODE SER O `EXACT_BOT_USER_ID` (415875) do `exact_spotter`: é a Victória SDR
+O `userId` NÃO PODE SER o 415875 que o `exact_spotter` usava fixo até 27/09: é a Victória SDR
 (`processoseletivo+sdr@`), hoje INATIVA na Exact, e a Exact recusa a nota inteira. O autor é
 `EXACT_NOTE_USER_ID` (env), com default 415967 — o usuário `comercial@`, ativo em `/Sellers`.
+A leitura mora em `exact_spotter.autor_das_notas`, a MESMA do `add_timeline_comment`.
 É quem aparece como autor da nota para o SDR; trocar é mudar a env, sem deploy de código.
 
 ==========================================================================================
@@ -45,23 +46,10 @@ Nenhum chamador deve ler o retorno para decidir nada; ele existe para teste e lo
 """
 import httpx
 
-import os
-
-from app.exact_spotter import BASE_URL, get_headers
+from app.exact_spotter import BASE_URL, autor_das_notas, get_headers
 
 # Prefixo de toda nota automática: o SDR distingue a nota do agente da nota de um colega.
 PREFIXO = "[NAT]"
-
-# Autor da nota na Exact. Ver "PROVADO AO VIVO" acima: tem de ser um usuário ATIVO.
-USUARIO_PADRAO = 415967
-
-
-def _autor() -> int:
-    try:
-        return int(os.getenv("EXACT_NOTE_USER_ID") or USUARIO_PADRAO)
-    except ValueError:
-        return USUARIO_PADRAO
-
 
 # 5 s, e não os 15 s do `add_timeline_comment`: a nota de recusa é gravada dentro do
 # processamento do webhook da Meta — mesmo motivo do `timeout=5` do nat_flow.
@@ -84,7 +72,7 @@ async def registrar_observacao(lead_id: int | None, texto: str, *,
         print(f"❌ exact_note #{lead_id}: sem lead_id da Exact — observação não gravada")
         return False
     try:
-        corpo = {"leadId": int(lead_id), "userId": _autor(),
+        corpo = {"leadId": int(lead_id), "userId": autor_das_notas(),
                  "text": com_prefixo(texto)}
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(f"{BASE_URL}/timelineAdd", headers=get_headers(),
