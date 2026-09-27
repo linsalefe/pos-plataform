@@ -235,10 +235,6 @@ async def resend_welcome(exact_id: int, db: AsyncSession = Depends(get_db)):
 #
 # Disparo em massa sem login é risco de suspensão da conta WhatsApp, não de conveniência: um
 # POST anônimo daqui manda template para a lista de leads que quiser.
-# O motivo que o SDR lê quando um envio é pulado. Diz o CAMINHO, não só o impedimento:
-# quem tenta falar com essa pessoa por template tem para onde ir, e o que acontece lá.
-MOTIVO_PULO_NAT = ("contato em conversa ativa com a NAT — responda pela tela de Conversas "
-                   "(a trava transfere o agente automaticamente)")
 
 
 @router.post("/bulk-send-template")
@@ -409,6 +405,11 @@ async def bulk_send_template(
     # lado de atropelar custou 20 conversas em 2 dias.
     individual = str(request.get("origem_envio") or "").strip().lower() == "individual"
 
+    from app.qualificacao_fluxo import MOTIVO_DISPARO_MANUAL, MOTIVO_FOLLOW_ESTAGIO
+    motivo_agente = request.get("motivo_agente")
+    if motivo_agente not in (MOTIVO_DISPARO_MANUAL, MOTIVO_FOLLOW_ESTAGIO):
+        motivo_agente = MOTIVO_DISPARO_MANUAL
+
     for lead in leads:
         phone = lead.phone1
         if not phone:
@@ -418,19 +419,10 @@ async def bulk_send_template(
 
         phone = phone.replace("+", "").replace(" ", "").replace("-", "")
 
-        # S5-5: pula quem está em etapa ATIVA do agente. `estado_de` resolve nas DUAS
-        # grafias do telefone (`app/telefone.py`) — com igualdade crua, os 59% de threads
-        # que chegam sem o 9º dígito passariam direto pelo filtro. `ETAPAS_QUALIFICACAO_
-        # ATIVAS` é a MESMA constante que governa escutar e falar: uma fonte de verdade
-        # para "o agente é dono desta conversa", não uma segunda lista que divergiria.
-        #
-        # ANTES de qualquer chamada à Meta: o pulo não gasta envio, não gasta o `sleep(1)`
-        # do rate limit e não deixa `Message` órfã.
-        # S6-2 — HIGIENE: a recusa (a) e, desde 27/09, o opt-out da Meta (d). ANTES do filtro
-        # da NAT porque a ordem é de IMPORTÂNCIA, não de custo: as duas de `por_que_pular`
-        # falam de um pedido EXPLÍCITO da pessoa — uma pelo que ela escreveu, outra pelo botão
-        # "parar promoções" que a Meta nos devolve como erro 131050. Quando batem junto com a
-        # `nat_ativa`, o motivo que o SDR lê tem que ser um desses dois.
+        # S6-2 — HIGIENE: a recusa (a) e, desde 27/09, o opt-out da Meta (d). Primeiro porque
+        # a ordem é de IMPORTÂNCIA, não de custo: as duas de `por_que_pular` falam de um pedido EXPLÍCITO da pessoa — uma pelo que ela escreveu, outra pelo botão
+        # "parar promoções" que a Meta nos devolve como erro 131050. E ANTES de encerrar o
+        # agente (abaixo): a quem não vai receber o template, o agente não é tirado.
         #
         # `regra` vem de `por_que_pular` e viaja cru daqui para `pulados`, `disparo_skip.regra`
         # e `skipped_por_regra`: uma regra nova lá não exige nenhuma mudança aqui, e é por isso
@@ -449,18 +441,21 @@ async def bulk_send_template(
                   f"template '{template_name}' não enviado")
             continue
 
-        if not individual:
-            from app.models import ETAPAS_QUALIFICACAO_ATIVAS
-            from app.qualificacao_fluxo import estado_de
-            ativo = await estado_de(phone, db)
-            if ativo is not None and ativo.etapa in ETAPAS_QUALIFICACAO_ATIVAS:
-                pulados.append({"name": lead.name, "phone": phone, "regra": "nat_ativa",
-                                "etapa": ativo.etapa, "motivo": MOTIVO_PULO_NAT})
-                skips.append(_skip(lead, phone, "nat_ativa", MOTIVO_PULO_NAT,
-                                   ativo.etapa))
-                print(f"⏭️  Disparo PULOU {phone} ({lead.name}): conversa ativa com a NAT "
-                      f"em '{ativo.etapa}' — template '{template_name}' não enviado")
-                continue
+        # 27/09 — O DISPARO NUNCA É BLOQUEADO PELO AGENTE: ENCERRA O AGENTE. Até aqui a
+        # campanha PULAVA quem estava em etapa ativa (`nat_ativa`, S5-5 de 28/08). A Isa e o
+        # Álefe inverteram: quem dispara decidiu falar com essa pessoa, e o agente sai — o
+        # mesmo efeito de o SDR responder pela tela de Conversas. Vale em campanha e em
+        # individual, e ANTES do envio, para que a resposta ao template já não caia no agente.
+        #
+        # É a MESMA função do takeover humano (`silenciar`, via o helper de routes.py), só
+        # com o motivo `disparo_manual`. No-op barato para quem não tem estado ativo.
+        # `disparo_skip` não recebe mais `nat_ativa`; `skipped_nat` segue na resposta (0).
+        #
+        # O follow por estágio passa `motivo_agente="follow_estagio"` no payload: mesma regra
+        # (ação do SDR — arrastar o card — encerra o agente), motivo próprio para relatório.
+        # Só valores conhecidos; qualquer outra coisa vira `disparo_manual`.
+        await _silenciar_agente_apos_envio_manual(phone, current_user, db,
+                                                  motivo=motivo_agente)
 
         # Resolver valores das variáveis
         if param_mappings and len(param_mappings) > 0:
@@ -593,6 +588,10 @@ async def bulk_send_template(
                 # Por contato, dentro do laço: um disparo para 300 leads pode ter 2 em
                 # qualificação, e silenciar em bloco no fim exigiria carregar a lista inteira
                 # só para descobrir isso. `silenciar` é no-op barato para quem não tem estado.
+                #
+                # Desde 27/09 o agente já sai ANTES do envio (`disparo_manual`, acima); isto
+                # fica como rede para a grafia canônica do eco da Meta (`wa_id`), que pode
+                # diferir do `phone1` — normalmente é no-op.
                 await _silenciar_agente_apos_envio_manual(wa_id, current_user, db)
                 sent += 1
             else:

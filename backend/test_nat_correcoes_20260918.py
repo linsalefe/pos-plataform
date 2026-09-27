@@ -199,13 +199,14 @@ checa("  e conclui CONFIRMANDO (mesmo caminho de `_avancar`)",
 
 
 # ==========================================================================================
-print("\n5) abertura recusada com reunião em menos de 2h (Elisangela)")
+print("\n5) abertura recusada com reunião marcada (Elisangela; desde 27/09 em qualquer horizonte)")
 
-checa("reunião em 1h30: perto demais", guard.reuniao_perto_demais(AGORA + timedelta(minutes=90), AGORA), True)
-checa("reunião em 3h: não", guard.reuniao_perto_demais(AGORA + timedelta(hours=3), AGORA), False)
-checa("reunião que já começou: não (não é 'nas próximas 2h')",
-      guard.reuniao_perto_demais(AGORA - timedelta(minutes=10), AGORA), False)
-checa("sem reunião: não", guard.reuniao_perto_demais(None, AGORA), False)
+checa("reunião em 1h30: futura", guard.reuniao_futura(AGORA + timedelta(minutes=90), AGORA), True)
+checa("reunião em 3 dias: futura (era 'não' na regra das 2h)",
+      guard.reuniao_futura(AGORA + timedelta(days=3), AGORA), True)
+checa("reunião que já começou: não",
+      guard.reuniao_futura(AGORA - timedelta(minutes=10), AGORA), False)
+checa("sem reunião: não", guard.reuniao_futura(None, AGORA), False)
 
 def abre(reuniao_da_pessoa):
     db = _db()
@@ -226,10 +227,12 @@ def abre(reuniao_da_pessoa):
             return f"seguiu: {type(e).__name__}", criar
 
 motivo, criar = abre(reuniao(em=AGORA + timedelta(minutes=90)))
-checa("reunião em 1h30 → skipped com o motivo padronizado", motivo, guard.MOTIVO_REUNIAO_PERTO)
+checa("reunião em 1h30 → skipped com o motivo padronizado", motivo, guard.MOTIVO_JA_AGENDADO)
 checa("  ANTES de criar contato (nada para o savepoint reverter)", criar.await_count, 0)
 motivo, criar = abre(reuniao(em=AGORA + timedelta(days=1)))
-checa("reunião amanhã → a abertura segue (T1)", motivo == guard.MOTIVO_REUNIAO_PERTO, False)
+checa("reunião amanhã → TAMBÉM skipped (27/09: qualquer horizonte)", motivo, guard.MOTIVO_JA_AGENDADO)
+motivo, criar = abre(reuniao(em=AGORA - timedelta(days=1)))
+checa("reunião ontem → a abertura segue (T1)", motivo == guard.MOTIVO_JA_AGENDADO, False)
 checa("  e o contato é resolvido", criar.await_count, 1)
 
 
@@ -340,7 +343,10 @@ def turno(resposta_llm):
          patch.object(fluxo, "_cancelar_follow", new=AsyncMock()), \
          patch.object(fluxo, "_notificar", new=notif), \
          patch.object(fluxo, "enviar_nat", new=envio), \
-         patch.object(llm, "conversar", new=AsyncMock(return_value=resposta_llm)):
+         patch.object(llm, "conversar", new=AsyncMock(return_value=resposta_llm)), \
+         patch.object(fluxo, "_reuniao", new=AsyncMock(return_value=None)), \
+         patch("app.exact_notes.registrar_observacao", new=AsyncMock(return_value=True)):
+        # 27/09: a recusa agora grava na Exact (dublê acima) e o turno consulta a reunião.
         with redirect_stdout(io.StringIO()):
             asyncio.run(fluxo.processar_texto(WA, "Não quero ligação", "wamid.1", db))
     return estado, envio, notif

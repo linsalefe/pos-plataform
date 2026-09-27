@@ -27,8 +27,19 @@ POS_FUNNEL_IDS = _parse_ids(os.getenv("POS_FUNNEL_IDS", "18535,18537,25588"))
 # Pode-se restringir definindo INGEST_FUNNEL_IDS no ambiente (lista separada por vírgula).
 INGEST_FUNNEL_IDS = _parse_ids(os.getenv("INGEST_FUNNEL_IDS", ""))
 
-# ID do usuário para comentários na timeline (Victória Amorim)
-EXACT_BOT_USER_ID = 415875
+# Autor das notas na timeline da Exact. Era 415875 (Victória SDR) fixo até 27/09 — usuário
+# INATIVO, e a Exact recusa a nota inteira com 400 "User not found.", de modo que toda
+# anotação do NAT e todo resumo do ai_engine falhavam calados. Provado ao vivo na Fase 0 da
+# SPRINT_RELIGAR_AGENTE_20260927 (ver app/exact_notes.py). Default 415967 = comercial@, ativo.
+EXACT_NOTE_USER_PADRAO = 415967
+
+
+def autor_das_notas() -> int:
+    """`EXACT_NOTE_USER_ID` do ambiente, lido a cada chamada; inválido ou vazio -> padrão."""
+    try:
+        return int(os.getenv("EXACT_NOTE_USER_ID") or EXACT_NOTE_USER_PADRAO)
+    except ValueError:
+        return EXACT_NOTE_USER_PADRAO
 
 
 def _funnels_from_config(cfg) -> set:
@@ -66,7 +77,7 @@ async def add_timeline_comment(lead_id: int, text: str, *, timeout: float = 15):
                 json={
                     "leadId": lead_id,
                     "text": text,
-                    "userId": EXACT_BOT_USER_ID,
+                    "userId": autor_das_notas(),
                 },
             )
             if response.status_code in (200, 201):

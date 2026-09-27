@@ -282,30 +282,30 @@ async def guard_de_abertura(contact: Contact, db: AsyncSession) -> tuple[bool, s
 
 
 # ==========================================================================================
-# DISTÂNCIA MÍNIMA ATÉ A REUNIÃO PARA ABRIR A QUALIFICAÇÃO (18/09/2026)
+# QUEM JÁ TEM REUNIÃO MARCADA NÃO RECEBE ABERTURA — EM QUALQUER HORIZONTE (27/09/2026)
 # ==========================================================================================
-# Elisangela (`5541996390611`, RECON_NAT_FOLLOWUPS_20260917 §4.3 / Defeito 4): reunião marcada
-# pela página para 14/09 às 10:30, e o agente abriu às 09:00 do mesmo dia perguntando a
-# formação — uma hora e meia antes de ela falar com a consultora. Mesmo no caso "certo" (T1,
-# reunião reconhecida), abrir seis perguntas a quem vai ser atendido daqui a pouco é ruído:
-# a consultora vai perguntar tudo de novo, ao vivo.
+# Até 27/09 a regra era "reunião nas próximas 2h" (`MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA`,
+# 18/09, caso Elisangela: reunião 10:30, abertura às 09:00). A Isa e o Álefe estenderam para
+# QUALQUER reunião futura: quem marcou vai falar com a consultora, e as seis perguntas da
+# abertura são perguntas que ela vai fazer de novo, ao vivo. O caso das 2h está contido.
+#
+# CONSEQUÊNCIA: a abertura T1 ("vi que você agendou") só sai agora para reunião que JÁ
+# PASSOU. Para reunião futura, o que a pessoa recebe do agente é o lembrete T-30.
 #
 # É ABERTURA, não lembrete: o T-30 continua saindo para essa reunião (ele nasce em
 # `agendar.py:_gatilho_do_agente`, independente do estado do agente).
-MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA = 2
-MOTIVO_REUNIAO_PERTO = "reuniao_em_menos_de_2h"
+MOTIVO_JA_AGENDADO = "ja_agendado"
+# O mesmo fato descoberto DEPOIS da abertura: a pessoa marcou pelo site no meio da conversa.
+MOTIVO_AGENDOU_NO_MEIO = "agendou_no_meio"
 
 
-def reuniao_perto_demais(slot_inicio: datetime | None, agora: datetime) -> bool:
-    """A reunião começa nas próximas `MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA` horas?
+def reuniao_futura(slot_inicio: datetime | None, agora: datetime) -> bool:
+    """A reunião ainda não começou? Qualquer horizonte — amanhã ou daqui a um mês.
 
     Os dois relógios são SP naive (`agendamentos.slot_inicio` e `_agora_sp()`). Reunião que
-    JÁ começou não conta: não é "nas próximas 2h", e a abertura T1 sabe falar de reunião
-    passada tão mal quanto de reunião futura — esse caso não é deste guard.
+    JÁ começou não conta: essa pessoa não está esperando a consultora.
     """
-    if slot_inicio is None:
-        return False
-    return agora <= slot_inicio <= agora + timedelta(hours=MIN_HORAS_ATE_REUNIAO_PARA_ABERTURA)
+    return slot_inicio is not None and slot_inicio > agora
 
 
 # ==========================================================================================

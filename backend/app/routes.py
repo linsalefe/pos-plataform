@@ -204,7 +204,8 @@ async def get_channel(channel_id: int, db: AsyncSession) -> Channel:
 # a dependência de request vaze para a assinatura. Aqui não há chamador interno hoje, mas a
 # forma é a mesma nos quatro endpoints de disparo — um padrão só, e o que já existia em
 # /{exact_id}/resend-welcome.
-async def _silenciar_agente_apos_envio_manual(wa_id: str, quem, db: AsyncSession) -> None:
+async def _silenciar_agente_apos_envio_manual(wa_id: str, quem, db: AsyncSession, *,
+                                              motivo: str | None = None) -> None:
     """SDR digitou num contato que o agente estava conduzindo → o agente cala.
 
     NUNCA DUAS VOZES NA MESMA THREAD. Sem isto, o SDR responde "oi, sou o Thobias" e a
@@ -235,11 +236,14 @@ async def _silenciar_agente_apos_envio_manual(wa_id: str, quem, db: AsyncSession
     devolver erro para um envio que ACONTECEU, e o SDR mandaria de novo. Por isso savepoint
     (um IntegrityError deixaria a transação abortada e o `commit` do envio falharia junto) e
     `except` largo. O pior caso é o agente continuar ativo, que é o estado de hoje.
+
+    `motivo` (27/09): o disparo de `bulk_send_template` passa `disparo_manual`; o default é
+    `outbound_manual_sdr`, o de sempre das rotas `/send/*`.
     """
     try:
         async with db.begin_nested():
             from app.qualificacao_fluxo import MOTIVO_OUTBOUND_MANUAL, silenciar
-            await silenciar(wa_id, MOTIVO_OUTBOUND_MANUAL, db,
+            await silenciar(wa_id, motivo or MOTIVO_OUTBOUND_MANUAL, db,
                             quem_id=getattr(quem, "id", None),
                             quem_nome=getattr(quem, "name", None))
     except Exception as e:
