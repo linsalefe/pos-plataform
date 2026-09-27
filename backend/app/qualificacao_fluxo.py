@@ -1323,6 +1323,12 @@ async def _corpo_do_template(nome_template: str, parametros: list,
 # O NÚCLEO: UMA MENSAGEM DO LEAD
 # ==========================================================================================
 
+def texto_nota_recusa(quando) -> str:
+    """A observação da recusa de ligação na Exact. `quando` é SP naive (`_agora_sp()`)."""
+    return (f"[NAT] Lead recusou ligação pelo WhatsApp em {quando:%d/%m %H:%M}. "
+            f"Prefere mensagem.")
+
+
 async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
                           db: AsyncSession) -> bool:
     """Uma mensagem recebida. True se o agente tratou; False se não é dele.
@@ -1380,6 +1386,11 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
                             texto=nat_copy.TEXTO_RECUSA_LIGACAO,
                             aviso_sdr="O lead não quer ligação — quer seguir por mensagem. "
                                       "Chame por aqui.")
+            # 27/09: a recusa também vai para a TIMELINE DO LEAD NA EXACT, que é onde o SDR
+            # trabalha — o sino do Hub continua (acima). Best-effort e DEPOIS da despedida:
+            # a transferência já aconteceu, e a nota não tem como desfazê-la.
+            from app.exact_notes import registrar_observacao
+            await registrar_observacao(estado.exact_lead_id, texto_nota_recusa(_agora_sp()))
             return True
         await _fallback(estado, "o LLM pediu transferência (lead quer falar com uma pessoa, "
                                 "remarcar, ou saiu do roteiro)", db)
