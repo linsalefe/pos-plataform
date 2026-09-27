@@ -426,9 +426,15 @@ async def bulk_send_template(
         #
         # ANTES de qualquer chamada à Meta: o pulo não gasta envio, não gasta o `sleep(1)`
         # do rate limit e não deixa `Message` órfã.
-        # S6-2 — HIGIENE (a), a recusa. ANTES do filtro da NAT porque a ordem é de
-        # IMPORTÂNCIA, não de custo: a recusa é a única regra que fala de um pedido
-        # explícito da pessoa, e quando duas batem o motivo que o SDR lê tem que ser esse.
+        # S6-2 — HIGIENE: a recusa (a) e, desde 27/09, o opt-out da Meta (d). ANTES do filtro
+        # da NAT porque a ordem é de IMPORTÂNCIA, não de custo: as duas de `por_que_pular`
+        # falam de um pedido EXPLÍCITO da pessoa — uma pelo que ela escreveu, outra pelo botão
+        # "parar promoções" que a Meta nos devolve como erro 131050. Quando batem junto com a
+        # `nat_ativa`, o motivo que o SDR lê tem que ser um desses dois.
+        #
+        # `regra` vem de `por_que_pular` e viaja cru daqui para `pulados`, `disparo_skip.regra`
+        # e `skipped_por_regra`: uma regra nova lá não exige nenhuma mudança aqui, e é por isso
+        # que o `opt_out_meta` apareceu sem tocar nesta rota.
         #
         # Vale também no individual — quem aperta enviar aqui está olhando a lista da
         # Exact, onde o "não" do lead não aparece. Ver o docstring de `por_que_pular`.

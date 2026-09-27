@@ -22,8 +22,10 @@ O QUE ESTE TESTE PROVA
   5. a recusa é achada nas DUAS grafias do telefone
   6. higiene NUNCA derruba disparo: banco quebrado => envia
   7. a rota registra o pulo com a regra, e `skipped_nat` NÃO muda de significado
+  8. (27/09) o opt-out da META pula — `131050` sim, `131049` NÃO
 """
 import asyncio
+import inspect
 import io
 import re
 from contextlib import redirect_stdout
@@ -31,7 +33,8 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app import exact_routes, higiene_disparo
-from app.higiene_disparo import PADRAO_RECUSA, por_que_pular
+from app.higiene_disparo import (CODIGO_OPT_OUT_META, CODIGOS_OPT_OUT_META,
+                                 PADRAO_RECUSA, por_que_pular)
 
 falhas = []
 
@@ -104,11 +107,18 @@ for frase, porque in NAO_PODE_CASAR:
 print("\n2, 3 e 4) A janela da recusa — e o teto que NÃO existe mais")
 
 
-def pergunta(recusa_texto=None, n_templates=0, wa="5541999888777"):
-    """Roda `por_que_pular` com um banco que responde exatamente essas duas coisas.
+def pergunta(recusa_texto=None, n_templates=0, wa="5541999888777", opt_out=None):
+    """Roda `por_que_pular` com um banco que responde exatamente essas coisas.
+
+    São DUAS consultas desde 27/09, nesta ordem: `_recusou` e `_opt_out_meta`.
 
     `n_templates` continua aqui de propósito: o dublê está PRONTO para responder a
-    contagem, e a prova é que ninguém pergunta (`len(chamadas) == 1`).
+    contagem, e a prova é que ninguém pergunta (o teto saiu em 21/09).
+
+    `opt_out` nasce em None — "a Meta nunca registrou opt-out para este contato". Sem esse
+    default explícito, o `MagicMock` devolveria um mock TRUTHY em vez de None e TODO caso de
+    "sem recusa" viraria `opt_out_meta`. O dublê que responde por omissão mente para o lado
+    perigoso, e é justamente o que esta linha impede.
     """
     chamadas = []
 
@@ -117,6 +127,8 @@ def pergunta(recusa_texto=None, n_templates=0, wa="5541999888777"):
         r = MagicMock()
         if len(chamadas) == 1:                      # _recusou
             r.scalar_one_or_none = MagicMock(return_value=recusa_texto)
+        elif len(chamadas) == 2:                    # _opt_out_meta
+            r.scalar_one_or_none = MagicMock(return_value=opt_out)
         else:                                       # (era _quantos_templates; não existe mais)
             r.scalar_one = MagicMock(return_value=n_templates)
         return r
@@ -136,19 +148,22 @@ checa("  e diz o caminho (tela de Conversas)", "tela de Conversas" in r[1], True
 
 r, n = pergunta(recusa_texto=None, n_templates=0)
 checa("sem recusa e sem toques: envia", r, None)
-checa("  e só UMA consulta rodou (a recusa) — a contagem de templates não existe mais", n, 1)
+# DUAS desde 27/09 (recusa + opt-out da Meta). A contagem de templates continua não
+# existindo — se ela voltasse, seriam três.
+checa("  e só DUAS consultas rodaram (recusa + opt-out) — o teto não existe mais", n, 2)
 
 print("\n3) O teto NÃO existe mais (21/09): 3, 9 templates na semana — envia")
 r, n = pergunta(n_templates=3)
 checa("3 templates em 7 dias: ENVIA", r, None)
-checa("  e nem contou os templates", n, 1)
+checa("  e nem contou os templates", n, 2)
 
 r, n = pergunta(n_templates=9)
 checa("9 templates (o processo prevê 9 follows): ENVIA", r, None)
-checa("  e nem contou os templates", n, 1)
+checa("  e nem contou os templates", n, 2)
 
-r, _ = pergunta(recusa_texto="não desejo", n_templates=9)
+r, n = pergunta(recusa_texto="não desejo", n_templates=9)
 checa("recusa com 9 toques: o motivo é a RECUSA, não um teto", r[0], "recusa")
+checa("  e a recusa curto-circuita: o opt-out nem é consultado", n, 1)
 
 # `regra` nunca pode voltar a ser 'teto': a tela não tem mais rótulo para isso, e
 # `disparo_skips` não deve ganhar linha nova com essa regra a partir do deploy.
@@ -280,6 +295,63 @@ checa("o pulo está no log com a regra", "por 'recusa'" in log, True)
 r, envio, _ = dispara([_lead(1, "Ana", "5511988887777")], lambda *a, **k: None)
 checa("sem higiene a acionar, tudo sai", envio.await_count, 1)
 checa("  e o contrato antigo continua", ("sent" in r, "skipped_nat" in r), (True, True))
+
+
+# ==========================================================================================
+print("\n8) O opt-out da META (27/09) — `131050` pula, `131049` NÃO")
+#
+# O WhatsApp tem um botão "parar promoções" que não manda mensagem nenhuma para nós: o que
+# chega é o erro `131050` no envio SEGUINTE. O Hub já gravava em `messages.error_code`
+# (main.py:698) e `delivery_health` já contava — ninguém lia para DECIDIR se pode enviar.
+# Medido em 27/09: 1 lead com 131050 nos 30 dias, e ele seguia entrando em todo disparo.
+
+r, n = pergunta(recusa_texto=None, opt_out=CODIGO_OPT_OUT_META)
+checa("131050 registrado pela Meta: PULA", r[0], "opt_out_meta")
+checa("  e o motivo cita o código", "131050" in r[1], True)
+checa("  e diz o caminho (tela de Conversas)", "tela de Conversas" in r[1], True)
+checa("  e as duas consultas rodaram", n, 2)
+
+# A DISTINÇÃO QUE É O ACHADO. 131049 aparece 17× nos mesmos 30 dias — 17 vezes mais que o
+# 131050 — e é a Meta LIMITANDO A FREQUÊNCIA, não o destinatário escolhendo sair. O mesmo
+# lead volta a receber no dia seguinte. Tratar os dois igual apagaria de todas as campanhas
+# gente que nunca pediu para sair.
+#
+# A prova é dupla, e as duas metades importam: o código não está na LISTA, e é a lista que a
+# consulta usa no `in_` — então um 131049 no banco não é nem devolvido pelo dublê.
+for codigo, rotulo in ((131049, "limite de frequência da Meta"),
+                       (131026, "número indisponível"),
+                       (131047, "janela de reengajamento"),
+                       (131008, "parâmetro em branco")):
+    checa(f"{codigo} ({rotulo}) NÃO está na lista de opt-out",
+          codigo in CODIGOS_OPT_OUT_META, False)
+
+checa("a lista de opt-out tem UM código só, e é o 131050",
+      CODIGOS_OPT_OUT_META, (131050,))
+
+# SEM JANELA, ao contrário da recusa: o opt-out da Meta não expira sozinho. A prova é que a
+# consulta não leva corte de data — `_opt_out_meta` recebe (variantes, db), sem `desde`.
+checa("`_opt_out_meta` não tem parâmetro de data (o opt-out não expira)",
+      [p for p in inspect.signature(higiene_disparo._opt_out_meta).parameters
+       if p not in ("variantes", "db")], [])
+checa("`_recusou` TEM corte de data (a recusa expira em 30 dias)",
+      "desde" in inspect.signature(higiene_disparo._recusou).parameters, True)
+
+# A recusa vem PRIMEIRO quando as duas batem: a frase da pessoa é mais acionável que um
+# código de erro.
+r, _ = pergunta(recusa_texto="Não tenho mais interesse", opt_out=CODIGO_OPT_OUT_META)
+checa("recusa + opt-out: o SDR lê a RECUSA (a frase da pessoa)", r[0], "recusa")
+
+# E a regra nova viaja crua para a rota, sem a rota saber que ela existe.
+async def bruna_optou_por_sair(wa, db, *, agora):
+    return ("opt_out_meta", higiene_disparo.MOTIVO_OPT_OUT_META)
+
+r, envio, log = dispara([_lead(1, "Bruna", "5541999888777")], bruna_optou_por_sair)
+checa("a rota PULA o opt_out_meta sem ter sido mudada", envio.await_count, 0)
+checa("  e o conta em skipped_por_regra com o nome da regra",
+      r["skipped_por_regra"], {"opt_out_meta": 1})
+checa("  e NÃO o conta em skipped_nat (o significado não muda)", r["skipped_nat"], 0)
+checa("  e o conta em skipped_total", r["skipped_total"], 1)
+checa("  e o log nomeia a regra", "opt_out_meta" in log, True)
 
 
 # ==========================================================================================
