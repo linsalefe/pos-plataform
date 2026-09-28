@@ -177,8 +177,12 @@ ESPERADO = {
     "curso": {"type": "lead_course"},
     "sdr": {"type": "sdr_name"},
 }
+# Pós SEM variante (28/09): o `Lead()` padrão é `PosMulheridades`, que tem template próprio
+# no Follow 3 e 4 — e aí os params são `params_por_curso`. Este bloco prova o GENÉRICO; as
+# variantes estão em test_follow_por_curso.py.
 for eid, nome, _, params in NOVE:
-    mp, motivo = montar_mappings(m["estagios"][eid], Lead(), agora=AGORA_SP)
+    mp, motivo = montar_mappings(m["estagios"][eid], Lead(sub_source="Pos Psicologia Clinica T2"),
+                                 agora=AGORA_SP)
     esperado = [ESPERADO[p] if p != "mes" else {"type": "fixed_text", "value": "Setembro"}
                 for p in params]
     checa(f"{nome!r}: mappings", mp, esperado)
