@@ -1,6 +1,7 @@
 # SPRINT_FOLLOW_POR_CURSO_20260928 — Follow 3 e Follow 4 com template por pós
 
 Branch `follow-por-curso`. **Aprovado no checkpoint com três ajustes (§6), mergeado e no ar.**
+**Em produção (§7): 18 Follow 4 por variante, 12 entregues, 0 erro de template; F3 ainda sem entrada.**
 As seções 1 a 5 descrevem o estado do checkpoint. **O que vale em produção é o §6**: Enfermagem
 voltou ao F4 com `pt_PT`, o F4 de Trabalhador é `f4_audioorgtrabalho`, e há aliases e três
 cursos a mais.
@@ -381,4 +382,56 @@ inválido), **não executado**. `py_compile` OK nos quatro arquivos.
 
 ## 7. Deploy e primeiros envios reais
 
-(preenchido abaixo)
+Merge `cda5180` em `main`, push, `cenat-backend` reiniciado em **28/09 20:08:34 UTC** (17:08 SP).
+Janela observada: até 21:28 UTC (18:28 SP). Fontes: `follow_estagio_envios`, o journal
+(`✅ follow #`, `📝 exact_note #`, `❌ Meta recusou`) e `messages`.
+
+### Follow 4: 18 envios, todos por variante, nenhum no genérico
+
+| # | lead | template | Meta | nota na Exact |
+|---|---|---|---|---|
+| 31 | 51968226 | f4_audiopsiescolar | delivered | ✅ |
+| 32 | 51503724 | f4_audiogrupot2 | delivered | ✅ |
+| 33 | 51429477 | f4_audioinfantoead | delivered | ✅ |
+| 34 | 52013431 | f4_audioinfantoead | **failed 131026** | ✅ |
+| 35 | 52008485 | f4_audiogrupot2 | delivered | ✅ |
+| 36 | 52001613 | **f4_audiosmenfermagem (pt_PT)** | **delivered** | ✅ |
+| 37 | 51991784 | **f4_audioorgtrabalho** | delivered | ✅ |
+| 38 | 51970277 | f4_audiopsiescolar | **failed 131026** | ✅ |
+| 39 | 51734704 | f4_audiopsiescolar | delivered | ✅ |
+| 40 | 52034221 | f4_audiomulheridades | delivered | ✅ |
+| 41 | 52013432 | f4_audiobpead | sent (sem retorno até 21:28) | ✅ |
+| 42 | 52011405 | f4_audiopsiescolar | delivered | ✅ |
+| 43 | 51972778 | f4_audiotea | delivered | ✅ |
+| 44 | 52013425 | f4_audiotea | **failed 131050** (opt-out) | ✅ |
+| 45 | 52004915 | f4_audiopsiescolar | **failed 131026** | ✅ |
+| 46 | 51995974 | f4_audiopsiescolar | **failed 131026** | ✅ |
+| 47 | 51980645 | f4_audiogrupot2 | delivered | ✅ |
+| 49 | 51902367 | f4_audiopsiescolar | delivered | ✅ |
+
+- **12 entregues, 1 aguardando, 5 falharam: 4 × 131026 (número não recebe) e 1 × 131050
+  (opt-out).** São falhas do destinatário. Não houve nenhum erro de template (132xxx, parâmetro,
+  idioma), e a Meta aceitou os 8 templates distintos.
+- **O `pt_PT` funcionou:** o #36 (`f4_audiosmenfermagem`) foi `delivered`. O ajuste 1 do §6 está
+  confirmado em produção.
+- Cada observação na Exact cita o template efetivo, ex.:
+  `[NAT] Follow 4 enviado pela IA em 28/09 18:02 (template f4_audiosmenfermagem).` (critério 5).
+- Nos outros degraus nada mudou: Follow 1 (`mensagem_flow`), Follow 2 (`mensagens_flows2`) e
+  Follows 5 (`mensagem_follow5`) saíram com o genérico de sempre.
+
+### Follow 3: nenhum ainda
+
+Nenhum lead entrou em Follow 3 desde o deploy. As 8 linhas de Follow 3 na tabela são de antes
+das 20:08 e usaram o `mensagem_follow3`. **O primeiro F3 por variante ainda não foi observado.**
+
+### CONTRADIZ: `messages` mostra `sent` para 4 das 5 falhas
+
+O webhook `failed` chegou **antes** do commit da linha em `messages`, o que o log registra como
+`[mensagem não encontrada no banco]`. A linha ficou `sent` para sempre. Isso atingiu os wamids do
+#34, #45, #46 e também do #29 (Follow 1, **131049**). Nos quatro casos, a linha consta em
+`messages` com `created_at` anterior ao webhook. `created_at` é a hora da transação, e o commit
+só acontece depois do envio **e da nota na Exact** (até 5 s). A Meta devolve `failed` em ~1-2 s.
+
+Não é defeito desta sprint: vale para todo envio de `follow_estagio` desde 27/09. **Quem ler
+`messages.status` para medir o follow subconta as falhas.** A fonte confiável é o journal.
+Não corrigido.
