@@ -112,6 +112,87 @@ async def _realimentar_welcome_status(wa_message_id: str, novo_status: str, erro
     lead.welcome_error = None
 
 
+# STATUS ÓRFÃO: O WEBHOOK CHEGA ANTES DO COMMIT DO ENVIO (28/09).
+#
+# `bulk_send_template` grava a `Message` e só faz commit no FIM do lote, com `sleep(1)` entre
+# leads; o follow por estágio segura a transação até a nota na Exact. A Meta devolve `failed`
+# em 1–2 s. Então o status chega procurando um wamid que ainda não é visível e, até aqui, era
+# jogado fora: de 21 a 28/09, 130 de 154 falhas logadas caíram nisso, e as 130 linhas estão
+# `sent` em `messages` até hoje. `delivered`/`read` sofriam o mesmo, sem nem deixar log.
+#
+# A correção é do lado do webhook, não do envio: dar commit a cada mensagem no bulk mudaria a
+# atomicidade do follow (mensagem + linha do follow na mesma transação). Aqui o status órfão
+# é reaplicado em segundo plano, com espera crescente — ~35 min no total cobrem um disparo de
+# centenas de leads, cujo commit só sai no fim.
+#
+# EM MEMÓRIA, DE PROPÓSITO SIMPLES: um restart no meio perde as tentativas pendentes (o
+# comportamento volta a ser o de antes para essas, nada pior). O teto evita que status de
+# mensagens que nunca serão nossas acumulem tarefas sem limite.
+_ESPERAS_STATUS_ORFAO = (5, 15, 60, 180, 600, 1200)
+_MAX_STATUS_ORFAOS = 5000
+_status_orfaos: set = set()  # referência forte: create_task sozinho pode ser coletado
+
+# Um status atrasado não pode REBAIXAR o que já foi gravado: o 'delivered' reaplicado depois
+# do 'read' da mesma mensagem apagaria a leitura. 'failed' fica no topo — a Meta não entrega o
+# que recusou, então ele só compete com 'sent'.
+_ORDEM_STATUS = {"sent": 1, "delivered": 2, "read": 3, "failed": 4}
+
+
+def agendar_status_orfao(wa_message_id: str, novo_status: str, erro: dict) -> bool:
+    """Agenda a reaplicação de um status cujo wamid ainda não está no banco. False se não agendou."""
+    if not wa_message_id or novo_status not in _STATUS_ENTREGA:
+        return False
+    if len(_status_orfaos) >= _MAX_STATUS_ORFAOS:
+        print(f"⚠️  status órfão descartado ({wa_message_id}, {novo_status}): "
+              f"{len(_status_orfaos)} já aguardando")
+        return False
+    tarefa = asyncio.create_task(_reaplicar_status_orfao(wa_message_id, novo_status, erro))
+    _status_orfaos.add(tarefa)
+    tarefa.add_done_callback(_status_orfaos.discard)
+    return True
+
+
+async def _reaplicar_status_orfao(wa_message_id: str, novo_status: str, erro: dict,
+                                  esperas=_ESPERAS_STATUS_ORFAO) -> bool:
+    """Espera a `Message` aparecer e aplica o status. True se aplicou (ou já estava à frente).
+
+    Nunca levanta: é uma tarefa solta, e exceção nela só viraria "Task exception was never
+    retrieved" no log. Toda falha vira uma linha e a próxima tentativa.
+    """
+    for n, espera in enumerate(esperas, 1):
+        await asyncio.sleep(espera)
+        try:
+            async with async_session() as db:
+                msg = (await db.execute(select(Message).where(
+                    Message.wa_message_id == wa_message_id))).scalar_one_or_none()
+                if msg is None:
+                    continue
+                if _ORDEM_STATUS.get(novo_status, 0) > _ORDEM_STATUS.get(msg.status, 0):
+                    msg.status = novo_status
+                    if erro:
+                        msg.error_code = erro["error_code"]
+                        msg.error_title = erro["error_title"]
+                        msg.error_details = erro["error_details"]
+                # A boas-vindas carimba `welcome_wamid` na mesma transação do envio, então
+                # também pode ter perdido o pareamento na primeira passada. Idempotente.
+                try:
+                    async with db.begin_nested():
+                        await _realimentar_welcome_status(wa_message_id, novo_status, erro, db)
+                except Exception as e:
+                    print(f"⚠️  welcome_status não realimentado ({wa_message_id}): "
+                          f"{type(e).__name__}: {e}")
+                await db.commit()
+                print(f"🔁 status órfão aplicado: {wa_message_id} → {msg.status} "
+                      f"(tentativa {n}, pedido {novo_status})")
+                return True
+        except Exception as e:
+            print(f"⚠️  status órfão {wa_message_id}: tentativa {n} falhou — "
+                  f"{type(e).__name__}: {e}")
+    print(f"⚠️  status órfão desistido: {wa_message_id} ({novo_status}) — mensagem não "
+          f"apareceu no banco em {sum(esperas)} s")
+    return False
+
+
 from app.database import get_db, async_session
 from app.models import Channel, Contact, ExactLead, Message, NatButtonEvent
 from app.nat_buttons import extrair_evento_botao, conteudo_legivel
@@ -703,6 +784,12 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 existing = result.scalar_one_or_none()
                 if existing:
                     existing.status = new_status
+                    orfao = False
+                else:
+                    # Quase sempre é o envio que ainda não fez commit — ver
+                    # `agendar_status_orfao`. Não é "mensagem que não é nossa".
+                    orfao = agendar_status_orfao(
+                        wa_message_id, new_status, _erro_do_status(status_update))
 
                 # MOTIVO DA FALHA. Até aqui o webhook copiava só o `status` e jogava fora
                 # statuses[].errors[] — por isso 53 envios de nat_boasvindas falharam desde
@@ -716,10 +803,13 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         existing.error_details = erro["error_details"]
                     # Loga mesmo quando a mensagem não está no nosso banco: o motivo da
                     # recusa é informação, ainda que não haja linha para carimbar.
+                    sufixo = ("" if existing else
+                              " [mensagem ainda não está no banco — reaplicação agendada]"
+                              if orfao else " [mensagem não encontrada no banco]")
                     print(f"❌ Meta recusou {wa_message_id}: status={new_status} "
                           f"code={erro['error_code']} title={erro['error_title']!r} "
                           f"details={erro['error_details']!r}"
-                          f"{'' if existing else ' [mensagem não encontrada no banco]'}")
+                          f"{sufixo}")
 
                 # REALIMENTAÇÃO DO CARIMBO DO LEAD (Fase 2).
                 #
