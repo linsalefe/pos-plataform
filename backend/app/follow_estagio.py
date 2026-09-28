@@ -131,7 +131,7 @@ LIMITE_RESPOSTA = 2000
 # O canal. Há um só (`channels.id = 1`, "Pós-Graduação (SDR)"), e a rota já usa 1 como default.
 # Explícito aqui porque este payload é montado à mão e não passa pela tela.
 CANAL_ID = 1
-IDIOMA = "pt_BR"
+# O idioma vem de `resolver` (campo `language` do mapa, padrão `IDIOMA_PADRAO` = pt_BR).
 
 MOTIVO_SEM_TELEFONE = ("o lead não tem phone1 na Exact — preencha o telefone e mova de novo")
 
@@ -317,7 +317,7 @@ async def _enfileirar(db, evento, entrada, permitidos: frozenset[str]) -> str:
     status = FE_SKIPPED if motivo else FE_PENDENTE
     # O template EFETIVO deste lead (variante da pós ou genérico), não o genérico do degrau.
     # `_enviar_uma` resolve de novo com o lead relido e regrava se o `sub_source` mudou.
-    template, _ = resolver(entrada, evento.get("sub_source"))
+    template, _, _ = resolver(entrada, evento.get("sub_source"))
 
     # `ON CONFLICT (lead_exact_id, estagio_id) DO NOTHING` — a UNIQUE é quem decide. Ver a
     # seção acima sobre por que não há SELECT antes.
@@ -499,7 +499,7 @@ async def _enviar_uma(db, linha) -> str:
     O PAYLOAD, CAMPO POR CAMPO
     ==========================================================================================
         template_name   `resolver(entrada, lead.sub_source)`: variante da pós ou genérico
-        language        "pt_BR"
+        language        do mapa, junto com o template (pt_BR se o mapa não disser)
         channel_id      1 (o único canal)
         lead_ids        [lead.id]  <- PK LOCAL de exact_leads, NÃO o exact_id
         param_mappings  do mapa (a chave é `param_mappings`, NÃO `mappings`)
@@ -555,7 +555,7 @@ async def _enviar_uma(db, linha) -> str:
     # Variante da pós (Follow 3 e 4) ou genérico, pelo `sub_source` de AGORA. É gravado na
     # linha em todo desfecho a partir daqui: a coluna tem de dizer o que foi (ou teria sido)
     # enviado, não o que se previa no enfileiramento.
-    template, _ = resolver(entrada, lead.sub_source)
+    template, _, idioma = resolver(entrada, lead.sub_source)
 
     mappings, motivo = montar_mappings(entrada, lead)
     if motivo:
@@ -564,7 +564,7 @@ async def _enviar_uma(db, linha) -> str:
 
     payload = {
         "template_name": template,
-        "language": IDIOMA,
+        "language": idioma,
         "channel_id": CANAL_ID,
         "lead_ids": [lead.id],
         "param_mappings": mappings,

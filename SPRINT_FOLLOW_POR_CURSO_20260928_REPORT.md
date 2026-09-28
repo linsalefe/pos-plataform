@@ -1,6 +1,9 @@
 # SPRINT_FOLLOW_POR_CURSO_20260928 — Follow 3 e Follow 4 com template por pós
 
-Branch `follow-por-curso`. **Estado: CHECKPOINT. Nada foi mergeado, reiniciado nem enviado.**
+Branch `follow-por-curso`. **Aprovado no checkpoint com três ajustes (§6), mergeado e no ar.**
+As seções 1 a 5 descrevem o estado do checkpoint. **O que vale em produção é o §6**: Enfermagem
+voltou ao F4 com `pt_PT`, o F4 de Trabalhador é `f4_audioorgtrabalho`, e há aliases e três
+cursos a mais.
 Os testes foram escritos e não executados (critério 6). O que rodou: `py_compile` e uma carga
 do JSON por `follow_estagio_mapa.carregar()`, que é só leitura.
 
@@ -333,4 +336,49 @@ index 3a8d674..750e2a8 100644
 
 ## 5. Primeiros envios reais
 
-**Pendente do "aprovado".** Nesta sessão não houve merge, restart nem envio.
+Ver §7.
+
+---
+
+## 6. Ajustes do checkpoint (Álefe, 28/09)
+
+1. **`language` opcional por template.**
+   - No mapa, uma variante pode ser `"template"` (pt_BR) ou `{"template": …, "language": …}`.
+     O estágio também aceita `language` para o genérico.
+   - O formato é validado no carregamento (`^[a-z]{2,3}(_[A-Z]{2})?$`); `pt-BR` é recusado.
+   - `resolver` devolve `(template, params, idioma)`, e o payload usa esse idioma. O
+     `IDIOMA` fixo de `follow_estagio.py` saiu e o padrão ficou em
+     `follow_estagio_mapa.IDIOMA_PADRAO = "pt_BR"`.
+   - **`f4_audiosmenfermagem` voltou ao mapa com `pt_PT`.** A rota repassa `language` para o
+     envio e para a leitura do corpo (`exact_routes.py:309,340`).
+2. **Trabalhador no F4 = `f4_audioorgtrabalho`** (mesmo áudio, botão "Áudio" com a grafia certa).
+3. **Aliases e cursos a mais.** As seis grafias existem em `exact_leads` do 18535:
+
+   | sub_source | leads | F3 | F4 | por quê |
+   |---|---|---|---|---|
+   | `posinfantoead` | 23 | f3_siteinfantoead | f4_audioinfantoead | alias de Infantojuvenil EAD |
+   | `PosGraduacaoTEA` | 86 | f3_guiatea | f4_audiotea | alias de TEA |
+   | `possmdotrabalhador` | 124 | f3_guiatrabalhot3 | f4_audioorgtrabalho | alias de Trabalhador |
+   | `PosBoasPraticasEAD` | 111 | f3_guiabpead | f4_audiobpead | curso próprio |
+   | `PosGraduacaoEconomiaSolidariaTurma1` | 113 | f3_guiaeconomia | f4_audioeconomia | existe → incluído |
+   | `PosPraticasDialogicasTurma1` | 37 | f3_guiapraticadialogica | f4_audiopraticadialogica | existe → incluído |
+
+   Os seis templates novos são APPROVED, pt_BR, com um `{{1}}` e URL estática. Os títulos
+   dos links conferem com o curso: "Guia_Pós TEA.pdf", "Boas Praticas - EAD 2026", "Guia
+   Economia Solidária Arte e Cultura.pdf", "Guia_Práticas Dialógicas e Diálogo Aberto.pdf",
+   e os áudios de coordenação de cada um.
+
+**Mapa final: 16 chaves no F3 e 16 no F4.** Com ele, **34 de 34** leads hoje em Follow 3/4
+resolvem uma variante. Esses leads já passaram pelo evento de entrada, então isto só mede
+cobertura; o follow sai quando um lead ENTRA no estágio.
+
+Continuam no genérico, fora do pedido: as outras grafias legadas (`PosPsicologiaEscolar`,
+`PosSMTrabalhadorT3`, `SMtrabalhador`, `PosAutolesaoComportamentoSuicidaeLutoTurma3`…) e as
+quatro pós sem template próprio.
+
+Testes: `test_follow_por_curso.py` atualizado (idioma, aliases, cursos novos, `language`
+inválido), **não executado**. `py_compile` OK nos quatro arquivos.
+
+## 7. Deploy e primeiros envios reais
+
+(preenchido abaixo)

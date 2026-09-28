@@ -72,6 +72,7 @@ do lead é quem de fato tentou o contato, que é o que `mensagem_flow` afirma.
 """
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 # Mesmo offset fixo do resto do projeto (`main.py:23`, `nat_guard.py:37`). Sem DST, de
@@ -101,6 +102,15 @@ PARAMS_VALIDOS = frozenset(TIPOS) | {"mes"}
 # do `MOTIVO_RECUSA` de `higiene_disparo.py`.
 MOTIVO_SEM_SDR = ("o template assina com o nome do SDR e o lead não tem sdr_name na Exact — "
                   "atribua o lead a alguém na Exact e mova de novo")
+
+# Idioma do template quando o mapa não diz outro. O template na Meta é NOME + IDIOMA: o mesmo
+# nome enviado com o código errado volta #132001 ("does not exist in the translation"). Em
+# 28/09, 89 dos 90 templates do WABA são pt_BR; o único fora é `f4_audiosmenfermagem`, pt_PT.
+IDIOMA_PADRAO = "pt_BR"
+
+# `pt_BR`, `pt_PT`, `en`, `en_US`: o formato dos códigos de idioma da Meta. Serve só para
+# pegar erro de digitação no carregamento ("pt-BR", "ptBR"), não para listar os válidos.
+_IDIOMA_RE = re.compile(r"^[a-z]{2,3}(_[A-Z]{2})?$")
 
 _PADRAO_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "follow_estagios.json")
@@ -176,18 +186,37 @@ def carregar(caminho: str | None = None) -> dict:
         vistos[nome] = estagio_id
 
         por_curso, params_por_curso = _validar_por_curso(caminho, estagio_id, nome, entrada)
+        idioma = _validar_idioma(caminho, estagio_id, nome, entrada.get("language"))
 
         estagios[estagio_id] = {"estagio_id": estagio_id, "nome": nome,
                                 "template": template.strip(), "params": list(params),
+                                "language": idioma,
                                 "por_curso": por_curso, "params_por_curso": params_por_curso}
 
     return {"funnel_id": funil, "estagios": estagios,
             "por_nome": {e["nome"]: e for e in estagios.values()}}
 
 
+def _validar_idioma(caminho: str, estagio_id: int, nome: str, bruto) -> str:
+    """O `language` opcional de um template: ausente vira `IDIOMA_PADRAO`."""
+    if bruto is None:
+        return IDIOMA_PADRAO
+    if not isinstance(bruto, str) or not _IDIOMA_RE.match(bruto.strip()):
+        raise MapaInvalido(f"{caminho}: estágio {estagio_id} ({nome!r}) com 'language' "
+                           f"inválido: {bruto!r} (formato da Meta: 'pt_BR', 'pt_PT')")
+    return bruto.strip()
+
+
 def _validar_por_curso(caminho: str, estagio_id: int, nome: str,
-                       entrada: dict) -> tuple[dict[str, str], list[str] | None]:
+                       entrada: dict) -> tuple[dict[str, tuple[str, str]], list[str] | None]:
     """O bloco opcional `por_curso` de um estágio: `(índice, params_por_curso)`.
+
+    Cada valor é o nome do template (string, idioma `IDIOMA_PADRAO`) ou um objeto
+    `{"template": ..., "language": ...}` para quem não é pt_BR. O índice guarda
+    `(template, idioma)` já resolvido.
+
+    Várias chaves podem apontar para o MESMO template: é como as grafias legadas de um curso
+    (`posinfantoead`, `Pos Infantojuvenil EAD`) recebem a mesma variante.
 
     O índice é chaveado por `sub_source.strip().lower()`: mesma comparação de
     `agendamento/origens.resolver` (`origens.py:180-182`). A Exact devolve o subSource com a
@@ -212,9 +241,19 @@ def _validar_por_curso(caminho: str, estagio_id: int, nome: str,
         raise MapaInvalido(f"{caminho}: estágio {estagio_id} ({nome!r}) com 'por_curso' "
                            f"vazio ou que não é objeto")
 
-    indice: dict[str, str] = {}
-    for sub_source, tpl in bruto.items():
+    indice: dict[str, tuple[str, str]] = {}
+    for sub_source, valor in bruto.items():
         chave = (sub_source or "").strip().lower()
+        idioma_bruto = None
+        if isinstance(valor, dict):
+            fora = set(valor) - {"template", "language"}
+            if fora:
+                raise MapaInvalido(f"{caminho}: estágio {estagio_id} ({nome!r}), "
+                                   f"'por_curso'[{sub_source!r}] com chave desconhecida "
+                                   f"{sorted(fora)}")
+            tpl, idioma_bruto = valor.get("template"), valor.get("language")
+        else:
+            tpl = valor
         if not chave or not isinstance(tpl, str) or not tpl.strip():
             raise MapaInvalido(f"{caminho}: estágio {estagio_id} ({nome!r}) tem entrada "
                                f"vazia em 'por_curso': {sub_source!r} -> {tpl!r}")
@@ -222,7 +261,9 @@ def _validar_por_curso(caminho: str, estagio_id: int, nome: str,
             raise MapaInvalido(f"{caminho}: estágio {estagio_id} ({nome!r}) repete o "
                                f"sub_source {sub_source!r} em 'por_curso' (a comparação "
                                f"ignora caixa)")
-        indice[chave] = tpl.strip()
+        indice[chave] = (tpl.strip(),
+                         _validar_idioma(caminho, estagio_id, f"{nome} / {sub_source}",
+                                         idioma_bruto))
 
     params = entrada.get("params_por_curso")
     if not isinstance(params, list) or not params:
@@ -236,8 +277,11 @@ def _validar_por_curso(caminho: str, estagio_id: int, nome: str,
     return indice, list(params)
 
 
-def resolver(entrada: dict, sub_source) -> tuple[str, list[str]]:
-    """`(template, params)` deste lead neste estágio.
+def resolver(entrada: dict, sub_source) -> tuple[str, list[str], str]:
+    """`(template, params, idioma)` deste lead neste estágio.
+
+    O idioma viaja junto porque o template na Meta é nome + idioma: o chamador não pode
+    escolher um sem o outro.
 
     `por_curso[sub_source]` (sem caixa e sem espaço nas pontas) e, se não houver, o genérico
     `template` + `params`. Lead sem `sub_source` fica com o genérico. Estágio sem `por_curso`
@@ -252,8 +296,10 @@ def resolver(entrada: dict, sub_source) -> tuple[str, list[str]]:
     chave = (sub_source or "").strip().lower() if isinstance(sub_source, str) else ""
     variante = entrada.get("por_curso", {}).get(chave) if chave else None
     if variante:
-        return variante, list(entrada["params_por_curso"])
-    return entrada["template"], list(entrada["params"])
+        template, idioma = variante
+        return template, list(entrada["params_por_curso"]), idioma
+    return (entrada["template"], list(entrada["params"]),
+            entrada.get("language") or IDIOMA_PADRAO)
 
 
 def _sub_source_de(lead):
@@ -380,7 +426,7 @@ def montar_mappings(entrada: dict, lead, *, agora: datetime | None = None):
     (variante por pós: `params_por_curso`; genérico: `params`). O template em si o chamador
     pede a `resolver`, com o mesmo lead.
     """
-    _, params = resolver(entrada, _sub_source_de(lead))
+    _, params, _ = resolver(entrada, _sub_source_de(lead))
     sdr = getattr(lead, "sdr_name", None) if not isinstance(lead, dict) else lead.get("sdr_name")
     if "sdr" in params and not (sdr or "").strip():
         return None, MOTIVO_SEM_SDR
