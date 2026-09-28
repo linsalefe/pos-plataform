@@ -100,7 +100,7 @@ from sqlalchemy import select, text, update
 
 from app.database import async_session
 from app.follow_estagio_mapa import (MapaInvalido, estagio_para, estagios_do_mapa,
-                                     funil_alvo, montar_mappings)
+                                     funil_alvo, montar_mappings, resolver)
 from app.models import (FE_ENVIADO, FE_FALHOU, FE_PENDENTE, FE_SKIPPED, ExactLead,
                         FollowEstagioEnvio)
 from app.telefone import chave_telefone
@@ -131,7 +131,7 @@ LIMITE_RESPOSTA = 2000
 # O canal. Há um só (`channels.id = 1`, "Pós-Graduação (SDR)"), e a rota já usa 1 como default.
 # Explícito aqui porque este payload é montado à mão e não passa pela tela.
 CANAL_ID = 1
-IDIOMA = "pt_BR"
+# O idioma vem de `resolver` (campo `language` do mapa, padrão `IDIOMA_PADRAO` = pt_BR).
 
 MOTIVO_SEM_TELEFONE = ("o lead não tem phone1 na Exact — preencha o telefone e mova de novo")
 
@@ -315,6 +315,9 @@ async def _enfileirar(db, evento, entrada, permitidos: frozenset[str]) -> str:
         _, motivo = montar_mappings(entrada, evento)
 
     status = FE_SKIPPED if motivo else FE_PENDENTE
+    # O template EFETIVO deste lead (variante da pós ou genérico), não o genérico do degrau.
+    # `_enviar_uma` resolve de novo com o lead relido e regrava se o `sub_source` mudou.
+    template, _, _ = resolver(entrada, evento.get("sub_source"))
 
     # `ON CONFLICT (lead_exact_id, estagio_id) DO NOTHING` — a UNIQUE é quem decide. Ver a
     # seção acima sobre por que não há SELECT antes.
@@ -328,7 +331,7 @@ async def _enfileirar(db, evento, entrada, permitidos: frozenset[str]) -> str:
         RETURNING id
     """), {"lead_exact_id": lead_exact_id, "telefone": telefone,
            "estagio_id": entrada["estagio_id"], "estagio_nome": entrada["nome"],
-           "template": entrada["template"], "evento_id": evento["evento_id"],
+           "template": template, "evento_id": evento["evento_id"],
            "status": status, "motivo": motivo})).first()
 
     if criado is None:
@@ -342,7 +345,7 @@ async def _enfileirar(db, evento, entrada, permitidos: frozenset[str]) -> str:
         return FE_SKIPPED
 
     print(f"➕ follow #{criado[0]}: lead {lead_exact_id} ({evento['lead_nome']!r}) entrou em "
-          f"{entrada['nome']!r} — '{entrada['template']}' enfileirado")
+          f"{entrada['nome']!r} — '{template}' enfileirado")
     return FE_PENDENTE
 
 
@@ -416,7 +419,8 @@ async def _pendentes(db, limite: int) -> list:
 
 
 async def _finalizar(db, linha_id: int, *, status: str, motivo: str | None = None,
-                     resposta: str | None = None, enviado_em: datetime | None = None) -> None:
+                     resposta: str | None = None, enviado_em: datetime | None = None,
+                     template: str | None = None) -> None:
     """Grava o desfecho por UPDATE explícito, não por atributo do ORM.
 
     Mesma razão de `rd_sender._finalizar` e `nat_scheduler._finalizar`: este código roda depois
@@ -437,6 +441,8 @@ async def _finalizar(db, linha_id: int, *, status: str, motivo: str | None = Non
         valores["resposta"] = resposta[:LIMITE_RESPOSTA]
     if enviado_em is not None:
         valores["enviado_em"] = enviado_em
+    if template is not None:
+        valores["template"] = template
     await db.execute(update(FollowEstagioEnvio)
                      .where(FollowEstagioEnvio.id == linha_id).values(**valores))
 
@@ -492,8 +498,8 @@ async def _enviar_uma(db, linha) -> str:
     ==========================================================================================
     O PAYLOAD, CAMPO POR CAMPO
     ==========================================================================================
-        template_name   do mapa
-        language        "pt_BR"
+        template_name   `resolver(entrada, lead.sub_source)`: variante da pós ou genérico
+        language        do mapa, junto com o template (pt_BR se o mapa não disser)
         channel_id      1 (o único canal)
         lead_ids        [lead.id]  <- PK LOCAL de exact_leads, NÃO o exact_id
         param_mappings  do mapa (a chave é `param_mappings`, NÃO `mappings`)
@@ -546,14 +552,19 @@ async def _enviar_uma(db, linha) -> str:
                          motivo="o lead saiu de exact_leads entre o enfileiramento e o envio")
         return FE_SKIPPED
 
+    # Variante da pós (Follow 3 e 4) ou genérico, pelo `sub_source` de AGORA. É gravado na
+    # linha em todo desfecho a partir daqui: a coluna tem de dizer o que foi (ou teria sido)
+    # enviado, não o que se previa no enfileiramento.
+    template, _, idioma = resolver(entrada, lead.sub_source)
+
     mappings, motivo = montar_mappings(entrada, lead)
     if motivo:
-        await _finalizar(db, linha.id, status=FE_SKIPPED, motivo=motivo)
+        await _finalizar(db, linha.id, status=FE_SKIPPED, motivo=motivo, template=template)
         return FE_SKIPPED
 
     payload = {
-        "template_name": entrada["template"],
-        "language": IDIOMA,
+        "template_name": template,
+        "language": idioma,
         "channel_id": CANAL_ID,
         "lead_ids": [lead.id],
         "param_mappings": mappings,
@@ -571,7 +582,7 @@ async def _enviar_uma(db, linha) -> str:
         # horas depois do arrasto do card já não é o follow daquele momento. O motivo fica
         # gravado, que é o que permite decidir se vale um retry numa próxima sprint.
         await _finalizar(db, linha.id, status=FE_FALHOU,
-                         motivo=f"{type(e).__name__}: {e}")
+                         motivo=f"{type(e).__name__}: {e}", template=template)
         print(f"❌ follow #{linha.id}: lead {linha.lead_exact_id} em {linha.estagio_nome!r} — "
               f"{type(e).__name__}: {e}")
         return FE_FALHOU
@@ -579,10 +590,11 @@ async def _enviar_uma(db, linha) -> str:
     status, motivo = _desfecho_do_bulk(resultado)
     await _finalizar(db, linha.id, status=status, motivo=motivo,
                      resposta=json.dumps(resultado, ensure_ascii=False, default=str),
-                     enviado_em=_agora_utc() if status == FE_ENVIADO else None)
+                     enviado_em=_agora_utc() if status == FE_ENVIADO else None,
+                     template=template)
 
     if status == FE_ENVIADO:
-        print(f"✅ follow #{linha.id}: '{entrada['template']}' enviado para lead "
+        print(f"✅ follow #{linha.id}: '{template}' enviado para lead "
               f"{linha.lead_exact_id} ({lead.name!r}) em {linha.estagio_nome!r}")
         # 27/09: a observação na timeline do lead na Exact, onde o SDR trabalha. DEPOIS do
         # `_finalizar`: o UPDATE para `enviado` já está na transação, e `drenar` faz o commit
@@ -591,7 +603,7 @@ async def _enviar_uma(db, linha) -> str:
         from app.exact_notes import registrar_observacao
         await registrar_observacao(
             linha.lead_exact_id,
-            texto_nota_follow(linha.estagio_nome, entrada["template"], _agora_sp()))
+            texto_nota_follow(linha.estagio_nome, template, _agora_sp()))
     elif status == FE_SKIPPED:
         print(f"⏭️  follow #{linha.id}: lead {linha.lead_exact_id} em "
               f"{linha.estagio_nome!r} PULADO pelo disparo — {motivo}")
