@@ -513,6 +513,10 @@ possível pela UI da Exact.
 backend precisa ser **byte a byte** igual ao que a LP envia. A página dará `400 Origem
 inválida` até o passo 5 terminar — por isso ela não deve ser publicada antes.
 
+> **O combinado não basta: confira a página PUBLICADA** (passo 7b). A 14ª LP foi ao ar
+> mandando `"Pos DH T4"` enquanto a allowlist, a Exact e o RD tinham `Pos Direitos Humanos T4`,
+> e ficou 33 dias recusando todo visitante sem ninguém perceber (ver 5, "Aliases de origem").
+
 **1. Dry-run.** Monte o payload e confira o estado atual **sem escrever nada**:
 
 ```python
@@ -598,6 +602,23 @@ curl -s -w "\n%{http_code}\n" -X POST http://127.0.0.1:8001/api/agendamento/lead
 
 Espere **200**, confira o lead na Exact (`Entrada`, `funnelId 18535`, source 140648, subSource
 nova, `description` com os extras) e **exclua**. Varra o telefone do smoke e o de lote.
+
+> **Com o gate do RD aberto, faça o smoke SEM e-mail.** Com e-mail, a linha em `rd_conversoes`
+> nasce `pendente` e o contato de teste vai de verdade para o RD. Sem e-mail ela nasce
+> `skipped/sem_email` — e o log ainda mostra o identifier resolvido
+> (`⚠️ rd #N: conversão PULADA (sem_email) — formulario-…`), que é o que se quer conferir.
+
+**7b. Confira a ORIGEM que a página publicada manda** — no index e no obrigado:
+
+```bash
+for p in "" obrigado.html; do
+  curl -s "https://<a-lp>.cenatsaudemental.com/$p" | grep -o 'ORIGEM = "[^"]*"'
+done
+```
+
+Tem que ser **byte a byte** o valor da allowlist. Se não for e a página não puder ser
+republicada logo, o remendo é um alias (4.2, `AGENDAMENTO_ORIGEM_ALIASES`) — nunca criar a
+subSource com o nome errado.
 
 **8. Documente.** Acrescente a origem à tabela da seção 5 deste arquivo e registre a operação
 no `AGENDAMENTO_FINDINGS.md` — inclusive "nenhum órfão" quando for o caso.
@@ -710,7 +731,7 @@ um resultado correto.
 
 | sintoma | causa provável | o que fazer |
 |---|---|---|
-| **`400 Origem inválida`** | a `origem` que a LP manda não está na allowlist, ou diverge em byte (acento, espaço a mais) | compare byte a byte com `AGENDAMENTO_SUBSOURCES`; se for LP nova, rode 3.1 |
+| **`400 Origem inválida`** | a `origem` que a LP manda não está na allowlist nem nos aliases, ou diverge em byte (acento, espaço a mais) | `journalctl -u cenat-backend \| grep "origem não permitida"` mostra o valor recebido; compare byte a byte com `AGENDAMENTO_SUBSOURCES`. LP nova: rode 3.1. LP publicada com nome errado: corrija a página ou, até lá, crie um alias (4.2) |
 | **`409`** | o horário foi tomado entre a exibição e o clique, **em todas** as consultoras | é o comportamento correto; o front recarrega a grade. Frequente = grade desencostada dos blocos reais |
 | **`fallback: true` no `/slots`** | grade vazia (feriado/lotada), Exact fora do ar, ou **nenhuma consultora em rotação** | veja o log de boot: `🚨 NENHUMA consultora válida` aponta e-mail inválido em `/Sellers` |
 | **`404` no `/agendar`** | `?lead=` velho na URL, ou lead excluído do CRM | o front reenvia sozinho **sem** `leadId` e o fluxo de uma etapa cria o lead. Nada foi escrito |
@@ -846,6 +867,7 @@ delas é segredo; o token da Exact é `EXACT_SPOTTER_TOKEN`, que **não** perten
 | `AGENDAMENTO_SOURCE` | `"Landing Page"` | `Rd Marketing` (o source antigo, de propósito) |
 | `AGENDAMENTO_SUBSOURCES` | `"PosMulheridades,Pos TEA V3,…"` | as 3 origens antigas |
 | `AGENDAMENTO_SUBSOURCE_PADRAO` | `"PosMulheridades"` | `PosPraticasDialogicasTurma1` |
+| `AGENDAMENTO_ORIGEM_ALIASES` | `'{"Pos DH T4": "Pos Direitos Humanos T4"}'` (**aspas simples** em volta do JSON) | vazio = nenhum alias |
 | `AGENDAMENTO_JANELA_DIAS` | **`4`** (hoje + D+1 + D+2 + D+3) | `3` |
 | `AGENDAMENTO_CONSULTORAS_PATH` | `/home/ubuntu/pos-plataform/backend/consultoras.json` | — |
 | `AGENDAMENTO_CONSULTORAS` | JSON inline (tem precedência sobre o `_PATH`) | consultora única |
@@ -958,6 +980,7 @@ singular muda (`Follow 1..4` vs `Follows 5..9`) — nunca gere `stageName` por c
 | `test_agendamento_e2e_consultoras.py` | retry com recusa **real** da Exact (cria um box bloqueador) | **sim** |
 | `test_agendamento_e2e_funil.py` | passo 4 / `ChangeFunnel` | **sim** |
 | `test_agendamento_cors.py` | sufixos, preflight, ápice recusado | não |
+| `test_agendamento_origem_alias.py` | alias -> canônico, falha fechada por entrada, contador no log, canônico no `LeadsAdd`/tabela/fila do RD | não (sem rede) |
 
 Os E2E exigem `--sim-eu-quero` e escrevem na Exact **de produção**, com alvo em 2027 para não
 colidir com agenda real. O do retry protege um acoplamento invisível: `client._ERROS` casa
@@ -984,6 +1007,43 @@ Todas sob o source **`Landing Page` = id 140648**, ativas, ASCII puro sem acento
 | 176813 | `Pos Psicologia Escolar` | **177142** | **`Pos Direitos Humanos T4`** |
 
 Padrão (quando a LP não manda `origem`): `PosMulheridades`.
+
+### Aliases de origem (29/09/2026)
+
+| a LP manda | vira | por quê |
+|---|---|---|
+| `Pos DH T4` | `Pos Direitos Humanos T4` (177142) | LP de Direitos Humanos T4 publicada com o nome fora do padrão |
+
+**Incidente.** De **27/08 14:06 a 29/09 13:25**, `posdireitoshumanost4.cenatsaudemental.com`
+mandou `ORIGEM = "Pos DH T4"` (index e obrigado). A allowlist, a Exact e o
+`rd_conversoes.json` estavam certos com `Pos Direitos Humanos T4` — só a página divergia. O
+`resolver` falha fechado, então **toda** chamada da LP foi `400`: **158 recusas** no journal
+(99 em `/agendar`, 59 em `/lead`), de **49 IPs distintos**. Nenhum desses visitantes virou lead
+pelo nosso caminho. A validação de boot não pegava: ela confere a allowlist contra a Exact,
+não contra a página.
+
+**Mecanismo.** `AGENDAMENTO_ORIGEM_ALIASES` (JSON `{alias: canônico}`) é consultado em
+`origens.resolver()` **depois** da allowlist e **antes** da recusa. O que sai é sempre o nome
+canônico — o mesmo `sub_source` que vai para o `LeadsAdd`, para `agendamentos.sub_source` e
+para a fila do RD. O alias não tem como chegar à Exact, então não cria cadastro. Falha fechada
+por entrada: JSON inválido anula todos; destino fora da allowlist, par vazio/não-texto ou alias
+igual a um nome da allowlist descarta aquele alias (continua `400`), com `❌` no log.
+
+**Medir e aposentar.** Cada uso sai no journal:
+
+```bash
+journalctl -u cenat-backend --since today | grep -c "origem por alias"
+journalctl -u cenat-backend --since today | grep -c "origem não permitida"
+```
+
+Quando a LP for republicada com `ORIGEM = "Pos Direitos Humanos T4"`, o primeiro contador para
+de subir; aí o alias sai do `.env`.
+
+Smoke de 29/09: `POST /lead` com `"Pos DH T4"` -> 200, lead 52315115 em `Entrada`, funil 18535,
+source 140648, **subSource 177142 `Pos Direitos Humanos T4`**, description com o extra; fila do
+RD resolveu `formulario-pos-sm-e-dh` (pulado por `sem_email`, de propósito). Excluído (204),
+`id eq` -> 0, varredura `phone1 eq '5511999990001'` -> 0. Sobrou só a linha #812 em
+`agendamentos` (e a `skipped` em `rd_conversoes`), com nome `TESTE CRIACAO ORIGEM - excluir`.
 
 ### Consultoras em rotação
 
@@ -1023,6 +1083,7 @@ Log de boot esperado:
 
 ```
 ✅ agendamento: 2 consultora(s) em rotação — Victória Amorim, Victória Rodrigues
+✅ agendamento: 1 alias(es) de origem ativo(s): 'pos dh t4' -> 'Pos Direitos Humanos T4'
 ✅ agendamento: source 'Landing Page' (id 140648) com as 14 origens da allowlist confirmadas
 ℹ️ agendamento: passo 4 (mover para funil de vendas) DESLIGADO
 ✅ Faxina de agendamento ativa (remove box nosso parado há 0:15:00)
@@ -1093,5 +1154,6 @@ Log de boot esperado:
 | 18/08 | source `Landing Page` + as 12 primeiras origens (§16) |
 | 18/08 | 13ª origem: `Pos Enfermagem em Saude Mental` (§17) |
 | 27/08 | 14ª origem: `Pos Direitos Humanos T4` — id 177142, sem gêmeo antigo em source nenhum (§18) |
+| 29/09 | incidente: a LP da 14ª mandava `Pos DH T4` e tomou 158 × `400` em 33 dias. Alias de origem (`AGENDAMENTO_ORIGEM_ALIASES`) e passo 7b no runbook (5, "Aliases de origem") |
 | 25/08 | janela de dias corridos (o horizonte de 14 dias morreu) + grade no comercial inteiro 09:00–18:30, com os números recalculados contra os blocos reais (`AGENDAMENTO_JANELA_GRADE_20260825.md`) |
 | 25/08 | `AGENDAMENTO_JANELA_DIAS=4` **no ar**, escolhido contra a chegada real de 2 933 leads (§7 do mesmo doc): com 3, 5,3% dos leads veriam oferta zero |

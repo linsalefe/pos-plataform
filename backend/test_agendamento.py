@@ -70,7 +70,8 @@ TELEFONE = "11999998888"
 for _v in ("AGENDAMENTO_CONSULTORAS", "AGENDAMENTO_CONSULTORAS_PATH",
            "AGENDAMENTO_GRADE_JSON", "AGENDAMENTO_GRADE_PATH",
            "AGENDAMENTO_FUNIL_DESTINO", "AGENDAMENTO_SUBSOURCES",
-           "AGENDAMENTO_SUBSOURCE_PADRAO", "AGENDAMENTO_JANELA_DIAS"):
+           "AGENDAMENTO_SUBSOURCE_PADRAO", "AGENDAMENTO_JANELA_DIAS",
+           "AGENDAMENTO_ORIGEM_ALIASES"):
     os.environ.pop(_v, None)
 
 # ------------------------------------------------------------------------------------------
