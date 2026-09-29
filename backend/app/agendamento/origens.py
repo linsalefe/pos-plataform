@@ -48,8 +48,35 @@ A comparação é **case-insensitive**, mas o valor enviado à Exact é o da all
 exata. Os nomes reais misturam convenções (`posgenerot2` e `PosMulheridades` convivem), e um
 `PosMulheridades` enviado como `posmulheridades` criaria um SEGUNDO cadastro com o mesmo nome
 em caixa diferente — exatamente o problema que este módulo existe para evitar.
+
+------------------------------------------------------------------------------------------
+ALIASES — quando a LP publicada manda um nome fora do padrão
+------------------------------------------------------------------------------------------
+    AGENDAMENTO_ORIGEM_ALIASES='{"Pos DH T4": "Pos Direitos Humanos T4"}'
+
+Incidente de 27/08 a 29/09/2026: a LP de Direitos Humanos T4 foi publicada com
+`ORIGEM = "Pos DH T4"`, enquanto a allowlist, a Exact (177142) e o mapa do RD tinham
+`Pos Direitos Humanos T4`. Toda chamada da página era 400: 158 recusas de 49 IPs no journal.
+
+O alias é traduzido ANTES da validação, e o que sai daqui é sempre o nome CANÔNICO — é ele
+que vai para a Exact, para `agendamentos.sub_source` e, por consequência, para o mapa do RD.
+Por isso o alias nunca cria cadastro: não existe caminho em que o nome do alias chegue ao
+`LeadsAdd`.
+
+JSON e não CSV porque o par tem direção, e nomes de pós têm espaço. ASPAS SIMPLES em volta
+no `.env` (o JSON tem aspas duplas). Validado ao carregar, FALHA FECHADA por entrada:
+  - JSON inválido ou que não seja objeto  -> nenhum alias vale
+  - destino fora da allowlist             -> aquele alias é descartado
+  - alias igual a um nome da allowlist    -> descartado (o nome canônico tem precedência)
+Descartado = continua 400, como antes. Aceitar um destino fora da lista seria texto livre
+por outra porta. O motivo vai para o log uma vez por valor do env, e o boot repete o resumo.
+
+Cada resolução por alias é logada com um contador (`🔁 agendamento: origem por alias`), para
+medir quanto tráfego ainda vem do nome errado e saber quando aposentar o alias.
 """
+import json
 import os
+from functools import lru_cache
 
 # Valores conferidos em GET /Sources e no volume real de `exact_leads` (17/08/2026).
 # Cada um existe hoje na Exact, sob o source "Rd Marketing" (id 106847).
@@ -75,6 +102,10 @@ class OrigemInvalida(Exception):
     """`origem` fora da allowlist. -> 400, e nada é criado na Exact."""
 
 
+# Resoluções por alias desde o boot, por alias. Só vai para o log — é o medidor do volume.
+_usos_alias: dict[str, int] = {}
+
+
 def _lista() -> list[str]:
     bruto = os.getenv("AGENDAMENTO_SUBSOURCES", SUBSOURCES_PADRAO)
     valores = [v.strip() for v in (bruto or "").split(",") if v.strip()]
@@ -84,6 +115,64 @@ def _lista() -> list[str]:
               f"AGENDAMENTO_SUBSOURCES. Acrescentando — corrija o .env.")
         valores.append(padrao)
     return valores
+
+
+@lru_cache(maxsize=8)
+def _aliases_de(bruto: str, lista: tuple[str, ...]) -> tuple[dict[str, str], tuple[str, ...]]:
+    """(aliases válidos {alias_minúsculo: canônico na caixa da allowlist}, motivos de descarte).
+
+    Em cache pelo par (env, allowlist): o descarte é logado UMA vez, não a cada POST.
+    """
+    if not bruto.strip():
+        return {}, ()
+    try:
+        dados = json.loads(bruto)
+    except ValueError as e:
+        return {}, (f"AGENDAMENTO_ORIGEM_ALIASES não é JSON válido ({e}); nenhum alias vale",)
+    if not isinstance(dados, dict):
+        return {}, ("AGENDAMENTO_ORIGEM_ALIASES precisa ser um objeto JSON "
+                    "{alias: canônico}; nenhum alias vale",)
+
+    canonicos = {v.lower(): v for v in lista}
+    validos: dict[str, str] = {}
+    motivos: list[str] = []
+    for alias, destino in dados.items():
+        if not isinstance(alias, str) or not isinstance(destino, str) \
+                or not alias.strip() or not destino.strip():
+            motivos.append(f"alias {alias!r} -> {destino!r} descartado: par vazio ou não-texto")
+            continue
+        chave = alias.strip().lower()
+        canonico = canonicos.get(destino.strip().lower())
+        if canonico is None:
+            motivos.append(f"alias {alias!r} descartado: destino {destino!r} não está em "
+                           f"AGENDAMENTO_SUBSOURCES")
+            continue
+        if chave in canonicos:
+            motivos.append(f"alias {alias!r} descartado: já é um nome da allowlist")
+            continue
+        validos[chave] = canonico
+    for m in motivos:
+        print(f"❌ agendamento: {m}")
+    return validos, tuple(motivos)
+
+
+def aliases() -> dict[str, str]:
+    """Aliases válidos agora: {alias em minúsculas: nome canônico da allowlist}."""
+    bruto = os.getenv("AGENDAMENTO_ORIGEM_ALIASES", "") or ""
+    return _aliases_de(bruto, tuple(_lista()))[0]
+
+
+def validar_aliases() -> dict:
+    """Resumo dos aliases para o log de boot. Nunca levanta — o descarte já é a falha fechada."""
+    bruto = os.getenv("AGENDAMENTO_ORIGEM_ALIASES", "") or ""
+    validos, motivos = _aliases_de(bruto, tuple(_lista()))
+    if motivos:
+        print(f"❌ agendamento: {len(motivos)} alias(es) de origem descartado(s) — "
+              f"essas origens seguem recusadas com 400. Corrija AGENDAMENTO_ORIGEM_ALIASES.")
+    if validos:
+        pares = ", ".join(f"{a!r} -> {c!r}" for a, c in validos.items())
+        print(f"✅ agendamento: {len(validos)} alias(es) de origem ativo(s): {pares}")
+    return {"validos": validos, "descartados": list(motivos)}
 
 
 def padrao_configurado() -> str:
@@ -161,7 +250,8 @@ async def validar_contra_exact() -> dict:
 
 
 def resolver(origem: str | None) -> str:
-    """`origem` do corpo -> subSource válido. Levanta OrigemInvalida se não estiver na lista.
+    """`origem` do corpo -> subSource válido. Levanta OrigemInvalida se não estiver na lista
+    nem for alias válido. Alias devolve o nome CANÔNICO, nunca o próprio alias.
 
     Sem `origem`, devolve o padrão — a LP que ainda não manda o campo segue funcionando.
     """
@@ -181,4 +271,11 @@ def resolver(origem: str | None) -> str:
     for v in valores:
         if v.lower() == procurado:
             return v          # devolve a caixa da allowlist, não a que o visitante mandou
+
+    canonico = aliases().get(procurado)
+    if canonico is not None:
+        _usos_alias[procurado] = _usos_alias.get(procurado, 0) + 1
+        print(f"🔁 agendamento: origem por alias {origem!r} -> {canonico!r} "
+              f"(uso nº {_usos_alias[procurado]} desde o boot)")
+        return canonico
     raise OrigemInvalida(f"origem não permitida: {origem!r}")

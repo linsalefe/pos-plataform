@@ -389,7 +389,10 @@ async def lifespan(app: FastAPI):
     from app.agendamento.agendar import validar_funil_destino
     from app.agendamento.consultoras import validar_contra_exact
 
+    from app.agendamento.origens import validar_aliases
     from app.agendamento.origens import validar_contra_exact as validar_origens
+
+    validar_aliases()
 
     async def _validar_agendamento():
         await validar_contra_exact()
