@@ -737,6 +737,7 @@ um resultado correto.
 | **`404` no `/agendar`** | `?lead=` velho na URL, ou lead excluído do CRM | o front reenvia sozinho **sem** `leadId` e o fluxo de uma etapa cria o lead. Nada foi escrito |
 | **`422`** | contrato do formulário: >10 extras, valor >200 chars, telefone sem DDD, nome vazio | alguém mexeu no form sem olhar o backend; o 422 aparece no console de quem publicou |
 | **`429`** | rate limit por IP (5 escritas/5 min) | se for tráfego legítimo, revise `LIMITE_ESCRITA` |
+| **"a pessoa diz que preencheu e não está no Spotter"** | recusa nossa (origem, 422, slot, leadId) **ou** a requisição nem chegou ao servidor | rode a query **"quem foi recusado"** abaixo pelo telefone. Sem linha nenhuma: confira o nginx (`/var/log/nginx/access.log*`); se lá também não houver nada, o navegador dela nunca alcançou o backend (`INVESTIGACAO_LEADS_LP_SPOTTER_20260930.md`) |
 | **`502` / `503`** | 503 = Exact não respondeu; 502 = respondeu recusando | veja o log; se `e.lead_id` existe, o lead sobreviveu e o SDR ainda pode ligar |
 | **agendamento 3h adiantado no CRM** | alguém "corrigiu" `para_exact` para UTC de verdade | **reverta** e leia 2.4 |
 | **`SDR not found`** | e-mail da consultora errado ou inativo | confira `GET /Sellers`; a validação de startup já avisa |
@@ -751,6 +752,15 @@ sudo journalctl -u cenat-backend.service --since "1 hour ago" --no-pager | grep 
 sudo journalctl -u cenat-backend.service --since "5 min ago" | grep -E "boot:|✅"   # startup
 ```
 
+**Toda recusa nossa tem uma linha única** com o prefixo `agendamento recusa:`, com rota,
+motivo, telefone **completo**, nome, origem enviada e IP. É o que existe para o `429`, que não
+grava linha:
+
+```bash
+sudo journalctl -u cenat-backend.service --since "7 days ago" --no-pager | grep "agendamento recusa:"
+# ⚠️ agendamento recusa: rota=/lead motivo=origem_nao_permitida tel='66999050115' nome='José…' origem='Pos DH T4' ip=… detalhe=…
+```
+
 Os prefixos são estáveis e servem de filtro: `📦` box criado · `👤` lead · `✅` agendado ·
 `↪️` retry de consultora · `↩️` compensação · `🧹` faxina · `🔁` duplo clique · `➡️` passo 4.
 
@@ -762,6 +772,34 @@ GROUP BY passo;
 SELECT id, nome, telefone, slot_inicio, sales_rep_email, passo, erro
 FROM agendamentos ORDER BY id DESC LIMIT 20;
 ```
+
+**Quem foi recusado nos últimos N dias** (troque o `7`). Uma recusa é `motivo_recusa IS NOT
+NULL`, **não** `passo = 'recusado'`: o `409` marca o motivo na linha `falhou` que já existia.
+`sub_source` numa linha recusada é a origem **como veio**, sem validação. A rota, o slot e o
+`leadId` pedidos ficam em `erro`. O cruzamento com `lead_criado`/`agendado` mostra quem
+conseguiu depois (o duplo clique e o `404` de `leadId` velho quase sempre conseguem):
+
+```sql
+SELECT r.id, r.created_at, r.motivo_recusa, r.nome, r.telefone, r.email, r.sub_source,
+       r.origem_ip, r.erro,
+       (SELECT min(a.lead_id) FROM agendamentos a
+         WHERE right(a.telefone, 8) = right(regexp_replace(r.telefone, '\D', '', 'g'), 8)
+           AND a.lead_id IS NOT NULL AND a.created_at >= r.created_at) AS lead_depois
+FROM agendamentos r
+WHERE r.motivo_recusa IS NOT NULL
+  AND r.created_at >= (now() AT TIME ZONE 'America/Sao_Paulo') - interval '7 days'
+ORDER BY r.created_at DESC;
+
+-- resumo por motivo e dia
+SELECT created_at::date AS dia, motivo_recusa, count(*)
+FROM agendamentos
+WHERE motivo_recusa IS NOT NULL
+  AND created_at >= (now() AT TIME ZONE 'America/Sao_Paulo') - interval '7 days'
+GROUP BY 1, 2 ORDER BY 1 DESC, 3 DESC;
+```
+
+`lead_depois` NULL = a pessoa **não** virou lead por nenhum caminho da LP: é para ela que o SDR
+tem que ligar. `created_at` é hora de parede de SP, por isso o `AT TIME ZONE`.
 
 ---
 
@@ -893,20 +931,29 @@ Uma linha por **tentativa**, inclusive as que falharam. Migrações idempotentes
 | coluna | tipo | nota |
 |---|---|---|
 | `id` | BIGSERIAL | |
-| `nome`, `email`, `telefone` | VARCHAR | `email` só existe aqui — a Exact não tem campo de e-mail |
+| `nome`, `email`, `telefone` | VARCHAR | `email` só existe aqui — a Exact não tem campo de e-mail. `telefone` é VARCHAR(30) desde 30/09: a linha recusada guarda o número **como veio** |
 | `slot_inicio`, `slot_fim` | TIMESTAMP | **naive em São Paulo**, igual ao que a Exact grava |
 | `sales_rep_email` | VARCHAR NOT NULL | a consultora escolhida; reescrito quando o `BoxesAdd` define a vencedora |
 | `sub_source` | VARCHAR | de qual LP veio — em `exact_leads` isso só aparece no sync seguinte, e some se o lead for excluído |
 | `box_id`, `lead_id`, `meeting_id` | BIGINT | preenchidos conforme cada passo passa |
 | `lead_externo` | BOOL NOT NULL | `true` = o `leadId` veio pronto no corpo; **o lead não é nosso para desfazer** |
 | `extras` | JSONB | respostas livres. JSONB e não Text porque existe para ser consultado (`extras->>'Como conheceu'`) |
-| `passo` | VARCHAR | `iniciado` → `box_criado` → `lead_criado` → `agendado` \| `falhou` |
+| `passo` | VARCHAR | `iniciado` → `box_criado` → `lead_criado` → `agendado` \| `falhou` \| `recusado` |
+| `motivo_recusa` | VARCHAR(40) | NULL = não foi recusa. `origem_nao_permitida` · `validacao_<campo>` (`validacao_telefone`, `validacao_nome`, `validacao_extras`, `validacao_leadid`, `validacao_corpo`…) · `slot_invalido` · `slot_ocupado` (na linha `falhou`) · `lead_nao_encontrado` · `duplo_clique`. `rate_limit` só aparece no journal |
 | `erro` | TEXT | mensagem **crua** da Exact, sem tradução |
 | `origem_ip` | VARCHAR(45) | 45 = IPv6 textual |
 | `created_at`, `updated_at` | TIMESTAMP | naive SP |
 
 `meeting_id` NULL **não** significa que a reunião não existe: o `scheduleAdd` devolve booleano,
 e o id é lido best-effort depois.
+
+**A linha `recusado`** (`app/agendamento/rastro.py`) é só rastro. Ela **nunca** tem `lead_id`,
+`box_id` nem consultora (`sales_rep_email = ''`), e tem `slot_inicio = slot_fim = agora`. Sem
+`lead_id`, nenhum leitor chaveado por lead (agente, extras, relatórios) a alcança. A carga das
+consultoras exclui `recusado` explicitamente. Nunca vai para a Exact nem para a fila do RD.
+Gravar o rastro nunca muda a resposta ao visitante: se o banco recusar, fica um warning no
+journal. O 422 grava no máximo 5 linhas por IP a cada 5 min, porque morre antes do rate limit
+da rota e, sem esse teto, cada POST inválido seria um INSERT de graça.
 
 ### 4.4 `curl` reproduzíveis contra a Exact
 
@@ -1155,5 +1202,6 @@ Log de boot esperado:
 | 18/08 | 13ª origem: `Pos Enfermagem em Saude Mental` (§17) |
 | 27/08 | 14ª origem: `Pos Direitos Humanos T4` — id 177142, sem gêmeo antigo em source nenhum (§18) |
 | 29/09 | incidente: a LP da 14ª mandava `Pos DH T4` e tomou 158 × `400` em 33 dias. Alias de origem (`AGENDAMENTO_ORIGEM_ALIASES`) e passo 7b no runbook (5, "Aliases de origem") |
+| 30/09 | rastro das recusas: `passo='recusado'` + `motivo_recusa`, o 422 interceptado, a linha `agendamento recusa:` no journal (`migrate_agendamentos_rastro.py`, `rastro.py`). Motivo: 11 pessoas do DH T4 perdidas sem telefone (`INVESTIGACAO_LEADS_LP_SPOTTER_20260930.md`) |
 | 25/08 | janela de dias corridos (o horizonte de 14 dias morreu) + grade no comercial inteiro 09:00–18:30, com os números recalculados contra os blocos reais (`AGENDAMENTO_JANELA_GRADE_20260825.md`) |
 | 25/08 | `AGENDAMENTO_JANELA_DIAS=4` **no ar**, escolhido contra a chegada real de 2 933 leads (§7 do mesmo doc): com 3, 5,3% dos leads veriam oferta zero |

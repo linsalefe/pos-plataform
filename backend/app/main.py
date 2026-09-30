@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, Query, HTTPException, Depends
 from app.ai_engine import generate_ai_response
 from app.whatsapp import send_text_message
 from app.ai_routes import router as ai_router
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -203,7 +204,8 @@ from app.auth_routes import router as auth_router
 from app.exact_routes import router as exact_router
 from app.auto_welcome_routes import router as auto_welcome_router
 from app.nat_routes import router as nat_router
-from app.agendamento.routes import router as agendamento_router
+from app.agendamento.routes import (router as agendamento_router,
+                                    validacao_recusada as agendamento_validacao_recusada)
 from app.relatorios import router as relatorios_router
 from app.agendamento.cors import (PADRAO_ENV as _SUFIXOS_PADRAO, PREFIXO as _PREFIXO_AGENDAMENTO,
                                   AgendamentoCORSMiddleware)
@@ -461,6 +463,10 @@ app.include_router(calendar_router)
 app.include_router(nat_router)
 # Único router PÚBLICO da aplicação — ver o cabeçalho de app/agendamento/routes.py.
 app.include_router(agendamento_router)
+# O 422 das rotas da LP deixa rastro (nome, telefone, motivo). Registrado no app porque é
+# o único ponto em que o FastAPI expõe a validação; fora de /lead e /agendar ele só delega ao
+# handler padrão, e a resposta é idêntica em todas as rotas.
+app.add_exception_handler(RequestValidationError, agendamento_validacao_recusada)
 app.include_router(relatorios_router)
 VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
 app.include_router(twilio_router)

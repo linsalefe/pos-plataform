@@ -105,7 +105,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import client, consultoras as equipe_mod, disponibilidade
-from app.agendamento import extras as extras_mod, origens
+from app.agendamento import extras as extras_mod, origens, rastro
 from app.agendamento.grade import Slot
 from app.agendamento.horarios import agora_sp
 # Import no topo, ao contrário do `qualificacao_fluxo` que este módulo carrega tarde: a
@@ -114,7 +114,7 @@ from app.agendamento.horarios import agora_sp
 # manda evitar no caminho de request da landing page.
 from app import rd_outbox
 from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_INICIADO,
-                        PASSO_LEAD_CRIADO, Agendamento)
+                        PASSO_LEAD_CRIADO, PASSO_RECUSADO, Agendamento)
 
 # `source` segue fixo: é a origem de marketing da CENAT inteira, não varia por curso.
 #
@@ -219,6 +219,9 @@ class Resultado:
     meeting_id: int | None
     consultora_email: str = ""
     consultora_nome: str = ""
+    # True quando é o agendamento ANTERIOR devolvido pela trava de duplo clique. A resposta ao
+    # visitante é a mesma; a rota usa isto só para deixar o rastro (agendamento/rastro.py).
+    duplo_clique: bool = False
 
 
 async def _duplo_clique(db: AsyncSession, telefone: str) -> Agendamento | None:
@@ -268,7 +271,9 @@ async def escolher_consultora(db: AsyncSession, candidatas, dia) -> list:
         select(Agendamento.sales_rep_email, func.count())
         .where(Agendamento.slot_inicio >= inicio,
                Agendamento.slot_inicio < fim,
-               Agendamento.passo.notin_([PASSO_FALHOU, PASSO_INICIADO]))
+               # `recusado` também fica de fora: a linha tem `slot_inicio = agora` e nunca
+               # teve consultora — contá-la seria carga fantasma no dia de hoje.
+               Agendamento.passo.notin_([PASSO_FALHOU, PASSO_INICIADO, PASSO_RECUSADO]))
         .group_by(Agendamento.sales_rep_email)
     )
     carga = {(linha[0] or "").lower(): linha[1] for linha in res.all()}
@@ -333,7 +338,8 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
         return Resultado(agendamento_id=anterior.id, lead_id=anterior.lead_id,
                          box_id=anterior.box_id, slot=slot, meeting_id=anterior.meeting_id,
                          consultora_email=anterior.sales_rep_email or "",
-                         consultora_nome=equipe_mod.nome_de(anterior.sales_rep_email or ""))
+                         consultora_nome=equipe_mod.nome_de(anterior.sales_rep_email or ""),
+                         duplo_clique=True)
 
     agora = agora_sp()
     ag = Agendamento(
@@ -400,6 +406,10 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
 
     if consultora is None:
         msg = str(ultimo_ocupado) if ultimo_ocupado else "nenhuma consultora disponível"
+        # O 409 é recusa, mas a linha já existe: marca o motivo NELA em vez de gravar uma
+        # `recusado` duplicada. Continua `falhou` porque pode carregar `lead_id` (lead
+        # externo), e linha `recusado` nunca tem lead — ver o cabeçalho de rastro.py.
+        ag.motivo_recusa = rastro.SLOT_OCUPADO
         await _marcar(db, ag, PASSO_FALHOU, erro=msg)
         disponibilidade.invalidar_cache()
         print(f"⚠️ agendamento #{ag.id}: slot {slot.id} ocupado nas "
