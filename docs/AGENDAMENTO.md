@@ -504,7 +504,7 @@ São a **única superfície pública** do backend; todo o resto exige token. Que
 
 ### 3.1 Adicionar uma LP nova (nova `subSource`)
 
-Procedimento validado na 12ª, na 13ª e na 14ª LP. **Leia isto inteiro antes de rodar qualquer coisa:
+Procedimento validado na 12ª, na 13ª, na 14ª e na 15ª LP. **Leia isto inteiro antes de rodar qualquer coisa:
 criar origem é permanente** — não existe `SourcesAdd` nem `SourcesRemove`, e a limpeza só é
 possível pela UI da Exact.
 
@@ -516,6 +516,10 @@ inválida` até o passo 5 terminar — por isso ela não deve ser publicada ante
 > **O combinado não basta: confira a página PUBLICADA** (passo 7b). A 14ª LP foi ao ar
 > mandando `"Pos DH T4"` enquanto a allowlist, a Exact e o RD tinham `Pos Direitos Humanos T4`,
 > e ficou 33 dias recusando todo visitante sem ninguém perceber (ver 5, "Aliases de origem").
+> A 15ª (`Pos Psicologia Clinica Aplicada`) foi o caso inverso: nome certo, mas a página foi
+> publicada **antes** do passo 5 e recusou 8 tentativas em 01/10 (2 pessoas reais). Antes de
+> começar, rode `SELECT … FROM agendamentos WHERE passo='recusado' AND sub_source='<NOVA>'`:
+> quem estiver lá precisa de contato depois do restart.
 
 **1. Dry-run.** Monte o payload e confira o estado atual **sem escrever nada**:
 
@@ -556,7 +560,8 @@ que **nenhum subSource inesperado** apareceu — é isso que prova ausência de 
 sequência de ids (ver 4.5).
 
 **4. Limpeza.** `DELETE /LeadsDelete/{id}` → 204. Confirme por `id eq` (**o único filtro
-consistente na hora**) e depois por varredura `phone1 eq '5511999990001'` → 0. Sem box e sem
+consistente na hora** — mas, na 15ª, ele ainda devolveu o lead logo após o 204 e só zerou
+uns 15 s depois, duas vezes seguidas; repita antes de concluir que o delete falhou) e depois por varredura `phone1 eq '5511999990001'` → 0. Sem box e sem
 `scheduleAdd`, o `LeadsDelete` limpa 100% e **não deixa órfão**.
 
 **5. Allowlist.** Acrescente o valor ao fim de `AGENDAMENTO_SUBSOURCES` no `backend/.env`,
@@ -615,6 +620,10 @@ for p in "" obrigado.html; do
   curl -s "https://<a-lp>.cenatsaudemental.com/$p" | grep -o 'ORIGEM = "[^"]*"'
 done
 ```
+
+LP fora do Netlify (WordPress no domínio ápice, como a 15ª): troque a base por
+`https://cenatsaudemental.com/<slug>/` — o obrigado fica em `<slug>/obrigado.html`. Confira
+que um caminho inexistente na mesma pasta dá 404, senão o "200" pode ser página genérica.
 
 Tem que ser **byte a byte** o valor da allowlist. Se não for e a página não puder ser
 republicada logo, o remendo é um alias (4.2, `AGENDAMENTO_ORIGEM_ALIASES`) — nunca criar a
@@ -1011,7 +1020,7 @@ singular muda (`Follow 1..4` vs `Follows 5..9`) — nunca gere `stageName` por c
 | **Filtro de data em `/Meetings` é STRING** | `meetingDate` e `startTime` são `Edm.String`. `ge 2026-08-18` → 400; `ge '2026-08-18'` → 200 |
 | **`typeMeeting` não ecoa o que você manda** | `web` → volta `Online`. Não use o eco para conferir |
 | **Rate limit 30 req/20s é do token inteiro** | dividido com o `sync_job` (a cada 600s, paginando 500 leads). Um pico na LP concorre com a ingestão — daí o teto de 20 por ciclo da faxina e o rate limit por IP |
-| **id de subSource é global e não sequencial por source** | as 12 primeiras saíram em 176807–176818; a 13ª saiu **176822**, não 176819; a 14ª saiu **177142**, 320 à frente. O contador é da Exact inteira, e o salto cresce com o tempo entre operações. **Ausência de lixo se prova pela verificação pós-disparo** (nenhum subSource inesperado), nunca pela sequência |
+| **id de subSource é global e não sequencial por source** | as 12 primeiras saíram em 176807–176818; a 13ª saiu **176822**, não 176819; a 14ª saiu **177142**, 320 à frente; a 15ª saiu **178352**, 1 210 à frente. O contador é da Exact inteira, e o salto cresce com o tempo entre operações. **Ausência de lixo se prova pela verificação pós-disparo** (nenhum subSource inesperado), nunca pela sequência |
 | **`LeadsDelete` cascateia** | a reunião vira `Cancelada` e o box **some de todos os `GET`**. Não use como compensação |
 | **`BoxesRemove` é idempotente** | 204 de novo no mesmo id; id que nunca existiu dá `400 The informed box does not exist.` A diferença de mensagem é o que distingue "removido" de "inexistente" |
 | **`.env` de produção vaza para a suíte offline** | `app.database` chama `load_dotenv()` no import, então todo o `.env` entra em `os.environ` antes do primeiro teste. A suíte limpa as `AGENDAMENTO_*` logo após os imports — um teste offline que muda de resultado conforme o servidor não é teste |
@@ -1037,9 +1046,9 @@ consultora. Só teste real pega isso.
 
 ---
 
-## 5. Estado atual (27/08/2026)
+## 5. Estado atual (05/10/2026)
 
-### As 14 LPs / `subSources`
+### As 15 LPs / `subSources`
 
 Todas sob o source **`Landing Page` = id 140648**, ativas, ASCII puro sem acento.
 
@@ -1051,7 +1060,8 @@ Todas sob o source **`Landing Page` = id 140648**, ativas, ASCII puro sem acento
 | 176810 | `Pos Psicologia na RAPS T3` | 176817 | `Pos TEA V3` |
 | 176811 | `Pos Psicologia Hospitalar` | 176818 | `Pos Saude do Trabalhador` |
 | 176812 | `Pos Suicidio e Luto T3` | 176822 | `Pos Enfermagem em Saude Mental` |
-| 176813 | `Pos Psicologia Escolar` | **177142** | **`Pos Direitos Humanos T4`** |
+| 176813 | `Pos Psicologia Escolar` | 177142 | `Pos Direitos Humanos T4` |
+| | | **178352** | **`Pos Psicologia Clinica Aplicada`** |
 
 Padrão (quando a LP não manda `origem`): `PosMulheridades`.
 
@@ -1131,7 +1141,7 @@ Log de boot esperado:
 ```
 ✅ agendamento: 2 consultora(s) em rotação — Victória Amorim, Victória Rodrigues
 ✅ agendamento: 1 alias(es) de origem ativo(s): 'pos dh t4' -> 'Pos Direitos Humanos T4'
-✅ agendamento: source 'Landing Page' (id 140648) com as 14 origens da allowlist confirmadas
+✅ agendamento: source 'Landing Page' (id 140648) com as 15 origens da allowlist confirmadas
 ℹ️ agendamento: passo 4 (mover para funil de vendas) DESLIGADO
 ✅ Faxina de agendamento ativa (remove box nosso parado há 0:15:00)
 ✅ CORS do agendamento: .cenatsaudemental.com,.netlify.app (somente /api/agendamento/*)
@@ -1156,6 +1166,22 @@ Log de boot esperado:
   `Boxes are occupied` começar a aparecer no log com frequência, a saída não é encolher a grade
   de volta: é rever os blocos recorrentes com as consultoras. A terça da Amorim
   (`10:10–13:30`) sozinha responde por boa parte do buraco.
+
+**15ª origem, pendências de 05/10:**
+
+- **RD: `conversion_identifier` de `Pos Psicologia Clinica Aplicada` (TODO).** A Juny precisa
+  criar o fluxo e passar o identifier; até lá cada lead da LP vira `skipped/sem_mapa` na fila
+  (o smoke confirmou: `rd #943 … sem-mapa:pos psicologia clinica aplicada`). É recuperável
+  relendo a fila. **Não** reusar `formulario-pos-psicologia-clinica`, que é da Clínica T2.
+- **Duas pessoas recusadas em 01/10 precisam de contato:** Luís Guilherme Rodrigues Mota
+  (13997477014, tentou agendar 4×) e Thobias Justino Franca (67998317400, IP da equipe —
+  pode ser teste interno). Nenhum dos dois existe na Exact.
+- **Gêmeo antigo em `Rd Marketing`: `pospsiclinicaaplicada` (177651).** Lead que entra pelo
+  caminho do RD carrega esse `sub_source`, e o agente (`qualificacao_fluxo.py`) compara só com
+  a allowlist, não com os aliases — o agendamento dele cai em `PosMulheridades` na nossa tabela
+  (visto no lead 51960271, 17/09). Pré-existente, fora do escopo da 15ª.
+- **O obrigado da LP é o mesmo para Sim e Não** no investimento (`URL_OBRIGADO_NAO` aponta para
+  `obrigado.html` até existir a página alternativa) — correção da página, não do backend.
 
 **Dívida técnica:**
 
@@ -1203,5 +1229,6 @@ Log de boot esperado:
 | 27/08 | 14ª origem: `Pos Direitos Humanos T4` — id 177142, sem gêmeo antigo em source nenhum (§18) |
 | 29/09 | incidente: a LP da 14ª mandava `Pos DH T4` e tomou 158 × `400` em 33 dias. Alias de origem (`AGENDAMENTO_ORIGEM_ALIASES`) e passo 7b no runbook (5, "Aliases de origem") |
 | 30/09 | rastro das recusas: `passo='recusado'` + `motivo_recusa`, o 422 interceptado, a linha `agendamento recusa:` no journal (`migrate_agendamentos_rastro.py`, `rastro.py`). Motivo: 11 pessoas do DH T4 perdidas sem telefone (`INVESTIGACAO_LEADS_LP_SPOTTER_20260930.md`) |
+| 05/10 | 15ª origem: `Pos Psicologia Clinica Aplicada` — id 178352, sem alias (a LP já mandava o canônico). LP em WordPress no ápice, publicada antes da integração: 8 recusas em 01/10. Gêmeo antigo `pospsiclinicaaplicada` (177651) em `Rd Marketing`. Identifier do RD pendente |
 | 25/08 | janela de dias corridos (o horizonte de 14 dias morreu) + grade no comercial inteiro 09:00–18:30, com os números recalculados contra os blocos reais (`AGENDAMENTO_JANELA_GRADE_20260825.md`) |
 | 25/08 | `AGENDAMENTO_JANELA_DIAS=4` **no ar**, escolhido contra a chegada real de 2 933 leads (§7 do mesmo doc): com 3, 5,3% dos leads veriam oferta zero |
