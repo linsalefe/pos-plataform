@@ -25,6 +25,7 @@ from app.telefone import chave_telefone
 
 JANELA_RECENTE = timedelta(days=7)
 MOTIVO_FORA_DO_PADRAO = "humano"
+MOTIVO_TELEFONE_INVALIDO = "telefone_invalido"     # = confirmacao.MOTIVO_TELEFONE_INVALIDO
 
 
 def _resumo(r, agora: datetime) -> dict:
@@ -36,6 +37,9 @@ def _resumo(r, agora: datetime) -> dict:
         "marcada": marcada,
         "confirmada": marcada and r.confirmado_em is not None,
         "fora_do_padrao": r.regua_encerrada_motivo == MOTIVO_FORA_DO_PADRAO,
+        # A Meta recusou o número (131026, `confirmacao.encerrar_por_telefone_invalido`). A
+        # reunião segue Vigente na Exact, mas o card mostra "telefone inválido" no lugar dela.
+        "telefone_invalido": r.regua_encerrada_motivo == MOTIVO_TELEFONE_INVALIDO,
         # Para o tooltip do badge: por que a reunião não está "marcada", quando não está.
         "situacao": ("marcada" if marcada else r.cancelado_motivo
                      or ("cancelada" if r.exact_type == "Cancelada"
