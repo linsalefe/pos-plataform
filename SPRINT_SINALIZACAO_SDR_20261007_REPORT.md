@@ -1,7 +1,7 @@
 # Sprint: sinalização para o SDR (07/10/2026)
 
-Branch `feat/sinalizacao-sdr`, no ar desde 07/10. Merge na `main` só depois de o Álefe confirmar
-que recebeu o aviso de teste.
+Branch `feat/sinalizacao-sdr`, no ar desde 07/10 e mergeada na `main` depois de o Álefe
+confirmar o recebimento do aviso de teste.
 
 ## 1. Templates
 
@@ -36,7 +36,7 @@ terminava em variável (`Pós em {{3}}.`), o que o validador recusa e a Meta tam
 
 **Teste no número do Álefe** (07/10): `nat_sdr_ligar_agora` com dados de exemplo ("Ana Souza
 (TESTE)") para `5583988046720`. A Meta aceitou (`wamid.HBgMNTU4Mzg4MDQ2NzIw...`) e não houve erro
-de entrega no log. **A confirmação do recebimento é do Álefe.** O `nat_sdr_corte` fica para quando
+de entrega no log. **O Álefe confirmou o recebimento.** O `nat_sdr_corte` fica para quando
 o template for aprovado.
 
 ## 3. Filtros e "Tratado"
@@ -105,8 +105,7 @@ O frontend passou no `tsc --noEmit` e no build.
 
 ## 6. O que falta
 
-1. O Álefe confirmar o recebimento do aviso de teste. Depois disso, o merge na `main`.
-2. Aprovação do `nat_sdr_corte` na Meta (estava PENDING no deploy). Se o primeiro corte de 08/10
+1. Aprovação do `nat_sdr_corte` na Meta (estava PENDING no deploy). Se o primeiro corte de 08/10
    10:30 chegar antes da aprovação, o aviso falha no log e o corte segue normalmente.
-3. O número do SDR em `SDR_AVISO_TELEFONES`.
-4. A Fase 4, quando houver uma reunião cortada e já cancelada pela consultora.
+2. O número do SDR em `SDR_AVISO_TELEFONES`.
+3. A Fase 4, quando houver uma reunião cortada e já cancelada pela consultora.
