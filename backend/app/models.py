@@ -815,6 +815,10 @@ class ReuniaoStatus(Base):
     noshow_em = Column(DateTime)
     regua_encerrada_em = Column(DateTime)
     regua_encerrada_motivo = Column(String(60))
+    # 07/10 (sinalização ao SDR): o SDR clicou "Tratado" no card de "Cancelar na Exact" ou
+    # "Devolver ao funil". Migração própria: `migrate_sdr_tratado.py`.
+    sdr_tratado_em = Column(DateTime)
+    sdr_tratado_por = Column(Integer)
 
     created_at = Column(DateTime, server_default=text("(now() AT TIME ZONE 'America/Sao_Paulo')"))
     updated_at = Column(DateTime, server_default=text("(now() AT TIME ZONE 'America/Sao_Paulo')"))

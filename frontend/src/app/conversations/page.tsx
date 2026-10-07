@@ -61,11 +61,16 @@ interface ExactLeadResult {
 // reunião no espelho ou só com reunião de mais de 7 dias. `inicio` é hora de SP sem fuso.
 interface ReuniaoContato {
   meeting_id: number;
-  inicio: string;
+  inicio: string | null;
   marcada: boolean;
   confirmada: boolean;
   fora_do_padrao: boolean;
   telefone_invalido?: boolean;
+  // Sinalização ao SDR (07/10): ligar; cancelar na Exact; devolver ao funil. Os dois últimos são
+  // o meeting_id da pendência (para o botão "Tratado"), ou null.
+  nao_confirmou?: boolean;
+  cancelar_na_exact?: number | null;
+  devolver_ao_funil?: number | null;
   situacao: string;
 }
 
@@ -200,7 +205,9 @@ export default function ConversationsPage() {
   const [unreadFilter, setUnreadFilter] = useState(false);
   const [aiFilter, setAiFilter] = useState<'all' | 'on' | 'off'>('all');
   // Filtros do SDR (07/10): reunião marcada, confirmou, respondeu fora do padrão.
-  const [reuniaoFilter, setReuniaoFilter] = useState<'all' | 'marcada' | 'confirmada' | 'fora'>('all');
+  const [reuniaoFilter, setReuniaoFilter] = useState<
+    'all' | 'marcada' | 'confirmada' | 'fora' | 'nao_confirmou' | 'cancelar' | 'devolver'>('all');
+  const [tratando, setTratando] = useState<number | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [sdrFilter, setSdrFilter] = useState<number | null>(null);
   const [users, setUsers] = useState<{id: number; name: string}[]>([]);
@@ -313,6 +320,20 @@ export default function ConversationsPage() {
       }
     } catch (err) {
       console.error('Erro:', err);
+    }
+  };
+
+  // "Tratado" (07/10): grava sdr_tratado_em na reunião e recarrega a lista; o card sai do filtro.
+  const marcarTratado = async (meetingId: number) => {
+    if (tratando !== null) return;
+    setTratando(meetingId);
+    try {
+      await api.post(`/reunioes/${meetingId}/tratado`);
+      await loadContacts();
+    } catch (err) {
+      console.error('Erro ao marcar como tratado:', err);
+    } finally {
+      setTratando(null);
     }
   };
 
@@ -858,12 +879,15 @@ export default function ConversationsPage() {
     const mreu = reuniaoFilter === 'all'
       || (reuniaoFilter === 'marcada' && !!r?.marcada)
       || (reuniaoFilter === 'confirmada' && !!r?.confirmada)
-      || (reuniaoFilter === 'fora' && !!r?.fora_do_padrao);
+      || (reuniaoFilter === 'fora' && !!r?.fora_do_padrao)
+      || (reuniaoFilter === 'nao_confirmou' && !!r?.nao_confirmou)
+      || (reuniaoFilter === 'cancelar' && !!r?.cancelar_na_exact)
+      || (reuniaoFilter === 'devolver' && !!r?.devolver_ao_funil);
     return ms && mst && mtag && mur && mai && msdr && mreu;
   });
   // Com "Reunião marcada" ou "Confirmou", a lista vem pela reunião mais próxima primeiro.
   // `inicio` é ISO sem fuso: a comparação de string já dá a ordem certa.
-  if (reuniaoFilter === 'marcada' || reuniaoFilter === 'confirmada') {
+  if (reuniaoFilter === 'marcada' || reuniaoFilter === 'confirmada' || reuniaoFilter === 'nao_confirmou') {
     filteredContacts.sort((a, b) => (a.reuniao?.inicio || '').localeCompare(b.reuniao?.inicio || ''));
   }
 
@@ -1130,6 +1154,33 @@ export default function ConversationsPage() {
                     <MessageCircle className="w-3 h-3" />
                     Respondeu fora do padrão
                   </button>
+                  <button
+                    onClick={() => setReuniaoFilter(reuniaoFilter === 'nao_confirmou' ? 'all' : 'nao_confirmou')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      reuniaoFilter === 'nao_confirmou' ? 'bg-gray-200 text-gray-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Phone className="w-3 h-3" />
+                    Não confirmou
+                  </button>
+                  <button
+                    onClick={() => setReuniaoFilter(reuniaoFilter === 'cancelar' ? 'all' : 'cancelar')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      reuniaoFilter === 'cancelar' ? 'bg-red-50 text-red-600' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <XCircle className="w-3 h-3" />
+                    Cancelar na Exact
+                  </button>
+                  <button
+                    onClick={() => setReuniaoFilter(reuniaoFilter === 'devolver' ? 'all' : 'devolver')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      reuniaoFilter === 'devolver' ? 'bg-purple-50 text-purple-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <ArrowLeft className="w-3 h-3" />
+                    Devolver ao funil
+                  </button>
                 </div>
 
                 {/* SDR filter */}
@@ -1247,14 +1298,15 @@ export default function ConversationsPage() {
                           </p>
                         </div>
                         {(contact.reuniao?.marcada || contact.reuniao?.fora_do_padrao
-                          || contact.reuniao?.telefone_invalido) && (
+                          || contact.reuniao?.telefone_invalido || contact.reuniao?.cancelar_na_exact
+                          || contact.reuniao?.devolver_ao_funil) && (
                           <div className="flex items-center gap-1 mt-1">
                             {contact.reuniao.telefone_invalido ? (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-red-50 text-red-600"
                                     title="A Meta recusou este número (131026). Corrija o telefone na Exact.">
                                 telefone inválido
                               </span>
-                            ) : contact.reuniao.marcada && (
+                            ) : contact.reuniao.marcada && contact.reuniao.inicio && (
                               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium ${
                                 contact.reuniao.confirmada ? 'bg-emerald-50 text-emerald-700' : 'bg-[#2A658F]/8 text-[#2A658F]'
                               }`}>
@@ -1263,9 +1315,41 @@ export default function ConversationsPage() {
                                 {contact.reuniao.confirmada && ' ✓'}
                               </span>
                             )}
+                            {contact.reuniao.nao_confirmou && !contact.reuniao.telefone_invalido && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-gray-100 text-gray-600"
+                                    title="Reunião marcada e ainda sem confirmação: vale uma ligação.">
+                                não confirmou
+                              </span>
+                            )}
                             {contact.reuniao.fora_do_padrao && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-amber-50 text-amber-700">
                                 fora do padrão
+                              </span>
+                            )}
+                            {contact.reuniao.cancelar_na_exact && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-red-50 text-red-600"
+                                    title="Não confirmou até o corte: cancele a reunião na Exact para liberar o horário.">
+                                cancelar na Exact
+                              </span>
+                            )}
+                            {contact.reuniao.devolver_ao_funil && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-purple-50 text-purple-700"
+                                    title="A régua de no-show terminou sem resposta: devolva ao funil de Pré-vendas.">
+                                devolver ao funil
+                              </span>
+                            )}
+                            {((reuniaoFilter === 'cancelar' && contact.reuniao.cancelar_na_exact)
+                              || (reuniaoFilter === 'devolver' && contact.reuniao.devolver_ao_funil)) && (
+                              <span
+                                role="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  marcarTratado((reuniaoFilter === 'cancelar'
+                                    ? contact.reuniao!.cancelar_na_exact : contact.reuniao!.devolver_ao_funil)!);
+                                }}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-gray-800 text-white hover:bg-gray-700 cursor-pointer"
+                              >
+                                {tratando !== null ? '...' : 'Tratado'}
                               </span>
                             )}
                           </div>
