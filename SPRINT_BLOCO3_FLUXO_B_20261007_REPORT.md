@@ -1,14 +1,14 @@
 # SPRINT Bloco 3 — Fluxo B enxuto e reagendamento pelos botões (07/10/2026)
 
-Branch `feat/fluxo-b-enxuto`. Status: **código no ar com `FLUXO_B_ENXUTO=false`**. A etapa 2 do
-deploy (ligar com a allowlist `83988046720`) e o teste ponta a ponta do Álefe aguardam os 5
-templates `nat_b_*` saírem de PENDING na Meta.
+Branch `feat/fluxo-b-enxuto`, mergeada em `main` em 07/10. Status: **LIGADO só para
+`83988046720`** desde 07/10 12:15:42 UTC (`FLUXO_B_ENXUTO=true`, boot `✅ Fluxo B enxuto ...:
+LIGADO (só 1 telefone(s) de teste)`). O teste ponta a ponta do Álefe ainda não foi feito.
 
 ## 0. Resumo
 
 | Critério | Status | Evidência |
 |---|---|---|
-| 1. flag desligada = agente de 4 perguntas igual, remarcar com resposta fixa | ✅ no ar | §3 (diff do caminho antigo); boot `ℹ️ Fluxo B enxuto ...: DESLIGADO` às 12:10:51 UTC |
+| 1. flag desligada = agente de 4 perguntas igual, remarcar com resposta fixa | ✅ | §3 (diff do caminho antigo); rodou desligado das 12:10 às 12:15 UTC sem erro |
 | 2. abertura `nat_b_abertura` → venda + até 5 horários → reunião + confirmação imediata | ⏳ código pronto; E2E pendente | §2 (texto real da venda gerado pelo LLM com a grade real) |
 | 3. reativações +30m/+2h/+4h/D+1 9h; responder cancela | ⏳ código pronto; E2E pendente | §4 |
 | 4. prefere ligação → aviso ao SDR, nota `[NAT] Prefere ligação`, encerra | ⏳ código pronto | simulação do LLM: `transferir_humano` + `prefere_ligacao` |
@@ -19,8 +19,10 @@ templates `nat_b_*` saírem de PENDING na Meta.
 
 ## 1. Templates (Fase 1)
 
-Submetidos em 07/10 com `submit_templates_fluxo_b.py --apply`. Os 5 estão em **PENDING**, todos
-MARKETING, sem botões.
+Submetidos em 07/10 com `submit_templates_fluxo_b.py --apply`. Os 5 foram **APPROVED** no mesmo
+dia, todos MARKETING, sem botões. Conferido na Meta antes de ligar: o corpo aprovado de cada um é
+igual ao de `nat_copy.CORPO_SUBMETIDO_FLUXO_B`. A cópia local em `whatsapp_templates` ainda diz
+PENDING; o envio não lê essa coluna.
 
 | nome | id Meta | vars | corpo |
 |---|---|---|---|
@@ -125,15 +127,21 @@ Ponta a ponta (clique → horários → reunião nova na Exact → confirmação
 
 ## 7. Riscos e pendências
 
-- **Não ligar a flag antes de APPROVED.** Abertura com `nat_b_abertura` não aprovado vira
-  `AcaoIgnorada` e o lead fica sem nada.
 - **Reunião nova com outra Vigente:** não verificado se a Exact aceita `BoxesAdd` para um lead que
   ainda tem reunião Vigente. O teste do "Preciso remarcar" responde.
 - **Relatórios:** `relatorios.ABERTURAS` só conhece T1/T2/T3; a abertura do Fluxo B não entra no
   funil da página `/relatorios`.
 - `test_fluxo_b.py` não foi executado (convenção da sprint).
 
-## 8. Próximos passos (deploy etapa 2)
+## 8. Deploy
+
+- 12:10 UTC: restart com `FLUXO_B_ENXUTO=false`, boot limpo.
+- 12:15 UTC: restart com `FLUXO_B_ENXUTO=true` e allowlist `83988046720`, boot limpo.
+- O número de teste tinha um estado do agente de 25/08 (`id=10`, `transferido_humano`, "LLM
+  indisponível ao oferecer a agenda"), que impediria a abertura ("já tem estado"). Apagado com
+  autorização do Álefe; nenhuma ação pendente para o número.
+
+### Roteiro do teste (pendente)
 
 ```bash
 # 1. conferir
