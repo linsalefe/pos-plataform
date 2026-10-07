@@ -1084,6 +1084,44 @@ async def ligar_agora(r: ReuniaoStatus, wa_id: str, db: AsyncSession) -> None:
         nome=await _nome(r, wa_id, db)), db)
 
 
+# ------------------------------------------------------------------------------------------
+# TELEFONE INVÁLIDO (131026) — 07/10, liberação geral
+# ------------------------------------------------------------------------------------------
+# MEDIDO no 1º ciclo da liberação (07/10 12:28 UTC): 2 das 9 confirmações imediatas voltaram
+# 131026 "Message undeliverable" (`5555555555555` e `5555519999891`, telefones digitados errado
+# na LP). Sem trava, cada uma seguiria com mais 5 mensagens fadadas a falhar e, no corte, a
+# régua de no-show armaria mais 8. Só o 131026: o 130472 ("experiment") e o resto seguem o
+# fluxo normal.
+CODIGO_TELEFONE_INVALIDO = 131026
+MOTIVO_TELEFONE_INVALIDO = "telefone_invalido"
+MOTIVO_ACAO_TELEFONE_INVALIDO = "telefone_invalido_131026"
+NOTA_TELEFONE_INVALIDO = "Telefone inválido para WhatsApp (erro 131026), régua encerrada"
+
+
+async def encerrar_por_telefone_invalido(r: ReuniaoStatus, wa_id: str, db: AsyncSession) -> int:
+    """Encerra a régua desta reunião (confirmação, T-30 e no-show), anota e avisa o SDR dono.
+
+    Idempotente: a Meta pode mandar o mesmo `failed` mais de uma vez, e a reaplicação de status
+    órfão também passa por aqui. Devolve quantas ações canceladas (0 se já estava encerrada).
+    """
+    from app.models import KINDS_NOSHOW, TIPO_NOTIF_TELEFONE_INVALIDO
+    if r.regua_encerrada_motivo == MOTIVO_TELEFONE_INVALIDO:
+        return 0
+    n = await cancelar_regua(wa_id, r, MOTIVO_ACAO_TELEFONE_INVALIDO, db, encerrar=False)
+    n += await _cancelar_da_reuniao(r, KINDS_NOSHOW, MOTIVO_ACAO_TELEFONE_INVALIDO, db)
+    r.regua_encerrada_em = _agora_sp()
+    r.regua_encerrada_motivo = MOTIVO_TELEFONE_INVALIDO
+    await _nota(r, NOTA_TELEFONE_INVALIDO)
+    await _notificar(r, wa_id, TIPO_NOTIF_TELEFONE_INVALIDO,
+                     "Telefone inválido no WhatsApp: corrija o cadastro",
+                     f"Reunião de {r.slot_inicio:%d/%m às %H:%M}. A Meta recusou o número "
+                     f"{r.telefone_bruto} (131026). A régua de confirmação foi encerrada; "
+                     f"confirme a reunião por outro canal e corrija o telefone na Exact.", db)
+    print(f"📵 confirmacao: reunião {r.meeting_id} ({wa_id}) com telefone inválido (131026) — "
+          f"régua encerrada, {n} ação(ões) cancelada(s)")
+    return n
+
+
 async def sem_interesse(r: ReuniaoStatus, wa_id: str, db: AsyncSession) -> None:
     r.cancelado_em = _agora_sp()
     r.cancelado_motivo = "sem_interesse"

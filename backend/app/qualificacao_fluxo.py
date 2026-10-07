@@ -3009,3 +3009,43 @@ async def _reabrir(wa_id: str, lead_id: int | None, agendamento_antigo: int | No
           f"({anterior or 'sem estado'} → {estado.etapa}), reunião(ões) ignorada(s): "
           f"{sorted(ignorar) or '-'}")
     return True
+
+
+# ==========================================================================================
+# 07/10 (liberação geral) — ABERTURA DO FLUXO B COM TELEFONE INVÁLIDO (131026)
+# ==========================================================================================
+
+async def encerrar_por_telefone_invalido(wa_id: str, db: AsyncSession) -> bool:
+    """A `nat_b_abertura` voltou 131026: encerra o estado sem reativação, anota e avisa o SDR.
+
+    Mesmo tratamento de `confirmacao.encerrar_por_telefone_invalido`: `encerrado` com motivo
+    `telefone_invalido`, as pendentes da conversa canceladas (reativações e encerramento
+    incluídos), nota `[NAT]` e notificação ao dono. Idempotente: só age sobre etapa ativa.
+    """
+    from app.confirmacao import (MOTIVO_ACAO_TELEFONE_INVALIDO, MOTIVO_TELEFONE_INVALIDO,
+                                 NOTA_TELEFONE_INVALIDO)
+    from app.models import TIPO_NOTIF_TELEFONE_INVALIDO
+    estado = await estado_de(wa_id, db)
+    if estado is None or estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
+        return False
+    anterior = estado.etapa
+    estado.etapa = ETAPA_Q_ENCERRADO
+    estado.encerrado_em = _agora_sp()
+    estado.encerrado_motivo = MOTIVO_TELEFONE_INVALIDO
+    await db.flush()
+    for kind in KINDS_DA_CONVERSA:
+        try:
+            await nat_cancelar(kind, estado.contact_wa_id, db,
+                               motivo=MOTIVO_ACAO_TELEFONE_INVALIDO)
+        except Exception as e:
+            print(f"⚠️  Agente: {kind} não cancelado para {estado.contact_wa_id} "
+                  f"({type(e).__name__}: {e})")
+    from app.exact_notes import registrar_observacao
+    await registrar_observacao(estado.exact_lead_id, NOTA_TELEFONE_INVALIDO)
+    await _notificar(estado, "Telefone inválido no WhatsApp: corrija o cadastro",
+                     "A Meta recusou a abertura do agente com 131026 (número não entregável). "
+                     "O agente encerrou a conversa; corrija o telefone na Exact.",
+                     db, tipo=TIPO_NOTIF_TELEFONE_INVALIDO)
+    print(f"📵 Agente: {estado.contact_wa_id} com telefone inválido (131026) — '{anterior}' → "
+          f"'{ETAPA_Q_ENCERRADO}', sem reativação")
+    return True

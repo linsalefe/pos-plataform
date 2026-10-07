@@ -575,6 +575,9 @@ KIND_REATIV_B_D1 = "reativ_b_d1"
 KINDS_REATIV_B = (KIND_REATIV_B_30M, KIND_REATIV_B_2H, KIND_REATIV_B_4H, KIND_REATIV_B_D1)
 # O lead prefere ligação (spec da Isa, Fluxo B): aviso ao SDR na hora. Sem migração.
 TIPO_NOTIF_PREFERE_LIGACAO = "prefere_ligacao"
+# A Meta devolveu 131026 (número não entregável) na 1ª mensagem: o SDR precisa corrigir o
+# telefone no cadastro. Sem migração.
+TIPO_NOTIF_TELEFONE_INVALIDO = "telefone_invalido"
 
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3

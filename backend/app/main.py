@@ -182,6 +182,14 @@ async def _reaplicar_status_orfao(wa_message_id: str, novo_status: str, erro: di
                 except Exception as e:
                     print(f"⚠️  welcome_status não realimentado ({wa_message_id}): "
                           f"{type(e).__name__}: {e}")
+                if erro:
+                    try:
+                        async with db.begin_nested():
+                            from app.telefone_invalido import ao_status_falho
+                            await ao_status_falho(wa_message_id, erro, db)
+                    except Exception as e:
+                        print(f"⚠️  trava 131026 não aplicada ({wa_message_id}): "
+                              f"{type(e).__name__}: {e}")
                 await db.commit()
                 print(f"🔁 status órfão aplicado: {wa_message_id} → {msg.status} "
                       f"(tentativa {n}, pedido {novo_status})")
@@ -399,7 +407,7 @@ async def lifespan(app: FastAPI):
     _lista = sorted(_confirmacao.allowlist())
     print(f"{'✅' if _confirmacao.flag_ligada() else 'ℹ️ '} Régua de confirmação: "
           f"{'LIGADA' if _confirmacao.flag_ligada() else 'DESLIGADA'}"
-          f"{f' (só {len(_lista)} telefone(s) de teste)' if _lista else ''} — "
+          f"{f' (só {len(_lista)} telefone(s) de teste)' if _lista else ' (todos os telefones)'} — "
           + "; ".join(f"{c.nome_exibicao}: telefone {c.telefone or 'NÃO CADASTRADO'}, "
                       f"usuário Hub {c.user_id_hub or 'não mapeado'}"
                       for c in _equipe.consultoras()))
@@ -407,13 +415,13 @@ async def lifespan(app: FastAPI):
     _lista_ns = sorted(_noshow.allowlist())
     print(f"{'✅' if _noshow.flag_ligada() else 'ℹ️ '} Régua de no-show (D0 a D8): "
           f"{'LIGADA' if _noshow.flag_ligada() else 'DESLIGADA'}"
-          f"{f' (só {len(_lista_ns)} telefone(s) de teste)' if _lista_ns else ''}")
+          f"{f' (só {len(_lista_ns)} telefone(s) de teste)' if _lista_ns else ' (todos os telefones)'}")
     from app import fluxo_b as _fluxo_b
     _lista_b = sorted(_fluxo_b.allowlist())
     print(f"{'✅' if _fluxo_b.flag_ligada() else 'ℹ️ '} Fluxo B enxuto (uma pergunta, "
           f"reativações, remarcar pelos botões): "
           f"{'LIGADO' if _fluxo_b.flag_ligada() else 'DESLIGADO'}"
-          f"{f' (só {len(_lista_b)} telefone(s) de teste)' if _lista_b else ''}")
+          f"{f' (só {len(_lista_b)} telefone(s) de teste)' if _lista_b else ' (todos os telefones)'}")
     print(f"{'✅' if _reuniao_sync_ligado() else 'ℹ️ '} Espelho de reuniões da Exact: "
           f"{'LIGADO' if _reuniao_sync_ligado() else 'DESLIGADO'} (a cada 10 min, "
           f"1º ciclo em 2 min)")
@@ -874,6 +882,17 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 except Exception as e:
                     print(f"⚠️  welcome_status não realimentado ({wa_message_id}): "
                           f"{type(e).__name__}: {e}")
+
+                # 07/10: 131026 na 1ª mensagem de uma régua (confirmação imediata ou abertura
+                # do Fluxo B) encerra a régua. Mesmo SAVEPOINT + except largo, pelo mesmo motivo.
+                if erro and existing:
+                    try:
+                        async with db.begin_nested():
+                            from app.telefone_invalido import ao_status_falho
+                            await ao_status_falho(wa_message_id, erro, db)
+                    except Exception as e:
+                        print(f"⚠️  trava 131026 não aplicada ({wa_message_id}): "
+                              f"{type(e).__name__}: {e}")
 
             # === AGENTE IA: DESATIVADO TEMPORARIAMENTE ===
             # for msg in value.get("messages", []):
