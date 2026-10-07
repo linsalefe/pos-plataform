@@ -42,14 +42,15 @@ import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import client
 from app.agendamento.consultoras import Consultora, consultoras
 from app.agendamento.grade import Slot
 from app.agendamento.horarios import agora_sp, de_exact
-from app.models import PASSO_FALHOU, PASSO_INICIADO, PASSO_RECUSADO, Agendamento
+from app.models import (EXACT_TYPE_CANCELADA, PASSO_FALHOU, PASSO_INICIADO, PASSO_RECUSADO,
+                        Agendamento, ReuniaoStatus)
 
 # Cache do resultado de /slots. 60s é o pedido do produto e casa com o custo: sem ele, cada
 # visitante que abre o obrigado.html dispara um GET /Boxes, e o rate limit da Exact
@@ -107,7 +108,24 @@ async def _ocupados_por_nos(db: AsyncSession, inicio: datetime, fim: datetime,
     cache do lado da Exact que atrasa alguns segundos, e é nesses segundos que dois
     visitantes simultâneos brigam pelo MESMO horário da MESMA consultora. É esse par que
     precisa ser bloqueado, não o horário inteiro.
+
+    REUNIÃO CANCELADA NÃO BLOQUEIA (07/10/2026). `agendamentos.passo` vira `agendado` e nunca
+    mais muda, então esta consulta segurava o horário para sempre, mesmo depois de a consultora
+    cancelar na Exact. Lá o box some e o horário volta a ser agendável (4 reuniões novas no
+    mesmo horário de uma cancelada, RECON_DEVOLUTIVA_ISA_20261007 §1.2); aqui não voltava.
+    MEDIDO em 07/10: 07/10 14:30 e 08/10 13:45 fora da grade da comercial@ só por isso.
+
+    A linha é ignorada quando o espelho (`reuniao_status`, pelo `agendamento_id`) diz
+    `Cancelada` ou tem `cancelado_motivo` (corte, remarcar, lead avisou, sem interesse). No
+    segundo caso a reunião pode seguir Vigente na Exact, e quem segura o horário é o box dela em
+    `_ocupados_na_exact`, até a consultora cancelar: o resultado é o mesmo de antes, sem a
+    trava eterna. A proteção contra corrida não perde nada: uma reunião cancelada não está
+    "em voo".
     """
+    cancelada = exists().where(
+        ReuniaoStatus.agendamento_id == Agendamento.id,
+        or_(ReuniaoStatus.exact_type == EXACT_TYPE_CANCELADA,
+            ReuniaoStatus.cancelado_motivo.isnot(None)))
     res = await db.execute(
         select(Agendamento.slot_inicio, Agendamento.slot_fim).where(
             Agendamento.slot_inicio >= inicio,
@@ -116,6 +134,7 @@ async def _ocupados_por_nos(db: AsyncSession, inicio: datetime, fim: datetime,
             # `recusado` já cai no filtro de e-mail (a linha tem `sales_rep_email = ''`), mas
             # fica explícito: a garantia não pode depender de um valor vazio. Ver rastro.py.
             Agendamento.passo.notin_([PASSO_FALHOU, PASSO_INICIADO, PASSO_RECUSADO]),
+            ~cancelada,
         )
     )
     return [(linha[0], linha[1]) for linha in res.all()]
