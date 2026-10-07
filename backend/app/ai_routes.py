@@ -3,6 +3,7 @@ Rotas da IA: config do agente, upload de documentos RAG, toggle por contato.
 """
 import json
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from app.auth import get_current_user
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel
@@ -31,7 +32,7 @@ class ToggleAIRequest(BaseModel):
 
 # === Config da IA por Canal ===
 
-@router.get("/config/{channel_id}")
+@router.get("/config/{channel_id}", dependencies=[Depends(get_current_user)])
 async def get_ai_config(channel_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(AIConfig).where(AIConfig.channel_id == channel_id)
@@ -59,7 +60,7 @@ async def get_ai_config(channel_id: int, db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.put("/config/{channel_id}")
+@router.put("/config/{channel_id}", dependencies=[Depends(get_current_user)])
 async def update_ai_config(channel_id: int, req: AIConfigUpdate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(AIConfig).where(AIConfig.channel_id == channel_id)
@@ -87,7 +88,7 @@ async def update_ai_config(channel_id: int, req: AIConfigUpdate, db: AsyncSessio
 
 # === Toggle IA por Contato ===
 
-@router.patch("/contacts/{wa_id}/toggle")
+@router.patch("/contacts/{wa_id}/toggle", dependencies=[Depends(get_current_user)])
 async def toggle_contact_ai(wa_id: str, req: ToggleAIRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
     contact = result.scalar_one_or_none()
@@ -118,7 +119,7 @@ async def toggle_contact_ai(wa_id: str, req: ToggleAIRequest, db: AsyncSession =
 
 # === Documentos do RAG ===
 
-@router.get("/documents/{channel_id}")
+@router.get("/documents/{channel_id}", dependencies=[Depends(get_current_user)])
 async def list_documents(channel_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(
@@ -144,7 +145,7 @@ async def list_documents(channel_id: int, db: AsyncSession = Depends(get_db)):
     ]
 
 
-@router.post("/documents/{channel_id}")
+@router.post("/documents/{channel_id}", dependencies=[Depends(get_current_user)])
 async def upload_document(
     channel_id: int,
     title: str = Form(...),
@@ -195,7 +196,7 @@ async def upload_document(
     }
 
 
-@router.delete("/documents/{channel_id}/{title}")
+@router.delete("/documents/{channel_id}/{title}", dependencies=[Depends(get_current_user)])
 async def delete_document(channel_id: int, title: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(KnowledgeDocument).where(
@@ -220,7 +221,7 @@ class TestChatRequest(BaseModel):
     lead_name: str = ""
     lead_course: str = ""
 
-@router.post("/test-chat")
+@router.post("/test-chat", dependencies=[Depends(get_current_user)])
 async def test_chat(req: TestChatRequest, db: AsyncSession = Depends(get_db)):
     """Endpoint de teste: simula conversa com a IA sem enviar WhatsApp."""
     from app.ai_engine import search_knowledge, get_course_catalog, build_catalog_info, DEFAULT_SYSTEM_PROMPT

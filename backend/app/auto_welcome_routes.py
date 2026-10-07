@@ -28,7 +28,7 @@ def _serialize(cfg: AutoWelcomeConfig) -> dict:
     }
 
 
-@router.get("/config")
+@router.get("/config", dependencies=[Depends(get_current_user)])
 async def get_config(db: AsyncSession = Depends(get_db)):
     cfg = await get_auto_welcome_config(db)
     if cfg is None:
@@ -36,7 +36,7 @@ async def get_config(db: AsyncSession = Depends(get_db)):
     return _serialize(cfg)
 
 
-@router.get("/blocked-templates")
+@router.get("/blocked-templates", dependencies=[Depends(get_current_user)])
 async def blocked_templates(db: AsyncSession = Depends(get_db)):
     """Templates que não podem ser enviados fora da automação.
 
@@ -47,7 +47,7 @@ async def blocked_templates(db: AsyncSession = Depends(get_db)):
     return {"blocked": sorted(await templates_bloqueados(db))}
 
 
-@router.get("/preview")
+@router.get("/preview", dependencies=[Depends(get_current_user)])
 async def preview(db: AsyncSession = Depends(get_db)):
     """Dry-run: quantos leads nos funis-alvo ainda NÃO tiveram decisão registrada.
 

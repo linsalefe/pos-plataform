@@ -18,7 +18,7 @@ from app.welcome_guard import bloquear_se_boas_vindas
 router = APIRouter(prefix="/api/exact-leads", tags=["exact-leads"])
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(get_current_user)])
 async def list_exact_leads(
     stage: str = None,
     sub_source: str = None,
@@ -65,13 +65,13 @@ async def list_exact_leads(
     ]
 
 
-@router.post("/sync")
+@router.post("/sync", dependencies=[Depends(get_current_user)])
 async def trigger_sync(db: AsyncSession = Depends(get_db)):
     result = await sync_exact_leads(db)
     return {"status": "ok", **result}
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(get_current_user)])
 async def exact_leads_stats(db: AsyncSession = Depends(get_db)):
     total = await db.execute(select(func.count(ExactLead.id)))
     total = total.scalar()
@@ -99,7 +99,7 @@ async def exact_leads_stats(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.get("/funnels")
+@router.get("/funnels", dependencies=[Depends(get_current_user)])
 async def list_funnels():
     """Proxy read-only do Exact /Funnels. Retorna [{id, name}] pro front montar o filtro."""
     import httpx
@@ -119,7 +119,7 @@ async def list_funnels():
     ]
 
 
-@router.get("/{exact_id}/details")
+@router.get("/{exact_id}/details", dependencies=[Depends(get_current_user)])
 async def get_lead_details(exact_id: int):
     import httpx
     import os

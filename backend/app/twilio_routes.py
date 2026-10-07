@@ -3,7 +3,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from twilio.jwt.access_token import AccessToken
 from twilio.jwt.access_token.grants import VoiceGrant
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_user_header_ou_url
 import os
 import httpx
 
@@ -395,7 +395,7 @@ async def voice_incoming_twiml(request: "Request"):
     
     return Response(content=str(response), media_type="application/xml")
 
-@router.get("/recording/{call_sid}")
+@router.get("/recording/{call_sid}", dependencies=[Depends(get_current_user_header_ou_url)])
 async def stream_recording(call_sid: str):
     """Serve gravação salva localmente."""
     from fastapi.responses import FileResponse

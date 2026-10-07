@@ -65,6 +65,7 @@ interface ReuniaoContato {
   marcada: boolean;
   confirmada: boolean;
   fora_do_padrao: boolean;
+  telefone_invalido?: boolean;
   situacao: string;
 }
 
@@ -834,6 +835,11 @@ export default function ConversationsPage() {
     return `${sem} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')} ${hm}`;
   };
 
+  // 07/10: `/media/{id}` exige login. `<img>`, `<audio>`, `<video>` e `window.open` não mandam o
+  // header, então o token vai na URL (backend: `get_current_user_header_ou_url`).
+  const tokenNaUrl = () =>
+    typeof window !== 'undefined' ? encodeURIComponent(localStorage.getItem('token') || '') : '';
+
   const getStatusConfig = (s: string) => leadStatuses.find(x => x.value === s) || leadStatuses[0];
   const getTagColorConfig = (c: string) => tagColors.find(x => x.value === c) || tagColors[0];
 
@@ -1240,9 +1246,15 @@ export default function ConversationsPage() {
                             {contact.last_message || 'Sem mensagens'}
                           </p>
                         </div>
-                        {(contact.reuniao?.marcada || contact.reuniao?.fora_do_padrao) && (
+                        {(contact.reuniao?.marcada || contact.reuniao?.fora_do_padrao
+                          || contact.reuniao?.telefone_invalido) && (
                           <div className="flex items-center gap-1 mt-1">
-                            {contact.reuniao.marcada && (
+                            {contact.reuniao.telefone_invalido ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-red-50 text-red-600"
+                                    title="A Meta recusou este número (131026). Corrija o telefone na Exact.">
+                                telefone inválido
+                              </span>
+                            ) : contact.reuniao.marcada && (
                               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium ${
                                 contact.reuniao.confirmada ? 'bg-emerald-50 text-emerald-700' : 'bg-[#2A658F]/8 text-[#2A658F]'
                               }`}>
@@ -1455,28 +1467,28 @@ export default function ConversationsPage() {
                             }`}>
                               {msg.type === 'image' && msg.content.startsWith('media:') ? (
                                 <img
-                                  src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`}
+                                  src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}&token=${tokenNaUrl()}`}
                                   alt={msg.content.split('|')[2] || 'Imagem'}
                                   className="max-w-[250px] rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-                                  onClick={() => window.open(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`, '_blank')}
+                                  onClick={() => window.open(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}&token=${tokenNaUrl()}`, '_blank')}
                                 />
                               ) : msg.type === 'audio' && msg.content.startsWith('media:') ? (
                                 <audio controls className="max-w-[250px]">
-                                  <source src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`} type={msg.content.split('|')[1] || 'audio/ogg'} />
+                                  <source src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}&token=${tokenNaUrl()}`} type={msg.content.split('|')[1] || 'audio/ogg'} />
                                 </audio>
                               ) : msg.type === 'video' && msg.content.startsWith('media:') ? (
                                 <video controls className="max-w-[250px] rounded-lg">
-                                  <source src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`} type={msg.content.split('|')[1] || 'video/mp4'} />
+                                  <source src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}&token=${tokenNaUrl()}`} type={msg.content.split('|')[1] || 'video/mp4'} />
                                 </video>
                               ) : msg.type === 'sticker' && msg.content.startsWith('media:') ? (
                                 <img
-                                  src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`}
+                                  src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}&token=${tokenNaUrl()}`}
                                   alt="Sticker"
                                   className="w-32 h-32"
                                 />
                               ) : msg.type === 'document' && msg.content.startsWith('media:') ? (
                                 <a
-                                  href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}`}
+                                  href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api'}/media/${msg.content.split('|')[0].replace('media:', '')}?channel_id=${activeChannel?.id || 1}&token=${tokenNaUrl()}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className={`flex items-center gap-2 ${msg.direction === 'outbound' ? 'text-white/90' : 'text-[#2A658F]'} underline text-sm`}

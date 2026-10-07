@@ -2,6 +2,7 @@
 Rotas do Kanban: listar cards, mover entre colunas, atualizar notas.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from app.auth import get_current_user
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel
@@ -29,7 +30,7 @@ class UpdateSummaryRequest(BaseModel):
 
 # === Listar Cards ===
 
-@router.get("/cards")
+@router.get("/cards", dependencies=[Depends(get_current_user)])
 async def list_kanban_cards(
     channel_id: Optional[int] = None,
     status: Optional[str] = None,
@@ -66,7 +67,7 @@ async def list_kanban_cards(
 
 # === Estatísticas do Kanban ===
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(get_current_user)])
 async def kanban_stats(channel_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     base_filter = []
     if channel_id:
@@ -106,7 +107,7 @@ async def kanban_stats(channel_id: Optional[int] = None, db: AsyncSession = Depe
 
 # === Mover Card ===
 
-@router.patch("/cards/{card_id}/move")
+@router.patch("/cards/{card_id}/move", dependencies=[Depends(get_current_user)])
 async def move_card(card_id: int, req: MoveCardRequest, db: AsyncSession = Depends(get_db)):
     valid_statuses = ["em_atendimento_ia", "aguardando_humano", "finalizado"]
     if req.status not in valid_statuses:
@@ -140,7 +141,7 @@ async def move_card(card_id: int, req: MoveCardRequest, db: AsyncSession = Depen
 
 # === Atualizar Summary ===
 
-@router.patch("/cards/{card_id}")
+@router.patch("/cards/{card_id}", dependencies=[Depends(get_current_user)])
 async def update_card(card_id: int, req: UpdateSummaryRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(AIConversationSummary).where(AIConversationSummary.id == card_id)
@@ -162,7 +163,7 @@ async def update_card(card_id: int, req: UpdateSummaryRequest, db: AsyncSession 
 
 # === Gerar Resumo Automático via IA ===
 
-@router.post("/cards/{card_id}/generate-summary")
+@router.post("/cards/{card_id}/generate-summary", dependencies=[Depends(get_current_user)])
 async def generate_summary(card_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(AIConversationSummary).where(AIConversationSummary.id == card_id)

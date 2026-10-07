@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from app.auth import get_current_user
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 from app.database import get_db
@@ -7,13 +8,13 @@ from app.google_calendar import get_available_slots, get_available_dates, create
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 
 
-@router.get("/consultants")
+@router.get("/consultants", dependencies=[Depends(get_current_user)])
 async def list_consultants():
     """Lista consultoras disponíveis."""
     return [{"key": k, "name": v["name"], "calendar_id": v["calendar_id"]} for k, v in CALENDARS.items()]
 
 
-@router.get("/available-dates/{consultant_key}")
+@router.get("/available-dates/{consultant_key}", dependencies=[Depends(get_current_user)])
 async def available_dates(consultant_key: str):
     """Retorna próximos dias com horários livres."""
     if consultant_key not in CALENDARS:
@@ -23,7 +24,7 @@ async def available_dates(consultant_key: str):
     return dates
 
 
-@router.get("/available-slots/{consultant_key}/{date}")
+@router.get("/available-slots/{consultant_key}/{date}", dependencies=[Depends(get_current_user)])
 async def available_slots(consultant_key: str, date: str):
     """Retorna horários livres de um dia."""
     if consultant_key not in CALENDARS:
@@ -33,7 +34,7 @@ async def available_slots(consultant_key: str, date: str):
     return slots
 
 
-@router.post("/book")
+@router.post("/book", dependencies=[Depends(get_current_user)])
 async def book_appointment(
     consultant_key: str,
     lead_name: str,

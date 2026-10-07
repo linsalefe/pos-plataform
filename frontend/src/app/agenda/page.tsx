@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import AppLayout from '@/components/AppLayout';
+import api from '@/lib/api';
 import { Calendar, Clock, Phone, User, GraduationCap, RefreshCw } from 'lucide-react';
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api';
 
 interface AvailableDate {
   date: string;
@@ -22,9 +22,9 @@ export default function AgendaPage() {
   const fetchDates = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/calendar/available-dates/victoria`);
-      const data = await res.json();
-      setDates(data);
+      // `api` manda o login; o `fetch` cru deixou de funcionar quando /calendar passou a exigir.
+      const res = await api.get('/calendar/available-dates/victoria');
+      setDates(res.data);
     } catch (err) {
       console.error('Erro ao buscar datas:', err);
     } finally {

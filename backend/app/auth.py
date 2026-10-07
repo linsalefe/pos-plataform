@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -58,6 +58,29 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Usuário não encontrado ou inativo")
 
     return user
+
+
+_security_opcional = HTTPBearer(auto_error=False)
+
+
+async def get_current_user_header_ou_url(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security_opcional),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """O mesmo login de `get_current_user`, aceitando o token também em `?token=`.
+
+    SÓ para o que o NAVEGADOR carrega sozinho (`<img>`, `<audio>`, `<video>`, `window.open`):
+    a mídia das conversas e o áudio das gravações. Essas tags não mandam header, e sem isto a
+    rota teria de ficar aberta, que é como estava até 07/10. O custo é o token aparecer na URL
+    (histórico do navegador e log de acesso do nginx); ele expira em
+    `ACCESS_TOKEN_EXPIRE_HOURS`. Toda outra rota usa `get_current_user`, só header.
+    """
+    token = credentials.credentials if credentials else request.query_params.get("token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token),
+                                  db)
 
 
 def get_current_admin(current_user: User = Depends(get_current_user)) -> User:

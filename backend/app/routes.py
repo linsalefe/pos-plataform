@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 import json
 import re
-from app.auth import get_current_user, get_current_admin
+from app.auth import get_current_admin, get_current_user, get_current_user_header_ou_url
 from app.models import Channel, Contact, Message, Tag, contact_tags, CourseAlias, User, WhatsappTemplate
 
 SP_TZ = timezone(timedelta(hours=-3))
@@ -79,7 +79,7 @@ class CreateTemplateRequest(BaseModel):
 
 # === Channels ===
 
-@router.get("/channels")
+@router.get("/channels", dependencies=[Depends(get_current_user)])
 async def list_channels(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Channel).where(Channel.is_active == True).order_by(Channel.id))
     channels = result.scalars().all()
@@ -96,7 +96,7 @@ async def list_channels(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@router.post("/channels")
+@router.post("/channels", dependencies=[Depends(get_current_user)])
 async def create_channel(req: ChannelRequest, db: AsyncSession = Depends(get_db)):
     channel = Channel(
         name=req.name,
@@ -113,7 +113,7 @@ async def create_channel(req: ChannelRequest, db: AsyncSession = Depends(get_db)
 
 # === Dashboard ===
 
-@router.get("/dashboard/stats")
+@router.get("/dashboard/stats", dependencies=[Depends(get_current_user)])
 async def dashboard_stats(channel_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     now = datetime.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -577,7 +577,7 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
     return saida
 
 
-@router.get("/contacts/{wa_id}")
+@router.get("/contacts/{wa_id}", dependencies=[Depends(get_current_user)])
 async def get_contact(wa_id: str, db: AsyncSession = Depends(get_db)):
     """O cabeçalho da conversa. Lê as duas grafias, pelas mesmas regras de `GET /contacts`."""
     from app.telefone import variantes_wa_id
@@ -619,7 +619,7 @@ async def get_contact(wa_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.patch("/contacts/{wa_id}")
+@router.patch("/contacts/{wa_id}", dependencies=[Depends(get_current_user)])
 async def update_contact(wa_id: str, req: UpdateContactRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Contact).where(Contact.wa_id == wa_id))
     contact = result.scalar_one_or_none()
@@ -656,14 +656,14 @@ async def assign_contact(wa_id: str, req: AssignContactRequest, db: AsyncSession
     return {"status": "assigned", "assigned_to": req.assigned_to}
 
 
-@router.post("/contacts/{wa_id}/tags/{tag_id}")
+@router.post("/contacts/{wa_id}/tags/{tag_id}", dependencies=[Depends(get_current_user)])
 async def add_tag_to_contact(wa_id: str, tag_id: int, db: AsyncSession = Depends(get_db)):
     await db.execute(contact_tags.insert().values(contact_wa_id=wa_id, tag_id=tag_id))
     await db.commit()
     return {"status": "tag added"}
 
 
-@router.delete("/contacts/{wa_id}/tags/{tag_id}")
+@router.delete("/contacts/{wa_id}/tags/{tag_id}", dependencies=[Depends(get_current_user)])
 async def remove_tag_from_contact(wa_id: str, tag_id: int, db: AsyncSession = Depends(get_db)):
     await db.execute(
         contact_tags.delete().where(contact_tags.c.contact_wa_id == wa_id, contact_tags.c.tag_id == tag_id)
@@ -674,7 +674,7 @@ async def remove_tag_from_contact(wa_id: str, tag_id: int, db: AsyncSession = De
 
 # === Mensagens ===
 
-@router.post("/contacts/{wa_id}/read")
+@router.post("/contacts/{wa_id}/read", dependencies=[Depends(get_current_user)])
 async def mark_as_read(wa_id: str, db: AsyncSession = Depends(get_db)):
     """Marca como lidas as mensagens inbound do contato — NAS DUAS GRAFIAS.
 
@@ -697,7 +697,7 @@ async def mark_as_read(wa_id: str, db: AsyncSession = Depends(get_db)):
     return {"status": "ok"}
 
 
-@router.get("/contacts/{wa_id}/messages")
+@router.get("/contacts/{wa_id}/messages", dependencies=[Depends(get_current_user)])
 async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db)):
     """A conversa INTEIRA deste humano — as duas grafias do telefone, mescladas por timestamp.
 
@@ -734,14 +734,14 @@ async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db)):
 
 # === Tags ===
 
-@router.get("/tags")
+@router.get("/tags", dependencies=[Depends(get_current_user)])
 async def list_tags(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Tag).order_by(Tag.name))
     tags = result.scalars().all()
     return [{"id": t.id, "name": t.name, "color": t.color} for t in tags]
 
 
-@router.post("/tags")
+@router.post("/tags", dependencies=[Depends(get_current_user)])
 async def create_tag(req: TagRequest, db: AsyncSession = Depends(get_db)):
     tag = Tag(name=req.name, color=req.color)
     db.add(tag)
@@ -750,7 +750,7 @@ async def create_tag(req: TagRequest, db: AsyncSession = Depends(get_db)):
     return {"id": tag.id, "name": tag.name, "color": tag.color}
 
 
-@router.delete("/tags/{tag_id}")
+@router.delete("/tags/{tag_id}", dependencies=[Depends(get_current_user)])
 async def delete_tag(tag_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Tag).where(Tag.id == tag_id))
     tag = result.scalar_one_or_none()
@@ -761,7 +761,7 @@ async def delete_tag(tag_id: int, db: AsyncSession = Depends(get_db)):
     return {"status": "deleted"}
 
 
-@router.get("/channels/{channel_id}/templates")
+@router.get("/channels/{channel_id}/templates", dependencies=[Depends(get_current_user)])
 async def list_templates(channel_id: int, status: Optional[str] = "APPROVED", db: AsyncSession = Depends(get_db)):
     """Lista templates do WABA (status ao vivo do Meta).
 
@@ -914,7 +914,7 @@ async def create_channel_template(
     }
 
 
-@router.get("/media/{media_id}")
+@router.get("/media/{media_id}", dependencies=[Depends(get_current_user_header_ou_url)])
 async def get_media(media_id: str, channel_id: int = 1, db: AsyncSession = Depends(get_db)):
     import httpx
     channel = await get_channel(channel_id, db)
@@ -947,7 +947,7 @@ async def get_media(media_id: str, channel_id: int = 1, db: AsyncSession = Depen
 
 # === Course Aliases (Mapeamento de cursos) ===
 
-@router.get("/course-aliases")
+@router.get("/course-aliases", dependencies=[Depends(get_current_user)])
 async def list_course_aliases(db: AsyncSession = Depends(get_db)):
     """Lista todos os mapeamentos de cursos."""
     result = await db.execute(select(CourseAlias).where(CourseAlias.is_active == True).order_by(CourseAlias.short_name))
@@ -964,7 +964,7 @@ async def list_course_aliases(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@router.get("/course-aliases/resolve/{alias}")
+@router.get("/course-aliases/resolve/{alias}", dependencies=[Depends(get_current_user)])
 async def resolve_course_alias(alias: str, db: AsyncSession = Depends(get_db)):
     """Resolve um alias para o nome completo do curso."""
     result = await db.execute(

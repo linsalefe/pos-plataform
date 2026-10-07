@@ -406,7 +406,7 @@ export default function CallsPage() {
                       </div>
                     </div>
                     <audio controls className="w-full rounded-xl" preload="metadata">
-                      <source src={`https://hub.cenatdata.online/api/twilio/recording/${selectedCall.call_sid}`} type="audio/mpeg" />
+                      <source src={`https://hub.cenatdata.online/api/twilio/recording/${selectedCall.call_sid}?token=${encodeURIComponent(typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '')}`} type="audio/mpeg" />
                     </audio>
                   </div>
                 </div>
