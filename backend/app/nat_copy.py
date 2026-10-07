@@ -327,3 +327,29 @@ BOTOES_FLUXO_A = {
         {"payload": NS_D0_HORARIO, "titulo": "Escolher horário"},
     ],
 }
+
+# Com a janela de 24h ABERTA o `enviar_nat` manda texto livre com botões `interactive`, e é
+# `BOTOES_LIVRES` que ele consulta (e `payloads_dos_botoes`, no ramo do template). Os rótulos
+# da régua já cabem nos 20 caracteres, então o livre é o mesmo do template.
+BOTOES_LIVRES.update(BOTOES_FLUXO_A)
+
+# Respostas FIXAS da régua a um clique ou texto do lead (Bloco 1). Texto livre: o lead acabou
+# de escrever, a janela está aberta. Sem emoji e sem travessão (convenção da sprint). As chaves
+# entre chaves são preenchidas por `str.format`, não pela Meta.
+TEXTO_A_CONFIRMADO = "Confirmado, {nome}! Até {dia}, às {hora}."
+TEXTO_A_REMARCAR = ("Sem problema, {nome}! Vou pedir para a consultora te mandar os horários "
+                    "disponíveis por aqui.")
+TEXTO_A_CANCELADO_LEAD = ("Tudo bem, {nome}. Cancelei seu horário por aqui. Se quiser retomar "
+                          "o processo seletivo, é só me chamar.")
+TEXTO_NS_LIGAR_AGORA = "Perfeito, {nome}! Já avisei a equipe, alguém te liga em instantes."
+
+# Ementa com a janela ABERTA: vai como texto livre, e texto livre não tem botão URL. O link
+# entra no corpo, no lugar de "É só tocar no botão abaixo".
+TEXTO_A_EMENTA_LIVRE = ("Oi, {nome}! Enquanto sua reunião não chega, separei a ementa da Pós "
+                        "em {pos} para você conhecer melhor o curso: {link} Nos falamos {dia}, "
+                        "às {hora}. Até lá!")
+
+# Resposta a uma DÚVIDA SIMPLES na régua (Fase 6): o texto vem do LLM (uma frase, contrato
+# fechado) + "Você confirma sua presença?", com os dois primeiros botões do pedido. Os payloads
+# são os do pedido de propósito: o clique aqui é o mesmo "Confirmo" e o mesmo "Preciso remarcar".
+BOTOES_LIVRES["confirm_a_duvida"] = BOTOES_FLUXO_A[NAT_A_PEDIDO_CONFIRMACAO][:2]

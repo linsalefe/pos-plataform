@@ -1871,6 +1871,13 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     """
     from app.agendamento import consultoras as equipe
 
+    # Bloco 1 (07/10): com CONFIRMACAO_ENABLED, o T-30 só vai para quem confirmou e sai com
+    # `nat_a_30min` (spec da Isa). Fora da flag, da allowlist ou sem espelho em reuniao_status,
+    # devolve False e o caminho abaixo, de sempre, segue intocado.
+    from app.confirmacao import lembrete_por_espelho
+    if await lembrete_por_espelho(acao, db):
+        return
+
     payload = json.loads(acao.get("payload") or "{}")
     wa_id = acao["contact_wa_id"]
     reuniao_id = payload.get("agendamento_id")

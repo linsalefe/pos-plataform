@@ -533,6 +533,24 @@ KIND_RESPONDER_PENDENTE = "responder_pendente"
 # é sobre (kind, contact_wa_id) — um vigia convive com o `encerrar_inativo` do mesmo contato.
 KIND_VIGIAR_RESPOSTA = "vigiar_resposta"
 
+# Régua de CONFIRMAÇÃO de reunião (Fluxo A da spec da Isa, 28/09; Bloco 1, 07/10/2026). UM
+# KIND POR MENSAGEM, e não um kind com o degrau no payload: o índice único parcial
+# `uq_nat_sched_pendente_por_contato (kind, contact_wa_id) WHERE pendente` e o `agendar()` que
+# cancela o pendente do mesmo par fariam o pedido apagar a ementa (RECON_CONFIRMACAO_NOSHOW
+# §6.1). O T-30 continua sendo `lembrete_reuniao`. Ver app/confirmacao.py.
+KIND_CONFIRM_A_IMEDIATA = "confirm_a_imediata"
+KIND_CONFIRM_A_EMENTA = "confirm_a_ementa"
+KIND_CONFIRM_A_BENEFICIO = "confirm_a_beneficio"
+KIND_CONFIRM_A_PEDIDO = "confirm_a_pedido"
+KIND_CONFIRM_A_ULTIMO_AVISO = "confirm_a_ultimo_aviso"
+KIND_CONFIRM_A_CORTE = "confirm_a_corte"
+KINDS_CONFIRMACAO = (KIND_CONFIRM_A_IMEDIATA, KIND_CONFIRM_A_EMENTA, KIND_CONFIRM_A_BENEFICIO,
+                     KIND_CONFIRM_A_PEDIDO, KIND_CONFIRM_A_ULTIMO_AVISO, KIND_CONFIRM_A_CORTE)
+
+# Tipos de `notifications` da régua. Sem migração: `notifications.type` não tem CHECK.
+TIPO_NOTIF_CONFIRMACAO = "confirmacao_humano"
+TIPO_NOTIF_LIGAR_AGORA = "ligar_agora"
+
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3
 

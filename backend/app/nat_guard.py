@@ -178,6 +178,47 @@ def proximo_horario_util(quando: datetime | None = None) -> datetime:
                                second=0, microsecond=0)
 
 
+# ==========================================================================================
+# JANELA DAS RÉGUAS (confirmação de reunião e, depois, no-show): 08h00–20h30, TODO DIA
+# ==========================================================================================
+# Spec da Isa (28/09), "Configurações gerais": "nenhuma mensagem automática entre 20h30 e 8h.
+# O que cairia nesse intervalo sai às 8h". Decisão do Álefe em 07/10: vale para as réguas
+# novas, e a abertura do agente continua em dia útil.
+#
+# POR QUE NÃO É `dentro_horario_comercial`. Aquela é 09h00–18h30 seg–sex e governa a abertura
+# do agente e o fluxo velho. Trocá-la mudaria os dois junto. E ela bloquearia a régua no
+# ponto em que ela mais importa (RECON_CONFIRMACAO_NOSHOW §1.6): o pedido de confirmação de
+# uma reunião de segunda de manhã sai no DOMINGO às 17h, e o último aviso sai às 8h, antes de
+# o comercial abrir. Com a janela antiga, os dois cairiam depois do corte das 9h.
+#
+# Feriado: não tratado, igual à outra janela.
+JANELA_REGUA_INICIO = _time(8, 0)    # inclusive
+JANELA_REGUA_FIM = _time(20, 30)     # EXCLUSIVE
+
+
+def dentro_janela_envio(quando: datetime | None = None) -> bool:
+    """08h00–20h30 em SP, qualquer dia da semana. Naive = já em SP; aware é convertido."""
+    momento = quando if quando is not None else datetime.now(SP_TZ)
+    if momento.tzinfo is not None:
+        momento = momento.astimezone(SP_TZ)
+    return JANELA_REGUA_INICIO <= momento.time() < JANELA_REGUA_FIM
+
+
+def proxima_janela_envio(quando: datetime | None = None) -> datetime:
+    """O próximo instante dentro de 08h00–20h30, naive em SP. Dentro, devolve `quando`.
+
+    Madrugada → 08h00 do mesmo dia; depois das 20h30 → 08h00 do dia seguinte.
+    """
+    momento = quando if quando is not None else _agora_sp()
+    if momento.tzinfo is not None:
+        momento = momento.astimezone(SP_TZ).replace(tzinfo=None)
+    if dentro_janela_envio(momento):
+        return momento
+    abre = momento.replace(hour=JANELA_REGUA_INICIO.hour, minute=JANELA_REGUA_INICIO.minute,
+                           second=0, microsecond=0)
+    return abre if momento.time() < JANELA_REGUA_INICIO else abre + timedelta(days=1)
+
+
 async def contar_envios_nat_ultima_hora(db: AsyncSession) -> int:
     """Envios ATRIBUÍVEIS À NAT na última hora.
 

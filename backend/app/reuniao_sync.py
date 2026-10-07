@@ -317,6 +317,21 @@ async def sincronizar(db: AsyncSession, *, listar=None, agora: datetime | None =
                 print(f"🚫 reuniao_sync: lembrete do agendamento {l['agendamento_id']} "
                       f"cancelado — reunião {l['meeting_id']} está Cancelada na Exact")
 
+    # Bloco 1 (07/10): reunião que SAIU de Vigente (Cancelada ou Concluido na Exact) encerra a
+    # régua de confirmação inteira da pessoa, corte e T-30 incluídos. Spec: "reunião cancelada
+    # ou remarcada pela equipe no CRM: para todas as mensagens pendentes". Roda com a flag
+    # desligada também: cancelar é sempre seguro.
+    reguas_canceladas = 0
+    for l, de in mudancas:
+        if de != EXACT_TYPE_VIGENTE or l["exact_type"] == EXACT_TYPE_VIGENTE:
+            continue
+        reguas_canceladas += await _encerrar_regua(db, l)
+
+    # E a reunião Vigente futura SEM régua ganha a dela: a SDR na Exact, e a do Hub que o
+    # `_gatilho_do_agente` não armou (sem meeting_id na hora). `armar` é idempotente e devolve
+    # 0 com a flag desligada ou fora da allowlist; a consulta só roda com a flag ligada.
+    reguas_armadas = await _armar_vigentes(db, agora)
+
     # Cursor: maior registerDate visto entre as NOVAS, menos a folga. Nunca anda para trás.
     vistos = [l["register_date_utc"] for l in map(_normalizar_seguro, novas) if l]
     vistos = [v for v in vistos if v]
@@ -327,6 +342,7 @@ async def sincronizar(db: AsyncSession, *, listar=None, agora: datetime | None =
 
     resumo = (f"novas={novas_n} atualizadas={atualizadas} mudancas_status={len(mudancas)} "
               f"canceladas_hub={len(canceladas_hub)} lembretes_cancelados={lembretes_cancelados} "
+              f"reguas_armadas={reguas_armadas} reguas_canceladas={reguas_canceladas} "
               f"lidas={len(novas)}+{len(janela)}")
     cursor.ultimo_ciclo_em = agora
     cursor.ultimo_ciclo_resultado = resumo
@@ -335,6 +351,74 @@ async def sincronizar(db: AsyncSession, *, listar=None, agora: datetime | None =
             "canceladas_hub": canceladas_hub, "lembretes_cancelados": lembretes_cancelados,
             "requisicoes": 2, "resumo": resumo,
             "mudancas": [(l["meeting_id"], de, l["exact_type"]) for l, de in mudancas]}
+
+
+async def _encerrar_regua(db: AsyncSession, linha: dict) -> int:
+    """Cancela a régua de confirmação da pessoa desta reunião. Nunca derruba o ciclo."""
+    from app import confirmacao
+    from app.exact_spotter import format_phone
+    wa = format_phone(linha.get("telefone_bruto") or "")
+    if not wa:
+        return 0
+    try:
+        async with db.begin_nested():
+            r = (await db.execute(select(ReuniaoStatus).where(
+                ReuniaoStatus.meeting_id == linha["meeting_id"]))).scalar_one_or_none()
+            motivo = ("reuniao_cancelada_exact" if linha["exact_type"] == EXACT_TYPE_CANCELADA
+                      else "reuniao_concluida_exact")
+            # Escopada pela reunião (ver `confirmacao._cancelar_da_reuniao`): numa remarcação, a
+            # régua da reunião NOVA da mesma pessoa não pode cair junto com a antiga.
+            return await confirmacao.cancelar_regua(wa, r, motivo, db)
+    except Exception as e:
+        print(f"⚠️ reuniao_sync: régua da reunião {linha['meeting_id']} não encerrada "
+              f"({type(e).__name__}: {e})")
+        return 0
+
+
+async def _armar_vigentes(db: AsyncSession, agora: datetime) -> int:
+    """Arma a régua das reuniões Vigentes futuras que ainda não têm. Uma falha não derruba as
+    outras nem o ciclo (savepoint por reunião)."""
+    from app import confirmacao
+    if not confirmacao.flag_ligada():
+        return 0
+    vigentes = (await db.execute(select(ReuniaoStatus).where(
+        ReuniaoStatus.exact_type == EXACT_TYPE_VIGENTE,
+        ReuniaoStatus.slot_inicio > agora,
+        ReuniaoStatus.regua_encerrada_em.is_(None)))).scalars().all()
+    armadas = 0
+    for r in vigentes:
+        try:
+            async with db.begin_nested():
+                if await confirmacao.armar(r, db, agora=agora):
+                    armadas += 1
+        except Exception as e:
+            print(f"⚠️ reuniao_sync: régua da reunião {r.meeting_id} não armada "
+                  f"({type(e).__name__}: {e})")
+    return armadas
+
+
+async def espelhar_agendamento(ag, db: AsyncSession) -> ReuniaoStatus | None:
+    """Cria (ou atualiza) a linha de `reuniao_status` de um agendamento do Hub NA HORA.
+
+    Para o `_gatilho_do_agente` armar a régua sem esperar o sync (até 10 min). Usa o MESMO
+    UPSERT do ciclo, então a passada seguinte só confirma ou corrige o status. Sem `meeting_id`
+    (o `scheduleAdd` devolve booleano e o id é lido best-effort), devolve None.
+    """
+    if not getattr(ag, "meeting_id", None):
+        return None
+    linha = {
+        "meeting_id": int(ag.meeting_id), "lead_id": ag.lead_id,
+        "telefone_chave": chave_telefone(ag.telefone) or None,
+        "telefone_bruto": (ag.telefone or "")[:30] or None,
+        "nome": (ag.nome or "")[:255] or None,
+        "slot_inicio": ag.slot_inicio, "slot_fim": ag.slot_fim,
+        "sales_rep_email": (ag.sales_rep_email or "").lower()[:255] or None,
+        "origem": ORIGEM_REUNIAO_HUB, "agendamento_id": ag.id,
+        "exact_type": EXACT_TYPE_VIGENTE, "registrado_em": ag.created_at,
+    }
+    await db.execute(UPSERT, {**{c: linha[c] for c in _CAMPOS_UPSERT}, "agora": agora_sp()})
+    return (await db.execute(select(ReuniaoStatus).where(
+        ReuniaoStatus.meeting_id == linha["meeting_id"]))).scalar_one_or_none()
 
 
 def _normalizar_seguro(m: dict) -> dict | None:

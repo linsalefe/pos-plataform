@@ -93,7 +93,7 @@ ATRASO_RETENTATIVA_SEGUNDOS = 60
 # Um `kind` cujo módulo não esteja listado aqui vira `falhou` com motivo explícito — o que é
 # ruidoso em vez de silencioso, e é o comportamento certo.
 MODULOS_DE_HANDLERS: tuple[str, ...] = ("app.nat_sla", "app.nat_recuperacao",
-                                       "app.qualificacao_fluxo")
+                                       "app.qualificacao_fluxo", "app.confirmacao")
 
 # Rótulo do desfecho "adiada" no resumo de processar_pendentes. NÃO é status de banco: a
 # linha continua `pendente`, com o run_at empurrado. Existe separado de ACAO_PENDENTE para o
@@ -230,7 +230,8 @@ async def agendar(kind: str, contact_wa_id: str, run_at: datetime, payload: dict
     return acao.id
 
 
-async def cancelar(kind: str, contact_wa_id: str, db: AsyncSession) -> int:
+async def cancelar(kind: str, contact_wa_id: str, db: AsyncSession, *,
+                   motivo: str | None = None) -> int:
     """Cancela os pendentes de (kind, contato). Devolve quantos foram cancelados.
 
     Só mexe em `pendente`: executado/cancelado/falhou é histórico e não se reescreve. Zero
@@ -242,7 +243,10 @@ async def cancelar(kind: str, contact_wa_id: str, db: AsyncSession) -> int:
         .where(NatScheduledAction.kind == kind,
                NatScheduledAction.contact_wa_id == contact_wa_id,
                NatScheduledAction.status == ACAO_PENDENTE)
-        .values(status=ACAO_CANCELADO, processed_at=_agora_sp())
+        # `motivo` opcional (07/10, Bloco 1): a régua de confirmação precisa dizer POR QUE
+        # cancelou ("confirmou", "sdr_assumiu"...). Sem ele, o comportamento é o de sempre.
+        .values(status=ACAO_CANCELADO, processed_at=_agora_sp(),
+                **({"motivo": motivo} if motivo else {}))
     )
     quantos = res.rowcount or 0
     if quantos:
@@ -428,7 +432,7 @@ async def _executar_acao(acao: NatScheduledAction, db: AsyncSession, agora: date
         # handler pode ter criado Contact e estado antes de descobrir que não vai enviar, e
         # nenhum dos dois deve sobreviver a uma abertura que não saiu.
         async with db.begin_nested():
-            await handler(dados, db)
+            ressalva = await handler(dados, db)
     except AcaoIgnorada as e:
         await _finalizar(db, acao_id, ACAO_SKIPPED, agora, motivo=e.motivo)
         # DEPOIS do `_finalizar`, e fora do savepoint do handler: aquele savepoint acabou de
@@ -468,7 +472,13 @@ async def _executar_acao(acao: NatScheduledAction, db: AsyncSession, agora: date
               f"{proxima:%H:%M:%S}. {type(e).__name__}: {e}")
         return ACAO_PENDENTE
 
-    await _finalizar(db, acao_id, ACAO_EXECUTADO, agora)
+    # O handler pode devolver uma STRING: "fiz o principal, mas uma parte não saiu" (07/10,
+    # Bloco 1). É o corte da régua de confirmação: a marcação e o aviso à consultora PRECISAM
+    # ficar gravados mesmo se a mensagem ao lead falhar, e levantar AcaoIgnorada reverteria o
+    # savepoint e apagaria os dois. Vira `executado` com o motivo gravado, nunca com NULL.
+    # Handler que devolve None (todos os anteriores) fica exatamente como era.
+    await _finalizar(db, acao_id, ACAO_EXECUTADO, agora,
+                     motivo=ressalva[:500] if isinstance(ressalva, str) and ressalva else None)
     return ACAO_EXECUTADO
 
 

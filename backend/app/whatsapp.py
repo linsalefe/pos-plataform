@@ -58,7 +58,7 @@ async def send_interactive_buttons(to: str, body: str, buttons: list, phone_numb
         return response.json()
 
 
-async def send_template_message(to: str, template_name: str, language: str, phone_number_id: str, token: str, parameters: list = None, button_payloads: list = None) -> dict:
+async def send_template_message(to: str, template_name: str, language: str, phone_number_id: str, token: str, parameters: list = None, button_payloads: list = None, url_suffixes: list = None) -> dict:
     """Envia um template aprovado.
 
     `button_payloads` fixa o payload de cada quick reply, por índice: o item 0 vai para o
@@ -71,6 +71,10 @@ async def send_template_message(to: str, template_name: str, language: str, phon
 
     NÃO REGRESSÃO: sem `button_payloads`, o corpo enviado é byte a byte o mesmo de antes —
     a boas-vindas em produção passa por aqui e não pode mudar.
+
+    `url_suffixes` (07/10, Bloco 1): o sufixo de cada botão URL DINÂMICO, por índice — é o
+    `{{1}}` de `https://drive.google.com/file/d/{{1}}` no `nat_a_ementa`. Mesma regra do
+    payload: só o envio carrega o valor. None numa posição = botão sem sufixo.
     """
     template_data = {
         "name": template_name,
@@ -94,6 +98,16 @@ async def send_template_message(to: str, template_name: str, language: str, phon
             "sub_type": "quick_reply",
             "index": str(indice),
             "parameters": [{"type": "payload", "payload": payload}],
+        })
+
+    for indice, sufixo in enumerate(url_suffixes or []):
+        if sufixo is None:
+            continue
+        components.append({
+            "type": "button",
+            "sub_type": "url",
+            "index": str(indice),
+            "parameters": [{"type": "text", "text": sufixo}],
         })
 
     if components:
