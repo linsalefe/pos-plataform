@@ -403,6 +403,11 @@ async def lifespan(app: FastAPI):
           + "; ".join(f"{c.nome_exibicao}: telefone {c.telefone or 'NÃO CADASTRADO'}, "
                       f"usuário Hub {c.user_id_hub or 'não mapeado'}"
                       for c in _equipe.consultoras()))
+    from app import noshow as _noshow
+    _lista_ns = sorted(_noshow.allowlist())
+    print(f"{'✅' if _noshow.flag_ligada() else 'ℹ️ '} Régua de no-show (D0 a D8): "
+          f"{'LIGADA' if _noshow.flag_ligada() else 'DESLIGADA'}"
+          f"{f' (só {len(_lista_ns)} telefone(s) de teste)' if _lista_ns else ''}")
     print(f"{'✅' if _reuniao_sync_ligado() else 'ℹ️ '} Espelho de reuniões da Exact: "
           f"{'LIGADO' if _reuniao_sync_ligado() else 'DESLIGADO'} (a cada 10 min, "
           f"1º ciclo em 2 min)")

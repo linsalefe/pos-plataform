@@ -551,6 +551,20 @@ KINDS_CONFIRMACAO = (KIND_CONFIRM_A_IMEDIATA, KIND_CONFIRM_A_EMENTA, KIND_CONFIR
 TIPO_NOTIF_CONFIRMACAO = "confirmacao_humano"
 TIPO_NOTIF_LIGAR_AGORA = "ligar_agora"
 
+# Régua de NO-SHOW (Bloco 2, 07/10): um kind por degrau, pela mesma razão do índice único
+# parcial. Nasce no corte da régua de confirmação. Ver app/noshow.py.
+KIND_NOSHOW_D0_1H = "noshow_d0_1h"
+KIND_NOSHOW_D0_8H = "noshow_d0_8h"
+KIND_NOSHOW_D1 = "noshow_d1"
+KIND_NOSHOW_D2 = "noshow_d2"
+KIND_NOSHOW_D3 = "noshow_d3"
+KIND_NOSHOW_D5 = "noshow_d5"
+KIND_NOSHOW_D7 = "noshow_d7"
+KIND_NOSHOW_D8 = "noshow_d8"
+KINDS_NOSHOW = (KIND_NOSHOW_D0_1H, KIND_NOSHOW_D0_8H, KIND_NOSHOW_D1, KIND_NOSHOW_D2,
+                KIND_NOSHOW_D3, KIND_NOSHOW_D5, KIND_NOSHOW_D7, KIND_NOSHOW_D8)
+TIPO_NOTIF_SEMINARIO = "seminario_quero"
+
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3
 

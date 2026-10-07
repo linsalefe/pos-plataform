@@ -557,6 +557,20 @@ async def _enviar_uma(db, linha) -> str:
     # enviado, não o que se previa no enfileiramento.
     template, _, idioma = resolver(entrada, lead.sub_source)
 
+    # Bloco 2 — UMA RÉGUA POR PESSOA. Com a régua de no-show viva para este telefone, o follow
+    # NÃO sai agora, e a linha CONTINUA `pendente` (não vira `skipped`): a UNIQUE
+    # `(lead_exact_id, estagio_id)` não é parcial, e um `skipped` aqui bloquearia este par para
+    # sempre. Pendente, o follow sai na primeira passada depois que a régua encerrar. Na
+    # prática quase não acontece: o arrasto do SDR que gera o evento já encerra a régua no sync
+    # de leads (`noshow.encerrar_por_arrasto`), antes de o follow ler o evento.
+    from app.noshow import reuniao_em_regua
+    if await reuniao_em_regua(linha.telefone or lead.phone1 or "", db) is not None:
+        await db.execute(update(FollowEstagioEnvio).where(FollowEstagioEnvio.id == linha.id)
+                         .values(motivo="aguardando: regua_noshow_ativa"))
+        print(f"⏸️  follow #{linha.id}: lead {linha.lead_exact_id} com régua de no-show viva — "
+              f"fica pendente (regua_noshow_ativa)")
+        return "regua_noshow_ativa"
+
     mappings, motivo = montar_mappings(entrada, lead)
     if motivo:
         await _finalizar(db, linha.id, status=FE_SKIPPED, motivo=motivo, template=template)

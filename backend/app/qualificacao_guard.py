@@ -71,6 +71,9 @@ ETAPAS_REGUA_CONFIRMACAO = (
     "nat_a_confirmacao", "nat_a_ementa", "nat_a_beneficio", "nat_a_pedido_confirmacao",
     "nat_a_ultimo_aviso", "nat_a_30min", "nat_ns_d0_corte", "confirm_a_resposta",
     "confirm_a_duvida",
+    # Régua de no-show (Bloco 2)
+    "nat_ns_d0_1h", "nat_ns_d0_8h", "nat_ns_d1", "nat_ns_d2_audio", "nat_ns_d3_seminario",
+    "nat_ns_d5_conteudo", "nat_ns_d7_condicao", "nat_ns_d8_encerramento", "noshow_resposta",
 )
 
 ETAPAS_DE_ENVIO_DO_AGENTE = (

@@ -1,0 +1,32 @@
+{
+  "_fonte": "Preencher todo mes (Isa). Campo vazio ou valido_ate (AAAA-MM-DD) vencido = o degrau e pulado com motivo e a regua segue. audio_por_curso: follow_estagios.json (Follow 4, por_curso) x botao URL dos f4_audio* na Meta, 07/10/2026. Chave = sub_source da Exact (sem caixa). Valor = sufixo de https://drive.google.com/file/d/{{1}}",
+  "seminario": {
+    "nome": "",
+    "data": "",
+    "hora": "",
+    "valido_ate": ""
+  },
+  "condicao": {
+    "texto": "",
+    "valido_ate": ""
+  },
+  "conteudo_por_curso": {},
+  "audio_por_curso": {
+    "Pos Enfermagem em Saude Mental": "1SsPCVhq-27RwVK3zR5X2P0UuI6uvTZrn/view",
+    "Pos Infantojuvenil EAD": "1jFKguaDEKifyjJG742Vxmk-F9S2uO9Jh/view",
+    "posinfantoead": "1jFKguaDEKifyjJG742Vxmk-F9S2uO9Jh/view",
+    "Pos Psicologia Escolar": "10B01wPvPQG08W0CCYOji_GDGvPGHMNAi/view",
+    "Pos Psicologia na RAPS T3": "1JOQnXlrmZ06CfGrEOuBzfILfRZVRL3L2/view",
+    "PosMulheridades": "13TLUVm-WtZJyeatwcBODnRjZUGe8Jckc/view",
+    "Pos Grupos e Oficinas T2": "1MYz0qv7rNJuF9k8vj4-GIFKQJiZgjyOT/view",
+    "Pos TEA V3": "1ZhOIf5MOMWQRSKcmT4bFgEdDK4a1B73I/view",
+    "PosGraduacaoTEA": "1ZhOIf5MOMWQRSKcmT4bFgEdDK4a1B73I/view",
+    "Pos Gestao Psicossocial T5": "1aHJzOuO0rtqOOyocgWIe3RrXBQeHoXWr/view",
+    "Pos Suicidio e Luto T3": "1Mog4mA_4Hv-JsRN2aZsFBoSrXKE_bfkd/view",
+    "Pos Saude do Trabalhador": "1Jr0GY3B5q3dVZTzlHcN2OJBSy4IRDrVX/view",
+    "possmdotrabalhador": "1Jr0GY3B5q3dVZTzlHcN2OJBSy4IRDrVX/view",
+    "PosBoasPraticasEAD": "1lYZOUhi69rBf_X3aTTdJV1QHJYseJkNR/view",
+    "PosGraduacaoEconomiaSolidariaTurma1": "1dA8ammIDUeo6aqaa_tuNowk86g0NuMHi/view",
+    "PosPraticasDialogicasTurma1": "1CmqfKdGSvLh1VZBKXWvCvi_QQUXyb_tA/view"
+  }
+}
