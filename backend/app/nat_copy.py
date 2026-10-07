@@ -353,3 +353,117 @@ TEXTO_A_EMENTA_LIVRE = ("Oi, {nome}! Enquanto sua reunião não chega, separei a
 # fechado) + "Você confirma sua presença?", com os dois primeiros botões do pedido. Os payloads
 # são os do pedido de propósito: o clique aqui é o mesmo "Confirmo" e o mesmo "Preciso remarcar".
 BOTOES_LIVRES["confirm_a_duvida"] = BOTOES_FLUXO_A[NAT_A_PEDIDO_CONFIRMACAO][:2]
+
+
+# ==========================================================================================
+# RÉGUA DE NO-SHOW D0+1h A D8 (Bloco 2) — SUBMETIDOS À META EM 07/10/2026
+# ==========================================================================================
+# Texto da spec da Isa (28/09, "Régua de no-show", págs. 8 a 10), com os ajustes listados em
+# SPRINT_BLOCO2_NOSHOW_20261007_REPORT.md. FONTE do texto: `submit_templates_noshow.py` monta
+# os templates daqui. Fora de `CORPO_APROVADO` pelo mesmo motivo do Fluxo A (o drift exige
+# APPROVED); promovidos quando aprovados.
+NAT_NS_D0_1H = "nat_ns_d0_1h"
+NAT_NS_D0_8H = "nat_ns_d0_8h"
+NAT_NS_D1 = "nat_ns_d1"
+NAT_NS_D2_AUDIO = "nat_ns_d2_audio"
+NAT_NS_D3_SEMINARIO = "nat_ns_d3_seminario"
+NAT_NS_D5_CONTEUDO = "nat_ns_d5_conteudo"
+NAT_NS_D7_CONDICAO = "nat_ns_d7_condicao"
+NAT_NS_D8_ENCERRAMENTO = "nat_ns_d8_encerramento"
+
+# Payload por MENSAGEM (cabeçalho deste módulo).
+NS_1H_AGORA = "NS_1H_AGORA"
+NS_1H_HORARIO = "NS_1H_HORARIO"
+NS_8H_AGORA = "NS_8H_AGORA"
+NS_8H_HORARIO = "NS_8H_HORARIO"
+NS_D1_HORARIO = "NS_D1_HORARIO"
+NS_D2_REAGENDAR = "NS_D2_REAGENDAR"
+NS_D2_AGORA = "NS_D2_AGORA"
+NS_D3_QUERO = "NS_D3_QUERO"
+NS_D7_REAGENDAR = "NS_D7_REAGENDAR"
+NS_D8_AGORA = "NS_D8_AGORA"
+NS_D8_REAGENDAR = "NS_D8_REAGENDAR"
+
+CORPO_SUBMETIDO_NOSHOW = {
+    # {{1}} nome. AFASTOU-SE DO PDF (Álefe, 07/10): a Isa escreveu "Você acabou não
+    # participando da reunião", mas a régua nasce no CORTE, que é ANTES da reunião (manhã: 9h;
+    # tarde: 4h antes). O D0+1h diria a quem ainda não teve a reunião que ela faltou. A levar
+    # à Isa.
+    NAT_NS_D0_1H: (
+        "Oi, {{1}}! Seu horário foi liberado, mas ainda dá tempo de conversar com a "
+        "consultora. Como a agenda está apertada e restam poucas vagas, quer remarcar?"
+    ),
+    # {{1}} nome · {{2}} pós
+    NAT_NS_D0_8H: (
+        "Oi, {{1}}! Sua aplicação no processo seletivo da Pós em {{2}} ainda está em aberto, "
+        "e logo ela se encerra. Quer que a consultora te ligue agora ou prefere escolher um "
+        "novo horário?"
+    ),
+    # {{1}} nome · {{2}} pós · {{3}} horários numa linha ("hoje 14h15, 16h30 ou amanhã 10h00")
+    NAT_NS_D1: (
+        "Bom dia, {{1}}! Separei alguns horários para sua conversa com a consultora sobre a "
+        "Pós em {{2}}: {{3}}. São só 15 minutos, e participando você garante a isenção da "
+        "matrícula. Qual fica melhor para você?"
+    ),
+    # {{1}} nome · {{2}} pós; áudio no botão URL (sufixo dinâmico do Drive)
+    # "É só tocar…" acrescentado (Álefe, 07/10): 12 palavras para 2 variáveis é o perfil que a
+    # Meta recusa por proporção. O 👇 é da Isa e fica se a Meta aceitar.
+    NAT_NS_D2_AUDIO: (
+        "Oi, {{1}}! O coordenador da Pós em {{2}} gravou um recado para você 👇 É só tocar no "
+        "botão abaixo para ouvir."
+    ),
+    # {{1}} nome · {{2}} data · {{3}} hora · {{4}} nome do seminário
+    NAT_NS_D3_SEMINARIO: (
+        "Oi, {{1}}! Quero te fazer um convite especial: no dia {{2}}, às {{3}}, vamos ter o "
+        "seminário gratuito {{4}}. Tenho uma vaga garantida para você, é só responder QUERO "
+        "aqui que eu confirmo sua participação!"
+    ),
+    # {{1}} nome · {{2}} pós · {{3}} título; link no botão URL
+    NAT_NS_D5_CONTEUDO: (
+        "Oi, {{1}}! Separei um conteúdo que tem tudo a ver com a área da Pós em {{2}}: {{3}}. "
+        "Acho que você vai gostar!"
+    ),
+    # {{1}} nome · {{2}} pós · {{3}} condição · {{4}} data limite
+    NAT_NS_D7_CONDICAO: (
+        "Oi, {{1}}! Esta semana temos uma condição especial para a turma da Pós em {{2}}: "
+        "{{3}}. As vagas estão acabando e essa condição vale só até {{4}}. Quer que eu reserve "
+        "um horário com a consultora para você garantir?"
+    ),
+    # {{1}} nome · {{2}} pós
+    NAT_NS_D8_ENCERRAMENTO: (
+        "Oi, {{1}}! Como não tive seu retorno, vou encerrar por aqui seu agendamento no "
+        "processo seletivo da Pós em {{2}}. Se quiser retomar, é só me chamar."
+    ),
+}
+
+# Quick replies na ordem submetida (= índice no envio). Os botões URL (D2 e D5) não entram
+# aqui: não têm payload, e vão DEPOIS dos quick replies no template.
+BOTOES_NOSHOW = {
+    NAT_NS_D0_1H: [{"payload": NS_1H_AGORA, "titulo": "Posso falar agora"},
+                   {"payload": NS_1H_HORARIO, "titulo": "Escolher horário"}],
+    NAT_NS_D0_8H: [{"payload": NS_8H_AGORA, "titulo": "Posso falar agora"},
+                   {"payload": NS_8H_HORARIO, "titulo": "Escolher horário"}],
+    NAT_NS_D1: [{"payload": NS_D1_HORARIO, "titulo": "Escolher horário"}],
+    NAT_NS_D2_AUDIO: [{"payload": NS_D2_REAGENDAR, "titulo": "Reagendar"},
+                      {"payload": NS_D2_AGORA, "titulo": "Posso falar agora"}],
+    NAT_NS_D3_SEMINARIO: [{"payload": NS_D3_QUERO, "titulo": "Quero participar"}],
+    NAT_NS_D7_CONDICAO: [{"payload": NS_D7_REAGENDAR, "titulo": "Reagendar"}],
+    NAT_NS_D8_ENCERRAMENTO: [{"payload": NS_D8_AGORA, "titulo": "Falar agora"},
+                             {"payload": NS_D8_REAGENDAR, "titulo": "Reagendar"}],
+}
+# Botão URL dinâmico (sufixo do Drive), depois dos quick replies.
+BOTAO_URL_NOSHOW = {
+    NAT_NS_D2_AUDIO: "Ouvir o áudio",
+    NAT_NS_D5_CONTEUDO: "Ver conteúdo",
+}
+
+# Com a janela aberta, `enviar_nat` manda texto livre + botões interactive (só quick reply:
+# o interactive não carrega botão URL, então D2 e D5 levam o link no próprio texto).
+BOTOES_LIVRES.update(BOTOES_NOSHOW)
+
+TEXTO_NS_SEMINARIO_QUERO = ("Perfeito, {nome}! Sua vaga está garantida. A equipe te manda o "
+                            "link por aqui.")
+TEXTO_NS_D2_LIVRE = ("Oi, {nome}! O coordenador da Pós em {pos} gravou um recado para você 👇 "
+                     "{link}")
+TEXTO_NS_D5_LIVRE = ("Oi, {nome}! Separei um conteúdo que tem tudo a ver com a área da Pós em "
+                     "{pos}: {titulo}. Acho que você vai gostar! {link}")

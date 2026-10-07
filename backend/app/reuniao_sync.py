@@ -327,6 +327,13 @@ async def sincronizar(db: AsyncSession, *, listar=None, agora: datetime | None =
             continue
         reguas_canceladas += await _encerrar_regua(db, l)
 
+    # Bloco 2: reunião NOVA e Vigente da mesma pessoa = ela remarcou com a consultora. A régua
+    # de no-show dela para ('reagendou'). Vigente -> Cancelada NÃO mexe no no-show: a reunião
+    # do corte já está cancelada para nós.
+    for l in linhas:
+        if l["meeting_id"] not in antes and l["exact_type"] == EXACT_TYPE_VIGENTE:
+            await _encerrar_noshow_por_reuniao_nova(db, l["telefone_chave"], l["meeting_id"])
+
     # E a reunião Vigente futura SEM régua ganha a dela: a SDR na Exact, e a do Hub que o
     # `_gatilho_do_agente` não armou (sem meeting_id na hora). `armar` é idempotente e devolve
     # 0 com a flag desligada ou fora da allowlist; a consulta só roda com a flag ligada.
@@ -397,6 +404,25 @@ async def _armar_vigentes(db: AsyncSession, agora: datetime) -> int:
     return armadas
 
 
+async def _encerrar_noshow_por_reuniao_nova(db: AsyncSession, chave: str | None,
+                                           meeting_id: int) -> None:
+    from app import noshow
+    if not chave:
+        return
+    try:
+        async with db.begin_nested():
+            r = (await db.execute(select(ReuniaoStatus).where(
+                ReuniaoStatus.telefone_chave == chave, ReuniaoStatus.noshow_em.isnot(None),
+                ReuniaoStatus.regua_encerrada_em.is_(None),
+                ReuniaoStatus.meeting_id != meeting_id))).scalars().first()
+            if r is not None:
+                await noshow.encerrar(r, "reagendou", db,
+                                      nota=f"Régua de no-show encerrada: nova reunião {meeting_id}")
+    except Exception as e:
+        print(f"⚠️ reuniao_sync: no-show não encerrado pela reunião nova {meeting_id} "
+              f"({type(e).__name__}: {e})")
+
+
 async def espelhar_agendamento(ag, db: AsyncSession) -> ReuniaoStatus | None:
     """Cria (ou atualiza) a linha de `reuniao_status` de um agendamento do Hub NA HORA.
 
@@ -417,6 +443,8 @@ async def espelhar_agendamento(ag, db: AsyncSession) -> ReuniaoStatus | None:
         "exact_type": EXACT_TYPE_VIGENTE, "registrado_em": ag.created_at,
     }
     await db.execute(UPSERT, {**{c: linha[c] for c in _CAMPOS_UPSERT}, "agora": agora_sp()})
+    # Reagendou pela LP: a régua de no-show da reunião anterior para.
+    await _encerrar_noshow_por_reuniao_nova(db, linha["telefone_chave"], linha["meeting_id"])
     return (await db.execute(select(ReuniaoStatus).where(
         ReuniaoStatus.meeting_id == linha["meeting_id"]))).scalar_one_or_none()
 

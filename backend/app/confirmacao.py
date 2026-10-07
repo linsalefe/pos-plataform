@@ -754,6 +754,11 @@ async def confirm_a_corte(acao: dict, db: AsyncSession):
                      db, consultora=True)
     print(f"✂️ confirmacao: corte da reunião {r.meeting_id} ({wa})"
           f"{'' if not falhou else f' — D0 NÃO saiu: {falhou}'}")
+    # Bloco 2: o corte é o gatilho ÚNICO da régua de no-show, saia o D0 ou não. Mesma transação
+    # do corte: se o corte for revertido (teto), a régua não nasce. Com NOSHOW_ENABLED
+    # desligado, devolve 0 e nada muda.
+    from app import noshow
+    await noshow.armar(r, wa, db, agora=agora)
     if falhou:
         return f"corte marcado e consultora avisada, mas a mensagem D0 não saiu: {falhou}"
 
@@ -913,6 +918,14 @@ async def inbound(wa_id: str, evento_botao: dict | None, content: str,
 
     Com a flag desligada devolve False sem tocar no banco. False = o webhook segue como sempre.
     """
+    # Bloco 2: com régua de NO-SHOW viva (do D0 ao D8), a mensagem é dela. Vem antes da
+    # régua de confirmação porque é a mais recente da pessoa: o corte já encerrou a outra.
+    from app import noshow
+    if noshow.flag_ligada() and noshow.telefone_permitido(wa_id):
+        r_ns = await noshow.reuniao_em_regua(wa_id, db)
+        if r_ns is not None:
+            return await noshow.inbound(r_ns, wa_id, evento_botao, content, db)
+
     if not flag_ligada() or not telefone_permitido(wa_id):
         return False
     r, cortada = await _reuniao_dona(wa_id, db)

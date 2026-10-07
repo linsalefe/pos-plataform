@@ -261,6 +261,9 @@ async def _silenciar_agente_apos_envio_manual(wa_id: str, quem, db: AsyncSession
             async with db.begin_nested():
                 from app.confirmacao import cancelar_regua_da_pessoa
                 await cancelar_regua_da_pessoa(wa_id, "sdr_assumiu", db)
+                # Bloco 2: e a régua de no-show, pela mesma regra.
+                from app.noshow import encerrar_da_pessoa
+                await encerrar_da_pessoa(wa_id, "sdr_assumiu", db)
         except Exception as e:
             print(f"⚠️  Régua de confirmação de {wa_id} não cancelada depois de envio manual "
                   f"({type(e).__name__}: {e})")

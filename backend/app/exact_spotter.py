@@ -492,6 +492,9 @@ async def sync_exact_leads(db: AsyncSession):
     total_new = 0
     total_updated = 0
     new_leads_to_contact = []
+    # Bloco 2: quem mudou de estágio nesta passada. O SDR arrastar o card de um lead com régua
+    # de no-show viva encerra a régua (`sdr_assumiu`, regra única de 27/09).
+    transicoes: list[tuple[int, str, str | None, str | None]] = []
 
     # Config lida UMA vez por sync (canal, template, funis, liga/desliga).
     config = await get_auto_welcome_config(db)
@@ -540,6 +543,8 @@ async def sync_exact_leads(db: AsyncSession):
                 # Custo no caminho quente: o INSERT só acontece na MUDANÇA real (~20/dia
                 # medido em 18535), não nas 9.133 linhas que o laço reescreve a cada 600s.
                 if existing.stage != lead_data.get("stage"):
+                    transicoes.append((exact_id, lead_data.get("phone1") or "",
+                                       existing.stage, lead_data.get("stage")))
                     await _registrar_transicao(
                         db, exact_id, existing.stage, lead_data.get("stage"),
                         lead_data.get("funnel_id"))
@@ -572,6 +577,16 @@ async def sync_exact_leads(db: AsyncSession):
         skip += top
 
     await db.commit()
+
+    if transicoes:
+        try:
+            from app.noshow import encerrar_por_arrasto
+            if await encerrar_por_arrasto(transicoes, db):
+                await db.commit()
+        except Exception as e:
+            await db.rollback()
+            print(f"⚠️ sync: régua de no-show não encerrada pelo arrasto "
+                  f"({type(e).__name__}: {e})")
 
     # Boas-vindas para leads novos. Cada chamada decide e CARIMBA (inclusive quando pula).
     #
