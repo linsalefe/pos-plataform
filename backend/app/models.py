@@ -693,6 +693,103 @@ class Agendamento(Base):
 
 
 # ==========================================================================================
+# ESPELHO DAS REUNIÕES DA EXACT (Bloco 0, 07/10/2026)
+# ==========================================================================================
+#
+# Os três valores que `GET /Meetings` devolve em `type`. MEDIDO em 07/10 sobre 249 reuniões
+# desde 07/09 (RECON_CONFIRMACAO_NOSHOW_20261007 §5.2): Cancelada 155, Concluido 73, Vigente 21,
+# e nenhum outro. NÃO existe valor de no-show: `Cancelada` junta cancelamento prévio,
+# remarcação e falta. `Concluido` sem acento é a grafia da Exact.
+#
+# O CHECK de `migrate_reuniao_status.py` é construído desta tupla. Um `type` novo na Exact faz
+# o upsert daquela reunião falhar alto, em vez de gravar um valor que nenhuma regra conhece.
+EXACT_TYPE_VIGENTE = "Vigente"
+EXACT_TYPE_CONCLUIDO = "Concluido"
+EXACT_TYPE_CANCELADA = "Cancelada"
+EXACT_TYPES = (EXACT_TYPE_VIGENTE, EXACT_TYPE_CONCLUIDO, EXACT_TYPE_CANCELADA)
+
+# Quem marcou. O campo `user` de /Meetings é SEMPRE o dono do token (Thobias, 249 de 249), e
+# não diz nada. O único marcador é o `description` que o Hub grava no `BoxesAdd`
+# (`agendamento/agendar.py:389`), que a Exact devolve como `managerDescription`.
+ORIGEM_REUNIAO_HUB = "hub"      # managerDescription começa com "Agendamento LP —"
+ORIGEM_REUNIAO_EXACT = "exact"  # marcada na Exact, pela SDR ou pela consultora
+ORIGENS_REUNIAO = (ORIGEM_REUNIAO_HUB, ORIGEM_REUNIAO_EXACT)
+PREFIXO_REUNIAO_HUB = "Agendamento LP"
+
+
+class ReuniaoStatus(Base):
+    """Uma reunião da Exact, venha de onde vier. Chave: o `meeting_id` DELA.
+
+    POR QUE EXISTE. `agendamentos.passo` vira `agendado` e nunca mais muda: nada traz de volta o
+    que a consultora faz na Exact. MEDIDO em 07/10 (RECON §2): 4 lembretes T-30 saíram para
+    reunião já remarcada, e 2 pendentes eram de reunião `Cancelada` (cancelados à mão). E 64 de
+    249 reuniões nem passam pelo Hub: foram marcadas direto na Exact (RECON §5.3).
+
+    POR QUE A CHAVE É `meeting_id` E NÃO O LEAD. Remarcar na Exact NÃO muda a data da reunião:
+    cancela a antiga e cria outra, com id novo (RECON §5.4: 0 de 158 reuniões do Hub com data
+    diferente da gravada; 22 leads com 2+ reuniões, sempre a antiga `Cancelada`). Logo não há
+    "atualizar a data": há reunião nova, e a pessoa é achada pelo TELEFONE (`telefone_chave`).
+
+    POR QUE NÃO `agendamentos` NEM `exact_leads`. A primeira não enxerga a reunião da SDR; a
+    segunda é sobrescrita pelo sync a cada 10 min.
+
+    RELÓGIOS: tudo aqui é SP naive, inclusive `created_at`/`updated_at` (default no banco em
+    `America/Sao_Paulo`, ver a migração). `slot_inicio` é o `startTime` da Exact SEM conversão
+    (é hora de parede, FINDINGS §1); `registrado_em` é o `registerDate`, que é UTC de verdade,
+    convertido para SP ao gravar.
+
+    As colunas `confirmado_*`, `cancelado_*`, `noshow_em` e `regua_*` são dos blocos 1 e 2.
+    Nascem aqui para não pedir segunda DDL; o Bloco 0 não as escreve.
+    """
+    __tablename__ = "reuniao_status"
+    # Índices e CHECKs moram SÓ em `migrate_reuniao_status.py`, que é quem cria a tabela.
+
+    meeting_id = Column(BigInteger, primary_key=True)
+    lead_id = Column(BigInteger)
+    telefone_chave = Column(String(10))   # telefone.chave_telefone()
+    telefone_bruto = Column(String(30))
+    nome = Column(String(255))
+    slot_inicio = Column(DateTime, nullable=False)  # SP naive
+    slot_fim = Column(DateTime)
+    sales_rep_email = Column(String(255))
+    origem = Column(String(10), nullable=False)
+    # BIGINT porque `agendamentos.id` é BIGSERIAL. ON DELETE SET NULL: o espelho não pode
+    # impedir uma limpeza em `agendamentos`, nem morrer junto com ela.
+    agendamento_id = Column(BigInteger, ForeignKey("agendamentos.id", ondelete="SET NULL"),
+                            nullable=True)
+    exact_type = Column(String(20), nullable=False)
+    exact_type_visto_em = Column(DateTime, nullable=False)
+    exact_type_anterior = Column(String(20))
+    registrado_em = Column(DateTime)                 # registerDate em SP naive
+
+    confirmado_em = Column(DateTime)
+    confirmado_por = Column(String(10))
+    cancelado_em = Column(DateTime)
+    cancelado_motivo = Column(String(60))
+    noshow_em = Column(DateTime)
+    regua_encerrada_em = Column(DateTime)
+    regua_encerrada_motivo = Column(String(60))
+
+    created_at = Column(DateTime, server_default=text("(now() AT TIME ZONE 'America/Sao_Paulo')"))
+    updated_at = Column(DateTime, server_default=text("(now() AT TIME ZONE 'America/Sao_Paulo')"))
+
+
+class ReuniaoSyncCursor(Base):
+    """Marca d'água do sync de reuniões. Uma linha só (id=1).
+
+    `register_date_cursor` é UTC naive porque é comparado com o `registerDate` da Exact, que é
+    UTC de verdade. Fica numa tabela, não no `.env`: avança a cada ciclo, e um restart não pode
+    devolvê-lo ao valor de quando o processo subiu.
+    """
+    __tablename__ = "reuniao_sync_cursor"
+
+    id = Column(Integer, primary_key=True)        # sempre 1
+    register_date_cursor = Column(DateTime)       # UTC naive
+    ultimo_ciclo_em = Column(DateTime)            # SP naive
+    ultimo_ciclo_resultado = Column(Text)
+
+
+# ==========================================================================================
 # AGENTE DE PRÉ-QUALIFICAÇÃO
 # ==========================================================================================
 #

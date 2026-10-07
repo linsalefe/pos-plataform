@@ -326,6 +326,66 @@ def reuniao_futura(slot_inicio: datetime | None, agora: datetime) -> bool:
 JANELA_LEMBRETE_JA_ENVIADO = timedelta(hours=24)
 
 
+# ------------------------------------------------------------------------------------------
+# O ESPELHO DA EXACT (Bloco 0, 07/10/2026)
+# ------------------------------------------------------------------------------------------
+# `agendamentos.passo` nunca sai de `agendado`: nada trazia de volta o que a consultora faz na
+# Exact. MEDIDO em 07/10 (RECON_CONFIRMACAO_NOSHOW_20261007 §2): 4 lembretes saíram para
+# reunião já remarcada, e 2 pendentes eram de reunião `Cancelada` (cancelados à mão).
+# `reuniao_status` (app/reuniao_sync.py) é o espelho de GET /Meetings, e o guard passa a ler
+# dele duas coisas:
+#
+#   1. a reunião deste agendamento não está `Vigente` na Exact (Cancelada ou Concluido);
+#   2. existe reunião MAIS NOVA e `Vigente`, no futuro, para o mesmo TELEFONE. Remarcar na
+#      Exact cria reunião nova com id novo (RECON §5.4), então "o agendamento antigo continua
+#      agendado na nossa tabela" é exatamente o que uma remarcação parece daqui.
+#
+# FAIL-CLOSED SÓ SOBRE O QUE SE SABE. Sem linha no espelho (o sync ainda não viu a reunião,
+# ou está desligado), o lembrete SEGUE: pular por falta de dado tiraria o lembrete de reunião
+# legítima a cada atraso do sync. Pula-se apenas com evidência positiva.
+#
+# A regra 2 roda mesmo sem a linha da própria reunião no espelho, usando
+# `agendamentos.created_at` (SP) como "quando a nossa nasceu": a reunião mais nova Vigente da
+# mesma pessoa é evidência positiva por si só.
+
+async def _espelho_bloqueia(reuniao: Agendamento, agora: datetime,
+                            db: AsyncSession) -> str | None:
+    """O motivo para NÃO mandar o lembrete segundo `reuniao_status`, ou None."""
+    from app.models import EXACT_TYPE_VIGENTE, ReuniaoStatus
+    from app.telefone import chave_telefone
+
+    propria = (await db.execute(
+        select(ReuniaoStatus).where(ReuniaoStatus.agendamento_id == reuniao.id)
+        .order_by(ReuniaoStatus.registrado_em.desc().nullslast()).limit(1)
+    )).scalar_one_or_none()
+    if propria is not None and propria.exact_type != EXACT_TYPE_VIGENTE:
+        return f"reunião {propria.meeting_id} está {propria.exact_type} na Exact"
+
+    chave = (propria.telefone_chave if propria is not None else None) \
+        or chave_telefone(reuniao.telefone)
+    referencia = (propria.registrado_em if propria is not None else None) \
+        or reuniao.created_at
+    if chave and referencia is not None:
+        filtros = [ReuniaoStatus.telefone_chave == chave,
+                   ReuniaoStatus.exact_type == EXACT_TYPE_VIGENTE,
+                   ReuniaoStatus.slot_inicio > agora,
+                   ReuniaoStatus.registrado_em > referencia]
+        if propria is not None:
+            filtros.append(ReuniaoStatus.meeting_id != propria.meeting_id)
+        elif reuniao.meeting_id:
+            filtros.append(ReuniaoStatus.meeting_id != reuniao.meeting_id)
+        nova = (await db.execute(
+            select(ReuniaoStatus.meeting_id, ReuniaoStatus.slot_inicio).where(*filtros)
+            .order_by(ReuniaoStatus.registrado_em.desc()).limit(1))).first()
+        if nova is not None:
+            return (f"existe reunião mais nova para esta pessoa (remarcação): "
+                    f"{nova[0]} em {nova[1]:%d/%m %H:%M}")
+
+    if propria is None:
+        print(f"↩️ lembrete sem espelho em reuniao_status (agendamento {reuniao.id}), segue")
+    return None
+
+
 def guard_de_lembrete(reuniao_id: int):
     """Guard do `lembrete_reuniao` para a reunião `reuniao_id`. Devolve `(contact, db) ->
     (pode, motivo)`, a assinatura que `enviar_nat(guard=...)` exige.
@@ -351,6 +411,10 @@ def guard_de_lembrete(reuniao_id: int):
             agora = _agora_sp()
             if reuniao.slot_inicio is None or reuniao.slot_inicio <= agora:
                 return bloqueia(f"reunião {reuniao_id} já começou — sem lembrete atrasado")
+
+            espelho = await _espelho_bloqueia(reuniao, agora, db)
+            if espelho:
+                return bloqueia(espelho)
 
             vs = variantes_wa_id(getattr(contact, "wa_id", None)) or (contact.wa_id,)
             ja = await db.execute(
