@@ -751,6 +751,32 @@ async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db),
     ]
 
 
+@router.post("/reunioes/{meeting_id}/tratado")
+async def marcar_reuniao_tratada(meeting_id: int, db: AsyncSession = Depends(get_db),
+                                 current_user: User = Depends(get_current_user)):
+    """O SDR tratou a pendência da reunião ("Cancelar na Exact" ou "Devolver ao funil").
+
+    Grava `sdr_tratado_em`/`sdr_tratado_por` e o card sai do filtro (`reuniao_contato`).
+    Idempotente: clicar de novo devolve o primeiro registro. Mesma regra de dono das conversas.
+    """
+    from app.exact_spotter import format_phone
+    from app.models import ReuniaoStatus
+    from app.nat_guard import _agora_sp
+    r = (await db.execute(select(ReuniaoStatus).where(
+        ReuniaoStatus.meeting_id == meeting_id))).scalar_one_or_none()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Reunião não encontrada")
+    if not await _e_dono_ou_admin(format_phone(r.telefone_bruto or "") or "", current_user, db):
+        raise HTTPException(status_code=403, detail="Esta conversa não está atribuída a você.")
+    if r.sdr_tratado_em is None:
+        r.sdr_tratado_em = _agora_sp()
+        r.sdr_tratado_por = current_user.id
+        await db.commit()
+        print(f"🧹 reunião {meeting_id} marcada como tratada por user {current_user.id}")
+    return {"meeting_id": meeting_id, "sdr_tratado_em": r.sdr_tratado_em.isoformat(),
+            "sdr_tratado_por": r.sdr_tratado_por}
+
+
 # === Tags ===
 
 @router.get("/tags", dependencies=[Depends(get_current_user)])

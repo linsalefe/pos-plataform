@@ -752,6 +752,10 @@ async def confirm_a_corte(acao: dict, db: AsyncSession):
                      f"O lead não confirmou a reunião de {r.slot_inicio:%d/%m às %H:%M} até o "
                      f"corte. Cancele a reunião e exclua o box na Exact (a API não cancela).",
                      db, consultora=True)
+    # 07/10: o mesmo aviso por WhatsApp, para quem precisa cancelar na Exact sem esperar o sino.
+    # Nunca levanta (app/aviso_sdr.py): falha aqui não desfaz o corte.
+    from app.aviso_sdr import avisar_corte
+    await avisar_corte(r, (r.nome or params[0] or "").strip(), await _pos(r, db), db)
     print(f"✂️ confirmacao: corte da reunião {r.meeting_id} ({wa})"
           f"{'' if not falhou else f' — D0 NÃO saiu: {falhou}'}")
     # Bloco 2: o corte é o gatilho ÚNICO da régua de no-show, saia o D0 ou não. Mesma transação
@@ -1094,6 +1098,10 @@ async def ligar_agora(r: ReuniaoStatus, wa_id: str, db: AsyncSession) -> None:
     await _notificar(r, wa_id, TIPO_NOTIF_LIGAR_AGORA, "Lead pediu ligação AGORA",
                      "Clicou \"Posso falar agora\" depois do corte. Quem estiver livre, ligue.",
                      db, todas=True)
+    # 07/10: o mesmo aviso por WhatsApp, às duas consultoras e aos SDRs. Nunca levanta.
+    from app.aviso_sdr import avisar_ligar_agora
+    await avisar_ligar_agora(r, (r.nome or await _nome(r, wa_id, db) or "").strip(),
+                             await _pos(r, db), db)
     await _responder(wa_id, nat_copy.TEXTO_NS_LIGAR_AGORA.format(
         nome=await _nome(r, wa_id, db)), db)
 

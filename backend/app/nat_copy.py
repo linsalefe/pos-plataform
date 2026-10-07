@@ -510,3 +510,25 @@ CORPO_SUBMETIDO_FLUXO_B = {
 # Fala determinística do "prefere ligação" (Fluxo B). Não passa pelo LLM, como a recusa.
 TEXTO_PREFERE_LIGACAO = ("Combinado! 🙂 Já avisei a equipe: uma consultora vai te ligar neste "
                          "número em breve.")
+
+
+# ==========================================================================================
+# AVISOS INTERNOS AO SDR E À CONSULTORA (07/10/2026), SUBMETIDOS COMO UTILITY
+# ==========================================================================================
+# Vão para o número interno do SDR/consultora, não para lead (app/aviso_sdr.py). Fonte do texto
+# para `submit_templates_sdr.py`. Fora de `CORPO_APROVADO` pelo mesmo motivo dos outros blocos.
+NAT_SDR_CORTE = "nat_sdr_corte"
+NAT_SDR_LIGAR_AGORA = "nat_sdr_ligar_agora"
+
+CORPO_SUBMETIDO_SDR = {
+    # {{1}} nome do lead · {{2}} pós · {{3}} "qui 09/10 10:00"
+    NAT_SDR_CORTE: (
+        "Aviso da IA do CENAT: {{1}} não confirmou a reunião da Pós em {{2}}, marcada para "
+        "{{3}}. A reunião foi encerrada por aqui. Cancele na Exact para liberar o horário."
+    ),
+    # {{1}} nome do lead · {{2}} telefone do lead · {{3}} pós
+    NAT_SDR_LIGAR_AGORA: (
+        "Aviso da IA do CENAT: {{1}} ({{2}}) pediu para a consultora ligar agora. Pós em {{3}}. "
+        "Quem estiver livre, assume a ligação."
+    ),
+}

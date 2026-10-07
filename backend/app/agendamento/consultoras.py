@@ -163,6 +163,27 @@ def nome_de(email: str) -> str:
     return c.nome_exibicao if c else (email or "").split("@")[0]
 
 
+def normalizar_telefone(bruto: str | None) -> str | None:
+    """`(21) 97007-5652` -> `5521970075652`. None se não der um celular/fixo brasileiro.
+
+    Aceita com ou sem DDI. 10 ou 11 dígitos ganham o `55`; 12 ou 13 começando com `55` passam
+    como estão. Qualquer outra coisa é None: mandar aviso para número mal digitado é pior do
+    que não mandar, porque some sem ninguém ver.
+    """
+    d = "".join(ch for ch in (bruto or "") if ch.isdigit())
+    if len(d) in (10, 11):
+        return "55" + d
+    if len(d) in (12, 13) and d.startswith("55"):
+        return d
+    return None
+
+
+def telefone_de(email: str) -> str | None:
+    """O telefone da consultora em `consultoras.json`, normalizado (`55DDDN`), ou None."""
+    c = por_email(email)
+    return normalizar_telefone(c.telefone) if c else None
+
+
 def desativar(email: str) -> None:
     """Tira uma consultora de rotação em tempo de execução. Usado só pela validação."""
     global _cache
