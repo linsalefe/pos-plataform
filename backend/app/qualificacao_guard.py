@@ -76,13 +76,19 @@ ETAPAS_REGUA_CONFIRMACAO = (
     "nat_ns_d5_conteudo", "nat_ns_d7_condicao", "nat_ns_d8_encerramento", "noshow_resposta",
 )
 
+# Fluxo B enxuto (Bloco 3, 07/10): a abertura nova e as quatro reativações. Contam no teto
+# pelo mesmo motivo dos templates da régua: o teto é do número, não de um fluxo.
+ETAPA_ABERTURA_FLUXO_B = "nat_b_abertura"
+ETAPAS_REATIVACAO_B = ("nat_b_reativ_30m", "nat_b_reativ_2h", "nat_b_reativ_4h",
+                       "nat_b_reativ_d1")
+
 ETAPAS_DE_ENVIO_DO_AGENTE = (
     ETAPA_ABERTURA_AGENDADO, ETAPA_ABERTURA_QUALIFICACAO, ETAPA_ABERTURA_SEM_FORMACAO,
     ETAPA_LEMBRETE_REUNIAO, ETAPA_CONVERSA,
-) + ETAPAS_REGUA_CONFIRMACAO
+) + ETAPAS_REGUA_CONFIRMACAO + (ETAPA_ABERTURA_FLUXO_B,) + ETAPAS_REATIVACAO_B
 
 ABERTURAS = frozenset({ETAPA_ABERTURA_AGENDADO, ETAPA_ABERTURA_QUALIFICACAO,
-                       ETAPA_ABERTURA_SEM_FORMACAO})
+                       ETAPA_ABERTURA_SEM_FORMACAO, ETAPA_ABERTURA_FLUXO_B})
 
 
 async def _carregar_config(db: AsyncSession):

@@ -92,8 +92,11 @@ ACOES_VALIDAS = frozenset({"nenhuma", "ofertar_agenda", "agendar_slot", "transfe
 # campo vai para `transferido_motivo`, que relatórios agrupam. Hoje só existe um, o ramo
 # determinístico de recusa de ligação (18/09); o dia em que houver outro, entra aqui e na
 # missão que o pede, nada mais.
-MOTIVOS_TRANSFERENCIA_VALIDOS = frozenset({"recusa_ligacao"})
+MOTIVOS_TRANSFERENCIA_VALIDOS = frozenset({"recusa_ligacao", "prefere_ligacao"})
 MOTIVO_RECUSA_LIGACAO = "recusa_ligacao"
+# Bloco 3 (07/10): o INVERSO da recusa — a pessoa quer ser chamada por telefone em vez de
+# marcar horário. Só as missões do Fluxo B pedem este marcador; o desfecho é código.
+MOTIVO_PREFERE_LIGACAO = "prefere_ligacao"
 
 # `ofertar_agenda` É ACEITA, MAS NÃO EXISTE PARA O FLUXO — e as duas metades são de propósito.
 #

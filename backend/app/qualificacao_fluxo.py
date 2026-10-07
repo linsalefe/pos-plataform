@@ -40,11 +40,12 @@ e "o agente escuta" não podem divergir.
 """
 import json
 import re
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import fluxo_b
 from app import qualificacao_llm as llm
 from app import qualificacao_guard as guard
 from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
@@ -53,11 +54,14 @@ from app.models import (ETAPA_Q_AGUARDANDO_ANO, ETAPA_Q_AGUARDANDO_ATUACAO,
                         ETAPA_Q_TRANSFERIDO, ETAPAS_QUALIFICACAO_ATIVAS,
                         ETAPA_Q_ENCERRADO, KIND_ENCERRAR_INATIVO, KIND_FOLLOW_20H,
                         KIND_LEMBRETE_REUNIAO,
+                        KIND_REATIV_B_2H, KIND_REATIV_B_30M, KIND_REATIV_B_4H,
+                        KIND_REATIV_B_D1, KINDS_REATIV_B,
                         KIND_RESPONDER_PENDENTE, KIND_VIGIAR_RESPOSTA,
                         ACAO_PENDENTE, Agendamento, Contact, Message, Notification,
-                        NatQualificacaoState, NatScheduledAction, PASSO_AGENDADO)
+                        NatQualificacaoState, NatScheduledAction, PASSO_AGENDADO,
+                        TIPO_NOTIF_PREFERE_LIGACAO)
 from app.nat_guard import (GESTOR_USER_ID, _agora_sp, dentro_horario_comercial,
-                           proximo_horario_util)
+                           dentro_janela_envio, proxima_janela_envio, proximo_horario_util)
 from app.nat_scheduler import (AcaoAdiada, AcaoIgnorada, agendar as nat_agendar,
                                cancelar as nat_cancelar, registrar_handler)
 from app.nat_sender import enviar_nat, send_nat_message
@@ -157,6 +161,8 @@ TIPO_NOTIF_MUDO = "agente_mudo"
 # migração.
 MOTIVO_INATIVIDADE = "inatividade"          # o LEAD calou: falamos por último e ele sumiu
 MOTIVO_SEM_RESPOSTA_AGENTE = "sem_resposta_do_agente"   # NÓS calamos: ele falou por último
+# Bloco 3: Fluxo B, o lead calou depois da última reativação (D+1). Já está no funil do SDR.
+MOTIVO_REATIVACAO_ESGOTADA = "reativacao_esgotada"
 
 TIPO_NOTIF_AGENTE = "agente_transferiu"
 
@@ -306,6 +312,97 @@ MISSOES = {
         'acao="transferir_humano" e motivo="recusa_ligacao"; devolva em "mensagem" apenas '
         '"ok" — o texto ao lead é do sistema.'),
 }
+
+# ==========================================================================================
+# FLUXO B ENXUTO (Bloco 3, 07/10/2026) — AS MISSÕES DO CAMINHO NOVO
+# ==========================================================================================
+# Escolhidas por `_missao(etapa, estado)` só para o estado marcado com `fluxo_b.MARCA`. O
+# caminho antigo continua lendo `MISSOES` sem nenhuma mudança.
+#
+# O caminho novo tem UMA pergunta (a motivação, feita pelo template `nat_b_abertura`) e, na
+# resposta a ela, a venda da reunião e os horários vão NA MESMA MENSAGEM (spec da Isa, Fluxo B
+# passo 2). Por isso a missão de `aguardando_motivacao` daqui recebe a grade no contexto,
+# coisa que a do caminho antigo nunca recebe.
+#
+# A grade é só HOJE E AMANHÃ (decisão 4). Os rótulos do contexto já dizem "hoje (07/10)" e
+# "amanhã (08/10)", então o modelo não precisa deduzir dia nenhum; quando não há horário nos
+# dois, os rótulos são os dos 2 próximos dias úteis com o dia da semana escrito.
+_REGRAS_DE_HORARIO_B = (
+    'Use SOMENTE os horários listados no contexto, e NUNCA escreva data, hora ou dia da '
+    'semana que não esteja lá, nem como exemplo. Escreva cada horário com o rótulo do dia '
+    'como está no contexto (por exemplo "hoje" ou "amanhã") e a hora, e NUNCA o id entre '
+    'parênteses: ele é instrução interna e não pode aparecer na mensagem. Ofereça NO MÁXIMO '
+    '5 horários, um por linha, e quando o contexto tiver dois dias ofereça horários DOS DOIS. '
+)
+_SAIDAS_B = (
+    'SE ELA PEDIR OUTRO DIA, noite ou fim de semana: não ofereça horário nenhum e não faça '
+    'pergunta — diga que para esse horário quem combina é a consultora, avise que vai passar '
+    'o contato para ela e use acao="transferir_humano". '
+    'SE ELA DISSER QUE PREFERE UMA LIGAÇÃO, que liguem para ela, ou que prefere falar por '
+    'telefone em vez de marcar horário: NÃO ofereça vídeo, NÃO ofereça horário e NÃO pergunte '
+    'nada. Use acao="transferir_humano" e motivo="prefere_ligacao"; devolva em "mensagem" '
+    'apenas "ok" — o texto ao lead é do sistema. '
+    'SE ELA RECUSAR LIGAÇÃO ou disser que prefere seguir só por mensagem/WhatsApp: NÃO '
+    'ofereça vídeo, NÃO repita horários e NÃO pergunte nada. Use acao="transferir_humano" e '
+    'motivo="recusa_ligacao"; devolva em "mensagem" apenas "ok". '
+)
+_VENDA_DA_REUNIAO = (
+    '"A próxima etapa do processo seletivo é uma conversa rápida, de uns 15 minutos, com nossa '
+    'consultora, para tirar suas dúvidas e ver se a pós faz sentido para o seu momento. Tenho '
+    'estes horários:"'
+)
+_CONVITE_FINAL_B = '"É só me responder com o horário que fica melhor."'
+
+MISSOES_B = {
+    ETAPA_Q_AGUARDANDO_MOTIVACAO: (
+        'Pergunta ABERTA, já feita: o que despertou o interesse dela nesta pós-graduação. '
+        'dado_extraido = {"motivacao": "<o que ela disse>"}. '
+        'SE ELA RESPONDER: etapa_cumprida=true, e a sua mensagem tem TRÊS partes, nesta ordem: '
+        '(1) "Que legal, <primeiro nome>!" seguido de UMA frase que valida o que ela de fato '
+        'disse, com as palavras dela — nada de "que interessante"; '
+        f'(2) a venda da reunião, com estas palavras: {_VENDA_DA_REUNIAO} seguida dos '
+        'horários; (3) a última frase, com estas palavras: '
+        f'{_CONVITE_FINAL_B} '
+        + _REGRAS_DE_HORARIO_B +
+        'SE ELA PULAR A PERGUNTA e já pedir para marcar, agendar ou ver horários: '
+        'etapa_cumprida=true, dado_extraido=null, e a mensagem é a mesma, sem a parte (1) — '
+        'comece pela (2). '
+        'SE ELA JÁ ESCOLHER UM DOS HORÁRIOS DO CONTEXTO (por exemplo, respondendo a uma '
+        'lista que recebeu antes): use acao="agendar_slot" e dado_extraido = '
+        '{"slot_id": "<o id exato do horário escolhido, copiado do contexto>"}. '
+        'SE ELA FALAR DE OUTRA COISA: responda o que ela trouxe em uma frase e retome a '
+        'pergunta da motivação; etapa_cumprida=false. '
+        + _SAIDAS_B),
+    ETAPA_Q_OFERTANDO_AGENDA: (
+        'Ofereça os horários para a conversa com a consultora. '
+        'SE A ÚLTIMA MENSAGEM DELA FOI UM PEDIDO PARA REMARCAR, reagendar ou escolher outro '
+        'horário (ela já tinha uma reunião): comece com "Sem problema, <primeiro nome>! '
+        'Tenho estes horários para a sua conversa com a consultora:" seguido dos horários — '
+        'sem explicar de novo o que é a conversa. '
+        'EM QUALQUER OUTRO CASO: a venda da reunião com estas palavras: '
+        f'{_VENDA_DA_REUNIAO} seguida dos horários. '
+        f'Nos dois casos, a última frase é: {_CONVITE_FINAL_B} '
+        + _REGRAS_DE_HORARIO_B +
+        'Quando ela escolher um deles, use acao="agendar_slot" e dado_extraido = '
+        '{"slot_id": "<o id exato do horário escolhido, copiado do contexto>"}. '
+        + _SAIDAS_B),
+    ETAPA_Q_ESCOLHENDO_SLOT: (
+        'A pessoa está escolhendo um dos horários que você ofereceu. Use SOMENTE os horários '
+        'do contexto. Ao ter certeza de qual é, use acao="agendar_slot" e '
+        'dado_extraido = {"slot_id": "<o id exato copiado do contexto>"}, e a sua mensagem '
+        'confirma o horário escolhido, com o rótulo do dia como está no contexto. '
+        'NUNCA escreva data, hora ou dia da semana que não esteja no contexto, e não deduza '
+        'o dia da semana de uma data. Se não der para saber qual ela escolheu, pergunte '
+        'qual dos horários listados, sem repetir a lista inteira. '
+        + _SAIDAS_B),
+}
+
+
+def _missao(etapa: str, estado: NatQualificacaoState) -> str:
+    """A missão da etapa, pelo caminho do estado. Fora do Fluxo B é `MISSOES[etapa]`, igual."""
+    if fluxo_b.e_fluxo_b(estado) and etapa in MISSOES_B:
+        return MISSOES_B[etapa]
+    return MISSOES[etapa]
 
 # ==========================================================================================
 # S6-4b — O QUE O FOLLOW DE 20h DIZ, POR ETAPA
@@ -569,7 +666,8 @@ async def _historico(contact_wa_id: str, db: AsyncSession) -> list:
 
 
 async def reuniao_de(*, telefone: str | None, lead_id: int | None,
-                     agendamento_id: int | None, db: AsyncSession):
+                     agendamento_id: int | None, db: AsyncSession,
+                     ignorar: frozenset = frozenset()):
     """A reunião CONFIRMADA desta pessoa, ou None. Nunca inventa.
 
     Três critérios, nesta ordem:
@@ -595,8 +693,17 @@ async def reuniao_de(*, telefone: str | None, lead_id: int | None,
 
     O que identifica a PESSOA é o telefone — é para ele que a mensagem sai. `lead_id`
     identifica uma aplicação.
+
+    `ignorar` (Bloco 3, 07/10): ids de `agendamentos` que NÃO contam como reunião desta
+    pessoa — a reunião que ela pediu para remarcar pelo botão (`reabrir_para_oferta`). Na
+    Exact ela segue Vigente até a consultora cancelar à mão, e sem isto o agente encerraria a
+    conversa de remarcação por "já tem reunião". Vazio (o padrão), as consultas são as de
+    sempre.
     """
-    if agendamento_id:
+    def _sem_ignoradas(q):
+        return q.where(Agendamento.id.notin_(ignorar)) if ignorar else q
+
+    if agendamento_id and agendamento_id not in ignorar:
         achado = (await db.execute(select(Agendamento).where(
             Agendamento.id == agendamento_id))).scalar_one_or_none()
         if achado is not None:
@@ -605,27 +712,38 @@ async def reuniao_de(*, telefone: str | None, lead_id: int | None,
     from app.telefone import formas_gravadas
     formas = formas_gravadas(telefone)
     if formas:
-        achado = (await db.execute(
+        achado = (await db.execute(_sem_ignoradas(
             select(Agendamento)
             .where(Agendamento.telefone.in_(formas),
-                   Agendamento.passo == PASSO_AGENDADO)
+                   Agendamento.passo == PASSO_AGENDADO))
             .order_by(Agendamento.id.desc()).limit(1))).scalar_one_or_none()
         if achado is not None:
             return achado
 
     if not lead_id:
         return None
-    return (await db.execute(
+    return (await db.execute(_sem_ignoradas(
         select(Agendamento)
         .where(Agendamento.lead_id == lead_id,
-               Agendamento.passo == PASSO_AGENDADO)
+               Agendamento.passo == PASSO_AGENDADO))
         .order_by(Agendamento.id.desc()).limit(1))).scalar_one_or_none()
+
+
+# Chave de `dados_extras` com os `agendamentos.id` que a pessoa pediu para remarcar pelos
+# botões (Bloco 3). Só `reabrir_para_oferta` escreve; ausente em todo estado do caminho antigo.
+CHAVE_REUNIOES_IGNORADAS = "reunioes_remarcadas"
+
+
+def _reunioes_ignoradas(estado: NatQualificacaoState) -> frozenset:
+    ids = (estado.dados_extras or {}).get(CHAVE_REUNIOES_IGNORADAS) or ()
+    return frozenset(int(i) for i in ids if i)
 
 
 async def _reuniao(estado: NatQualificacaoState, db: AsyncSession):
     """`reuniao_de` a partir do estado. Ver a docstring dela para a ordem dos critérios."""
     return await reuniao_de(telefone=estado.contact_wa_id, lead_id=estado.exact_lead_id,
-                            agendamento_id=estado.agendamento_id, db=db)
+                            agendamento_id=estado.agendamento_id, db=db,
+                            ignorar=_reunioes_ignoradas(estado))
 
 
 async def _curso(estado: NatQualificacaoState, db: AsyncSession) -> str:
@@ -838,12 +956,89 @@ def _espalhados(horarios: list[dict], n: int) -> list[dict]:
     return [horarios[i] for i in indices]
 
 
+DIAS_DA_SEMANA = ("segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+                  "sexta-feira", "sábado", "domingo")
+
+
+def dias_da_oferta(dias: list[str], agora: datetime) -> list[tuple[str, str]]:
+    """Fluxo B (decisão 4): quais dias da grade vão para a oferta, e com que rótulo.
+
+    `dias` são as chaves de `disponibilidade.resumo_por_dia` ("2026-10-07"), já só com dia
+    que TEM horário livre. HOJE E AMANHÃ, pela data de SP; sem horário nos dois, os 2 próximos
+    dias úteis seguintes (decisão Álefe 07/10). Vazio = não há o que oferecer.
+
+    O alcance é o da grade (`AGENDAMENTO_JANELA_DIAS`, 4 em produção): numa sexta à noite os
+    "2 próximos dias úteis" podem ser só a segunda, porque a terça está fora da janela que
+    `slot_por_id` aceita. Oferecer o que a grade não agenda seria pior.
+
+    Devolve `[(dia, rótulo)]`: "hoje (07/10)", "amanhã (08/10)", "segunda-feira (12/10)".
+    """
+    hoje = agora.date()
+    amanha = hoje + timedelta(days=1)
+    datas = {}
+    for d in dias:
+        try:
+            datas[d] = date.fromisoformat(d)
+        except ValueError:
+            continue
+    alvo = [d for d in sorted(datas) if datas[d] in (hoje, amanha)]
+    if not alvo:
+        alvo = [d for d in sorted(datas) if datas[d] > amanha and datas[d].weekday() < 5][:2]
+    saida = []
+    for d in alvo:
+        dt = datas[d]
+        nome = ("hoje" if dt == hoje else "amanhã" if dt == amanha
+                else DIAS_DA_SEMANA[dt.weekday()])
+        saida.append((d, f"{nome} ({dt:%d/%m})"))
+    return saida
+
+
+# 3 por dia no contexto do Fluxo B (cedo, meio, fim do dia), e não os 6 do caminho antigo:
+# com 6 por dia o modelo enchia os 5 da mensagem com o primeiro dia e "amanhã" sumia (medido no
+# checkpoint 2, 07/10). Com 3+3 a lista de no máximo 5 cobre os dois dias por construção.
+HORARIOS_POR_DIA_B = 3
+
+
+async def horarios_da_oferta(db: AsyncSession, agora: datetime | None = None
+                             ) -> list[tuple[str, list[dict]]]:
+    """Fluxo B: `[(rótulo do dia, horários espalhados)]` — a MESMA lista para o contexto do
+    modelo (`_fatos`) e para a linha do D+1 (`reativ_b_d1`). Uma fonte só: o horário que o
+    D+1 escreve tem de estar no contexto do turno em que a pessoa o escolhe."""
+    from app.agendamento import disponibilidade
+    try:
+        por_dia = await disponibilidade.resumo_por_dia(db)
+    except Exception as e:
+        print(f"⚠️  Agente: grade não carregada ({type(e).__name__}: {e})")
+        por_dia = {}
+    return [(rotulo, _espalhados(por_dia[dia], HORARIOS_POR_DIA_B))
+            for dia, rotulo in dias_da_oferta(list(por_dia), agora or _agora_sp())]
+
+
+def linha_do_d1(oferta: list[tuple[str, list[dict]]], *, por_dia: int = 2) -> str | None:
+    """'hoje 14h15, 17h15 ou amanhã 09h00, 17h15' para o `{{2}}` do `nat_b_reativ_d1`.
+
+    Primeiro e último horário de cada dia (`_espalhados(…, 2)` sobre a lista do contexto),
+    então todo horário escrito aqui está entre os ofertados ao modelo. None se vazia.
+    """
+    partes = []
+    for rotulo, horarios in oferta:
+        escolhidos = _espalhados(horarios, por_dia)
+        if not escolhidos:
+            continue
+        dia = rotulo.split(" (")[0]
+        partes.append(f"{dia} " + ", ".join(h["hora"].replace(":", "h") for h in escolhidos))
+    return " ou ".join(partes) or None
+
+
 async def _fatos(estado: NatQualificacaoState, db: AsyncSession, *,
                  com_slots: bool = False) -> tuple[str, dict]:
     """(contexto para o prompt, mapa slot_id → slot oferecido).
 
     Os slots entram SÓ quando `com_slots` — é o que garante que o modelo não tem horário
     nenhum para oferecer nas etapas de qualificação, mesmo que a pessoa peça.
+
+    No Fluxo B (estado marcado) a grade é `horarios_da_oferta`: hoje e amanhã, com o rótulo do
+    dia escrito. Fora dele, os 3 primeiros dias da grade, como sempre foi.
     """
     from app.agendamento import consultoras as equipe
 
@@ -861,7 +1056,15 @@ async def _fatos(estado: NatQualificacaoState, db: AsyncSession, *,
         fatos["Consultora que vai atender"] = equipe.nome_de(reuniao.sales_rep_email or "")
 
     ofertados = {}
-    if com_slots:
+    if com_slots and fluxo_b.e_fluxo_b(estado):
+        linhas = []
+        for rotulo, horarios in await horarios_da_oferta(db):
+            for h in horarios:
+                linha = f"{rotulo} {h['hora']} (id: {h['id']})"
+                linhas.append(linha)
+                ofertados[h["id"]] = linha
+        fatos["Horários disponíveis (use SÓ estes)"] = linhas
+    elif com_slots:
         from app.agendamento import disponibilidade
         try:
             por_dia = await disponibilidade.resumo_por_dia(db)
@@ -981,7 +1184,7 @@ async def _falar(estado: NatQualificacaoState, texto: str, db: AsyncSession) -> 
 
 
 async def _notificar(estado: NatQualificacaoState, titulo: str, corpo: str,
-                     db: AsyncSession) -> None:
+                     db: AsyncSession, *, tipo: str = TIPO_NOTIF_AGENTE) -> None:
     """Avisa o SDR dono; sem dono, a gestão. Nunca levanta — aviso não derruba fluxo."""
     from app.nat_flow import telefone_legivel, usuario_existe
     try:
@@ -993,7 +1196,7 @@ async def _notificar(estado: NatQualificacaoState, titulo: str, corpo: str,
             return
         db.add(Notification(
             user_id=destinatario, contact_wa_id=estado.contact_wa_id,
-            type=TIPO_NOTIF_AGENTE, ref=estado.ultimo_wa_message_id,
+            type=tipo, ref=estado.ultimo_wa_message_id,
             title=titulo,
             body=f"{corpo} — {telefone_legivel(estado.contact_wa_id)}"))
         print(f"🔔 Agente notificou user {destinatario}: {titulo}")
@@ -1002,7 +1205,9 @@ async def _notificar(estado: NatQualificacaoState, titulo: str, corpo: str,
 
 
 async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession, *,
-                    texto: str = TEXTO_FALLBACK, aviso_sdr: str | None = None) -> None:
+                    texto: str = TEXTO_FALLBACK, aviso_sdr: str | None = None,
+                    titulo: str = "Agente passou um lead para você",
+                    tipo_notif: str = TIPO_NOTIF_AGENTE) -> None:
     """LLM caiu, fugiu do contrato, ou pediu o impossível. Encerra o agente para o contato.
 
     `texto` é a despedida ao lead (padrão `TEXTO_FALLBACK`); `aviso_sdr` substitui o corpo
@@ -1039,8 +1244,8 @@ async def _fallback(estado: NatQualificacaoState, motivo: str, db: AsyncSession,
     aviso = ("" if saiu else
              f" ⚠️ A despedida NÃO saiu ({motivo_envio}) — o lead não foi avisado de que "
              f"alguém assumiria.")
-    await _notificar(estado, "Agente passou um lead para você",
-                     f"{aviso_sdr or f'Motivo: {motivo}.'}{aviso}", db)
+    await _notificar(estado, titulo,
+                     f"{aviso_sdr or f'Motivo: {motivo}.'}{aviso}", db, tipo=tipo_notif)
 
 
 # ==========================================================================================
@@ -1248,21 +1453,33 @@ async def iniciar_qualificacao(acao: dict, db: AsyncSession) -> None:
     dados = await resolver_dados(lead_id=lead_id, origem=origem, db=db)
     formacao = dados["formacao"]
 
+    # FLUXO B ENXUTO (Bloco 3, 07/10): flag + allowlist, e só para quem não tem reunião nenhuma
+    # (`marcada` aqui é None ou reunião que já passou; a que já passou segue no caminho antigo,
+    # que tem a abertura T1 para ela). Uma pergunta só: a motivação. A formação da LP continua
+    # gravada se vier; ano e atuação deixam de ser perguntados.
+    caminho_b = marcada is None and fluxo_b.ativo_para(wa_id)
+
     estado = NatQualificacaoState(
         contact_wa_id=wa_id, exact_lead_id=lead_id, origem=origem,
-        etapa=ETAPA_Q_AGUARDANDO_ANO if formacao else ETAPA_Q_AGUARDANDO_FORMACAO,
+        etapa=(ETAPA_Q_AGUARDANDO_MOTIVACAO if caminho_b else
+               ETAPA_Q_AGUARDANDO_ANO if formacao else ETAPA_Q_AGUARDANDO_FORMACAO),
         formacao=formacao,
         faixa_investimento=dados["faixa_investimento"],
         dados_extras={"como_conheceu": dados["como_conheceu"]} if dados["como_conheceu"] else None,
     )
+    if caminho_b:
+        fluxo_b.marcar(estado)
     db.add(estado)
     await db.flush()
 
     reuniao = await _reuniao(estado, db)
     nome, curso = await _nome(estado, db), await _curso(estado, db)
 
-    # T1 / T2 / T3 — a escolha é código, não modelo.
-    if reuniao is not None and formacao:
+    # T1 / T2 / T3 — a escolha é código, não modelo. O Fluxo B tem a abertura própria.
+    if caminho_b:
+        etapa_msg = guard.ETAPA_ABERTURA_FLUXO_B
+        parametros = [nome, curso]
+    elif reuniao is not None and formacao:
         from app.agendamento import consultoras as equipe
         etapa_msg = guard.ETAPA_ABERTURA_AGENDADO
         parametros = [nome, curso, equipe.nome_de(reuniao.sales_rep_email or ""),
@@ -1331,7 +1548,7 @@ async def _corpo_do_template(nome_template: str, parametros: list,
 # O que fica na fila de um estado ativo e morre com ele. O `lembrete_reuniao` NÃO está aqui:
 # ele é serviço da reunião, não fala do agente (ver `guard.guard_de_lembrete`).
 KINDS_DA_CONVERSA = (KIND_ENCERRAR_INATIVO, KIND_FOLLOW_20H, KIND_VIGIAR_RESPOSTA,
-                     KIND_RESPONDER_PENDENTE)
+                     KIND_RESPONDER_PENDENTE) + KINDS_REATIV_B
 
 
 async def _encerrar_por_agendamento(estado: NatQualificacaoState, reuniao,
@@ -1365,6 +1582,30 @@ def texto_nota_recusa(quando) -> str:
     """A observação da recusa de ligação na Exact. `quando` é SP naive (`_agora_sp()`)."""
     return (f"[NAT] Lead recusou ligação pelo WhatsApp em {quando:%d/%m %H:%M}. "
             f"Prefere mensagem.")
+
+
+def texto_nota_prefere_ligacao(quando) -> str:
+    """A observação do "prefere ligação" (Fluxo B) na Exact. `quando` é SP naive."""
+    return f"[NAT] Prefere ligação. Pediu pelo WhatsApp em {quando:%d/%m %H:%M}."
+
+
+async def _prefere_ligacao(estado: NatQualificacaoState, db: AsyncSession) -> None:
+    """Fluxo B: a pessoa quer que liguem para ela em vez de marcar horário (spec da Isa).
+
+    O inverso de `recusa_ligacao`, e o mesmo desenho: o modelo só rotula, e o desfecho é
+    código — despedida fixa (`nat_copy.TEXTO_PREFERE_LIGACAO`), `transferido_humano` com
+    motivo `prefere_ligacao`, `Notification` do tipo `prefere_ligacao` ao SDR dono (sem dono,
+    a gestão) e nota `[NAT] Prefere ligação` na timeline da Exact. Nada de vídeo nem texto.
+    """
+    from app import nat_copy
+    await _fallback(estado, llm.MOTIVO_PREFERE_LIGACAO, db,
+                    texto=nat_copy.TEXTO_PREFERE_LIGACAO,
+                    titulo="Lead prefere LIGAÇÃO: ligue agora",
+                    aviso_sdr="O lead pediu para ser chamado por telefone em vez de marcar "
+                              "horário. Ligue para ele.",
+                    tipo_notif=TIPO_NOTIF_PREFERE_LIGACAO)
+    from app.exact_notes import registrar_observacao
+    await registrar_observacao(estado.exact_lead_id, texto_nota_prefere_ligacao(_agora_sp()))
 
 
 async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
@@ -1407,10 +1648,14 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
     await _armar_vigia(estado, db)
 
     etapa = estado.etapa
-    com_slots = etapa in (ETAPA_Q_OFERTANDO_AGENDA, ETAPA_Q_ESCOLHENDO_SLOT)
+    # Fluxo B: a resposta à motivação JÁ leva os horários, então a grade entra no contexto
+    # desta etapa também. No caminho antigo, `caminho_b` é False e nada muda.
+    caminho_b = fluxo_b.e_fluxo_b(estado)
+    com_slots = (etapa in (ETAPA_Q_OFERTANDO_AGENDA, ETAPA_Q_ESCOLHENDO_SLOT)
+                 or (caminho_b and etapa == ETAPA_Q_AGUARDANDO_MOTIVACAO))
     contexto, ofertados = await _fatos(estado, db, com_slots=com_slots)
 
-    resposta = await llm.conversar(missao=MISSOES[etapa], contexto=contexto,
+    resposta = await llm.conversar(missao=_missao(etapa, estado), contexto=contexto,
                                    historico=await _historico(contact_wa_id, db),
                                    # S5-7: o wa_id do ESTADO, não o do inbound. `estado_de`
                                    # é tolerante às duas grafias, então `contact_wa_id` aqui
@@ -1424,6 +1669,9 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
         return True
 
     if resposta["acao"] == "transferir_humano":
+        if caminho_b and resposta.get("motivo") == llm.MOTIVO_PREFERE_LIGACAO:
+            await _prefere_ligacao(estado, db)
+            return True
         if resposta.get("motivo") == llm.MOTIVO_RECUSA_LIGACAO:
             # RAMO DETERMINÍSTICO (18/09): o modelo só marca; o texto e o motivo gravado
             # são do código. Ver `nat_copy.TEXTO_RECUSA_LIGACAO` e o §3 do recon.
@@ -1462,13 +1710,29 @@ async def processar_texto(contact_wa_id: str, texto: str, wa_message_id: str,
         await _falar(estado, resposta["mensagem"], db)
         return True
 
-    await _avancar(estado, resposta["mensagem"], db)
+    await _avancar(estado, resposta["mensagem"], db, ofertados=ofertados)
     return True
 
 
-async def _avancar(estado: NatQualificacaoState, mensagem: str, db: AsyncSession) -> None:
+async def _avancar(estado: NatQualificacaoState, mensagem: str, db: AsyncSession, *,
+                   ofertados: dict | None = None) -> None:
     """Etapa cumprida: envia a fala e move o estado. ÚNICO lugar que faz as duas coisas."""
     etapa = estado.etapa
+
+    if etapa == ETAPA_Q_AGUARDANDO_MOTIVACAO and fluxo_b.e_fluxo_b(estado):
+        # FLUXO B: a fala do modelo JÁ É a oferta (validação + venda da reunião + horários),
+        # então a etapa vai direto para `escolhendo_slot` — sem o turno separado de
+        # `_ofertar_agenda`. Sem horário na grade, a fala prometeria uma lista vazia: humano,
+        # com motivo, como na oferta de sempre (decisão 6).
+        if not ofertados:
+            await _fallback(estado, "não há horário livre na grade para oferecer", db)
+            return
+        if not await _falar(estado, mensagem, db) and estado.etapa == ETAPA_Q_TRANSFERIDO:
+            return
+        estado.etapa = ETAPA_Q_ESCOLHENDO_SLOT
+        print(f"📅 Agente (Fluxo B): {estado.contact_wa_id} {etapa} → {estado.etapa} "
+              f"({len(ofertados)} horário(s) no contexto)")
+        return
 
     if etapa in PROXIMA:
         # A etapa anda mesmo se a fala foi só ADIADA pelo teto: o dado do lead já foi
@@ -1506,7 +1770,7 @@ async def _ofertar_agenda(estado: NatQualificacaoState, db: AsyncSession) -> Non
     if not ofertados:
         await _fallback(estado, "não há horário livre na grade para oferecer", db)
         return
-    resposta = await llm.conversar(missao=MISSOES[ETAPA_Q_OFERTANDO_AGENDA],
+    resposta = await llm.conversar(missao=_missao(ETAPA_Q_OFERTANDO_AGENDA, estado),
                                    contexto=contexto,
                                    historico=await _historico(estado.contact_wa_id, db),
                                    # S5-7: era `ofertar_agenda` — nome de etapa que NÃO
@@ -2011,6 +2275,10 @@ async def _agendar_follow(estado: NatQualificacaoState, db: AsyncSession) -> Non
     regra no banco. Dois inbounds seguidos reagendam UM follow, não acumulam dois. Era este o
     risco que adiou o Sprint D, e ele estava resolvido antes de a sprint começar.
     """
+    if fluxo_b.e_fluxo_b(estado):
+        # Bloco 3: no Fluxo B o follow são as quatro reativações, não o follow de 20h.
+        await _armar_reativacoes(estado, db)
+        return
     try:
         from app.nat_scheduler import agendar as agendar_acao
         await agendar_acao(KIND_FOLLOW_20H, estado.contact_wa_id,
@@ -2043,6 +2311,9 @@ async def _cancelar_follow(contact_wa_id: str, porque: str, db: AsyncSession) ->
     except Exception as e:
         print(f"⚠️  Agente: follow não cancelado para {contact_wa_id} "
               f"({type(e).__name__}: {e})")
+    # Bloco 3: as reativações do Fluxo B saem pelas MESMAS portas. Para conversa do caminho
+    # antigo não há linha nenhuma desses kinds, e o UPDATE não toca nada.
+    await _cancelar_reativacoes(contact_wa_id, porque, db)
 
 
 @registrar_handler("responder_pendente")
@@ -2445,9 +2716,15 @@ async def encerrar_inativo(acao: dict, db: AsyncSession) -> None:
     agora = _agora_sp()
     nos_calamos = await encalhada(wa_id, db, agora=agora) is not None
 
+    # Bloco 3: o encerramento armado DEPOIS do D+1 do Fluxo B carrega o motivo próprio no
+    # payload. Sem ele (todo encerramento do caminho antigo), o motivo é o de sempre.
+    from app.nat_scheduler import payload_de
+    do_payload = payload_de(acao).get("motivo")
     estado.etapa = ETAPA_Q_ENCERRADO
     estado.encerrado_em = agora
     estado.encerrado_motivo = (MOTIVO_SEM_RESPOSTA_AGENTE if nos_calamos
+                               else MOTIVO_REATIVACAO_ESGOTADA
+                               if do_payload == MOTIVO_REATIVACAO_ESGOTADA
                                else MOTIVO_INATIVIDADE)
     await db.flush()
     # S6-4: 72h sem resposta. Se um follow ainda estivesse pendente aqui, ele já não teria
@@ -2457,5 +2734,278 @@ async def encerrar_inativo(acao: dict, db: AsyncSession) -> None:
     if nos_calamos:
         print(f"🌑 Agente encerrou {wa_id} com motivo '{MOTIVO_SEM_RESPOSTA_AGENTE}' — "
               f"o lead falou por último e ficou {horas:.0f}h sem resposta NOSSA")
+    elif estado.encerrado_motivo == MOTIVO_REATIVACAO_ESGOTADA:
+        print(f"🌑 Agente encerrou {wa_id}: '{MOTIVO_REATIVACAO_ESGOTADA}' (D+1 sem resposta)")
     else:
         print(f"🌑 Agente encerrou {wa_id} por inatividade ({horas:.0f}h sem resposta)")
+
+
+# ==========================================================================================
+# BLOCO 3 (07/10/2026) — AS REATIVAÇÕES DO FLUXO B: +30 min, +2h, +4h E D+1 ÀS 9h
+# ==========================================================================================
+#
+# Spec da Isa, Fluxo B, "Reativação se o lead parar de responder". Armadas A CADA PERGUNTA do
+# agente — os mesmos dois pontos do follow de 20h: a abertura e cada inbound (`_agendar_follow`
+# desvia para cá quando o estado é do Fluxo B) — e canceladas pelas mesmas portas
+# (`_cancelar_follow`). Responder em qualquer ponto reagenda as quatro a partir de agora.
+#
+# JANELA 8h–20h30 (decisão 7, `nat_guard.dentro_janela_envio`). As três curtas só são armadas
+# se caem dentro da janela e antes do D+1: uma pergunta às 19h tem o +30 min às 19h30, e o +2h
+# e o +4h cairiam de madrugada — empurrá-los para as 8h os empilharia com o D+1 das 9h. O D+1
+# sempre sai às 9h do dia seguinte, que está dentro da janela.
+#
+# TEXTO: janela de 24h aberta (o lead já escreveu) → texto livre com o corpo do template;
+# fechada → template `nat_b_reativ_*`. Quem decide é `enviar_nat`, como em todo o agente.
+#
+# DEPOIS DO D+1: `encerrar_inativo` em 24h com motivo `reativacao_esgotada`. O lead já está no
+# funil do SDR pelo follow por estágio; o agente não volta a falar.
+#
+# NENHUMA SAÍDA É SILENCIOSA (Risco 3): toda recusa é `AcaoIgnorada` com motivo gravado.
+
+TEMPLATE_DA_REATIVACAO = {
+    KIND_REATIV_B_30M: "nat_b_reativ_30m",
+    KIND_REATIV_B_2H: "nat_b_reativ_2h",
+    KIND_REATIV_B_4H: "nat_b_reativ_4h",
+    KIND_REATIV_B_D1: "nat_b_reativ_d1",
+}
+REATIVACOES_CURTAS = ((KIND_REATIV_B_30M, timedelta(minutes=30)),
+                      (KIND_REATIV_B_2H, timedelta(hours=2)),
+                      (KIND_REATIV_B_4H, timedelta(hours=4)))
+HORA_DO_D1 = 9
+# Depois do D+1, quanto o agente ainda espera uma resposta antes de encerrar.
+ENCERRA_APOS_D1 = timedelta(hours=24)
+
+
+def calendario_reativacao(pergunta_em: datetime) -> list[tuple[str, datetime]]:
+    """Função pura: `[(kind, quando)]` das reativações de uma pergunta feita em
+    `pergunta_em` (SP naive). Ver o bloco acima para a regra da janela."""
+    d1 = datetime.combine(pergunta_em.date() + timedelta(days=1),
+                          datetime.min.time()).replace(hour=HORA_DO_D1)
+    saida = [(kind, pergunta_em + atraso) for kind, atraso in REATIVACOES_CURTAS
+             if dentro_janela_envio(pergunta_em + atraso) and pergunta_em + atraso < d1]
+    saida.append((KIND_REATIV_B_D1, d1))
+    return saida
+
+
+async def _cancelar_reativacoes(contact_wa_id: str, porque: str, db: AsyncSession) -> int:
+    """Cancela as quatro. Nunca levanta — higiene da fila, como `_cancelar_follow`."""
+    total = 0
+    try:
+        for kind in KINDS_REATIV_B:
+            total += await nat_cancelar(kind, contact_wa_id, db, motivo=porque[:200])
+        if total:
+            print(f"🚫 Agente: {total} reativação(ões) do Fluxo B cancelada(s) para "
+                  f"{contact_wa_id} — {porque}")
+    except Exception as e:
+        print(f"⚠️  Agente: reativações não canceladas para {contact_wa_id} "
+              f"({type(e).__name__}: {e})")
+    return total
+
+
+async def _armar_reativacoes(estado: NatQualificacaoState, db: AsyncSession) -> None:
+    """(Re)arma as reativações a partir de AGORA. Nunca levanta.
+
+    Cancela as quatro antes: `agendar` só substitui o pendente do MESMO kind, e uma curta que
+    não cabe na janela desta vez não pode sobrar armada da pergunta anterior.
+    """
+    agora = _agora_sp()
+    try:
+        await _cancelar_reativacoes(estado.contact_wa_id, "nova pergunta do agente", db)
+        calendario = calendario_reativacao(agora)
+        for kind, quando in calendario:
+            await nat_agendar(kind, estado.contact_wa_id, quando,
+                              {"armado_em": agora.isoformat(timespec="seconds")}, db)
+        print(f"⏰ Agente (Fluxo B): reativações de {estado.contact_wa_id}: "
+              + ", ".join(f"{k.removeprefix('reativ_b_')} {q:%d/%m %H:%M}"
+                          for k, q in calendario))
+    except Exception as e:
+        print(f"⚠️  Agente: reativações não armadas para {estado.contact_wa_id} "
+              f"({type(e).__name__}: {e})")
+
+
+async def _reativar(acao: dict, db: AsyncSession, kind: str) -> None:
+    """A espinha das quatro. RELÊ tudo; o payload só traz quando a pergunta foi feita."""
+    from app import nat_copy
+    from app.higiene_disparo import _opt_out_meta
+    from app.nat_scheduler import payload_de
+    from app.whatsapp import render_template_text
+
+    wa_id = acao["contact_wa_id"]
+    agora = _agora_sp()
+    if not fluxo_b.flag_ligada():
+        raise AcaoIgnorada("FLUXO_B_ENXUTO desligado")
+    estado = await estado_de(wa_id, db)
+    if estado is None:
+        raise AcaoIgnorada("não tem estado — nada a reativar")
+    if estado.etapa not in ETAPAS_QUALIFICACAO_ATIVAS:
+        raise AcaoIgnorada(f"já está em '{estado.etapa}' — fora das etapas ativas")
+    if not fluxo_b.e_fluxo_b(estado):
+        raise AcaoIgnorada("o estado não é do Fluxo B")
+    if not fluxo_b.telefone_permitido(estado.contact_wa_id):
+        raise AcaoIgnorada("telefone fora de FLUXO_B_SOMENTE_TELEFONES")
+    if not dentro_janela_envio(agora):
+        if kind == KIND_REATIV_B_D1:
+            raise AcaoAdiada(proxima_janela_envio(agora),
+                             f"fora da janela 8h–20h30 ({agora:%H:%M})")
+        raise AcaoIgnorada(f"fora da janela 8h–20h30 ({agora:%H:%M}) — a curta não é "
+                           f"empurrada para não empilhar com o D+1")
+
+    try:
+        desde = datetime.fromisoformat(payload_de(acao).get("armado_em") or "")
+    except ValueError:
+        desde = None
+    if desde is not None:
+        # O caminho normal é o inbound ter cancelado esta ação; isto cobre a corrida.
+        ultimo = await _ultimo_inbound(wa_id, db)
+        if ultimo is not None and ultimo > desde:
+            raise AcaoIgnorada("o lead respondeu depois da pergunta")
+        if await _alguem_falou_depois(wa_id, desde, db):
+            raise AcaoIgnorada("um humano (ou uma campanha) falou com este contato depois da "
+                               "pergunta — o agente não entra por cima")
+    if await _opt_out_meta(variantes_wa_id(estado.contact_wa_id) or (estado.contact_wa_id,),
+                           db):
+        raise AcaoIgnorada("opt-out registrado pela Meta (131050)")
+
+    nome = await _nome(estado, db)
+    if not nome:
+        raise AcaoIgnorada("sem nome do lead — o {{1}} sairia em branco")
+    template = TEMPLATE_DA_REATIVACAO[kind]
+    parametros = [nome]
+    if kind == KIND_REATIV_B_D1:
+        linha = linha_do_d1(await horarios_da_oferta(db, agora))
+        if not linha:
+            raise AcaoIgnorada("sem horário hoje, amanhã nem nos 2 próximos dias úteis")
+        parametros.append(linha)
+    corpo = nat_copy.CORPO_SUBMETIDO_FLUXO_B[template]
+    saiu, motivo = await enviar_nat(
+        estado.contact_wa_id, template, db, guard=guard.qualificacao_pode_atuar,
+        parametros=parametros, corpo_livre=render_template_text(corpo, parametros) or corpo)
+    if not saiu:
+        if guard.e_teto(motivo):
+            raise AcaoAdiada(agora + ATRASO_POR_TETO, motivo)
+        raise AcaoIgnorada(f"{template} não saiu: {motivo}")
+
+    if kind == KIND_REATIV_B_D1:
+        await nat_agendar(KIND_ENCERRAR_INATIVO, estado.contact_wa_id,
+                          agora + ENCERRA_APOS_D1, {"motivo": MOTIVO_REATIVACAO_ESGOTADA}, db)
+    print(f"🔁 Agente (Fluxo B): {template} para {estado.contact_wa_id} "
+          f"(etapa '{estado.etapa}')")
+
+
+@registrar_handler(KIND_REATIV_B_30M)
+async def reativ_b_30m(acao: dict, db: AsyncSession) -> None:
+    await _reativar(acao, db, KIND_REATIV_B_30M)
+
+
+@registrar_handler(KIND_REATIV_B_2H)
+async def reativ_b_2h(acao: dict, db: AsyncSession) -> None:
+    await _reativar(acao, db, KIND_REATIV_B_2H)
+
+
+@registrar_handler(KIND_REATIV_B_4H)
+async def reativ_b_4h(acao: dict, db: AsyncSession) -> None:
+    await _reativar(acao, db, KIND_REATIV_B_4H)
+
+
+@registrar_handler(KIND_REATIV_B_D1)
+async def reativ_b_d1(acao: dict, db: AsyncSession) -> None:
+    await _reativar(acao, db, KIND_REATIV_B_D1)
+
+
+# ==========================================================================================
+# BLOCO 3 — REMARCAR PELOS BOTÕES DOS BLOCOS 1 E 2
+# ==========================================================================================
+
+async def reabrir_para_oferta(wa_id: str, lead_id: int | None, db: AsyncSession, *,
+                              agendamento_antigo: int | None = None) -> bool:
+    """O lead clicou "Preciso remarcar" / "Escolher horário" / "Reagendar": o agente oferece
+    hoje e amanhã e agenda pelo mesmo caminho do Fluxo B. True se a oferta foi feita (o
+    chamador então NÃO manda a resposta fixa); False se nem tentou (a resposta fixa sai).
+
+    ------------------------------------------------------------------------------------
+    A EXCEÇÃO À TRAVA DE 27/09, DITA NA CARA
+    ------------------------------------------------------------------------------------
+    "Quem tem reunião não recebe abordagem do agente" (`guard.MOTIVO_JA_AGENDADO` na abertura,
+    `_encerrar_por_agendamento` no meio da conversa). Aqui a pessoa TEM reunião — ou teve —, e
+    é justamente ela que pediu para trocar. A reunião antiga já está com `cancelado_motivo`
+    preenchido no espelho (ou a régua de no-show encerrada), mas na Exact segue Vigente até a
+    consultora cancelar à mão (a API não cancela, RECON §5.1). Então o `agendamentos.id` dela
+    vai para `dados_extras["reunioes_remarcadas"]`, e `_reuniao(estado)` deixa de enxergá-la:
+    sem isto a primeira resposta do lead encerraria a conversa por "já tem reunião", e
+    `_agendar` "confirmaria" a reunião que ele acabou de desmarcar.
+
+    O ESTADO: sem estado, nasce em `ofertando_agenda` (origem `exact`, que é de onde veio a
+    reunião). Com estado em QUALQUER etapa, renasce em `ofertando_agenda`; a etapa, o
+    `encerrado_motivo` e o `transferido_motivo` anteriores vão para
+    `dados_extras["reaberturas"]` antes de as colunas serem limpas. Sempre com a marca do
+    Fluxo B (missão de hoje+amanhã e reativações).
+
+    NÃO TENTA, e devolve False, quando: a grade não tem horário (a resposta fixa e o aviso ao
+    SDR são o caminho para humano), o agente está desligado (`qualificacao_enabled`: a fala
+    seria recusada e o lead ficaria sem nada) ou algo levanta (savepoint próprio: o que foi
+    escrito aqui é revertido, e o resto do tratamento do clique segue).
+    """
+    try:
+        async with db.begin_nested():
+            return await _reabrir(wa_id, lead_id, agendamento_antigo, db)
+    except Exception as e:
+        print(f"⚠️  Agente: remarcação de {wa_id} não reabriu o agente "
+              f"({type(e).__name__}: {e}) — segue a resposta fixa")
+        return False
+
+
+async def _reabrir(wa_id: str, lead_id: int | None, agendamento_antigo: int | None,
+                   db: AsyncSession) -> bool:
+    from app.models import ORIGEM_EXACT
+
+    config = await guard._carregar_config(db)
+    if config is None or not config.qualificacao_enabled:
+        print(f"↩️  Agente: remarcação de {wa_id} sem agente (qualificacao_enabled=false)")
+        return False
+    if not any(h for _, h in await horarios_da_oferta(db)):
+        print(f"↩️  Agente: remarcação de {wa_id} sem horário hoje, amanhã nem nos 2 "
+              f"próximos dias úteis — segue a resposta fixa")
+        return False
+
+    agora = _agora_sp()
+    estado = await estado_de(wa_id, db)
+    if estado is None:
+        contato = await _contato_ou_criar(wa_id, lead_id=lead_id, db=db)
+        if contato is None:
+            return False
+        estado = NatQualificacaoState(contact_wa_id=contato.wa_id, exact_lead_id=lead_id,
+                                      origem=ORIGEM_EXACT, etapa=ETAPA_Q_OFERTANDO_AGENDA)
+        db.add(estado)
+        anterior = None
+    else:
+        anterior = estado.etapa
+        extras = dict(estado.dados_extras or {})
+        extras["reaberturas"] = list(extras.get("reaberturas") or []) + [{
+            "em": agora.isoformat(timespec="seconds"), "de": anterior,
+            "encerrado_motivo": estado.encerrado_motivo,
+            "transferido_motivo": estado.transferido_motivo,
+            "agendamento_id": estado.agendamento_id}]
+        estado.dados_extras = extras
+        estado.etapa = ETAPA_Q_OFERTANDO_AGENDA
+        estado.encerrado_em = estado.encerrado_motivo = None
+        estado.transferido_em = estado.transferido_motivo = None
+        if estado.exact_lead_id is None and lead_id:
+            estado.exact_lead_id = lead_id
+
+    ignorar = set(_reunioes_ignoradas(estado)) | {
+        i for i in (agendamento_antigo, estado.agendamento_id) if i}
+    extras = dict(estado.dados_extras or {})
+    extras[CHAVE_REUNIOES_IGNORADAS] = sorted(ignorar)
+    estado.dados_extras = extras
+    fluxo_b.marcar(estado)
+    estado.agendamento_id = None
+    await db.flush()
+
+    await _agendar_encerramento(estado, db)
+    await _ofertar_agenda(estado, db)
+    if estado.etapa in ETAPAS_QUALIFICACAO_ATIVAS:
+        await _agendar_follow(estado, db)
+    print(f"🔄 Agente: remarcação de {estado.contact_wa_id} "
+          f"({anterior or 'sem estado'} → {estado.etapa}), reunião(ões) ignorada(s): "
+          f"{sorted(ignorar) or '-'}")
+    return True

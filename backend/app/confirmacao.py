@@ -31,9 +31,9 @@ cada chamada, sem cache, padrão de `follow_estagio`.
 O QUE NÃO FAZ
 ==========================================================================================
 Não cancela reunião na Exact (impossível pela API, RECON §5.1): o corte anota, avisa a
-consultora e o SDR, e para a régua. Não mostra horários no "Preciso remarcar" (Bloco 3). Não
-faz a régua de no-show D0+1h em diante (Bloco 2): aqui só o D0, que é a mensagem do corte, e o
-tratamento dos dois botões dela.
+consultora e o SDR, e para a régua. O "Preciso remarcar" só mostra horários com o Fluxo B
+(Bloco 3, ver `remarcar`). Não faz a régua de no-show D0+1h em diante (Bloco 2): aqui só o
+D0, que é a mensagem do corte, e o tratamento dos dois botões dela.
 """
 import json
 import os
@@ -1040,6 +1040,19 @@ async def remarcar(r: ReuniaoStatus, wa_id: str, db: AsyncSession, *,
         r.cancelado_motivo = "remarcar"
         await cancelar_regua(wa_id, r, "remarcar", db)
     await _nota(r, "Pediu remarcação")
+    # Bloco 3 (07/10): com o Fluxo B ligado para este telefone, o agente mostra os horários de
+    # hoje e amanhã e agenda sozinho. A resposta fixa só sai se a oferta nem foi tentada (sem
+    # horário, agente desligado, erro). Com a flag desligada, o caminho abaixo é o de sempre.
+    from app import fluxo_b
+    if fluxo_b.ativo_para(wa_id):
+        from app.qualificacao_fluxo import reabrir_para_oferta
+        if await reabrir_para_oferta(wa_id, r.lead_id, db,
+                                     agendamento_antigo=r.agendamento_id):
+            await _notificar(r, wa_id, TIPO_NOTIF_CONFIRMACAO, "Lead pediu para remarcar",
+                             f"Reunião de {r.slot_inicio:%d/%m às %H:%M}. O agente já mandou "
+                             f"os horários de hoje e amanhã por aqui. Cancele a reunião "
+                             f"antiga na Exact.", db, consultora=True)
+            return
     await _notificar(r, wa_id, TIPO_NOTIF_CONFIRMACAO, "Lead pediu para remarcar",
                      f"Reunião de {r.slot_inicio:%d/%m às %H:%M}. Mande os horários "
                      f"disponíveis por aqui e cancele a reunião antiga na Exact.",

@@ -467,3 +467,46 @@ TEXTO_NS_D2_LIVRE = ("Oi, {nome}! O coordenador da Pós em {pos} gravou um recad
                      "{link}")
 TEXTO_NS_D5_LIVRE = ("Oi, {nome}! Separei um conteúdo que tem tudo a ver com a área da Pós em "
                      "{pos}: {titulo}. Acho que você vai gostar! {link}")
+
+
+# ==========================================================================================
+# FLUXO B ENXUTO (Bloco 3) — SUBMETIDOS À META EM 07/10/2026
+# ==========================================================================================
+# Texto da spec da Isa (28/09, "Fluxo B", pág. 3), com os ajustes listados em
+# SPRINT_BLOCO3_FLUXO_B_20261007_REPORT.md. Fonte do texto para `submit_templates_fluxo_b.py`.
+# Fora de `CORPO_APROVADO` pelo mesmo motivo dos outros blocos (o drift exige APPROVED).
+NAT_B_ABERTURA = "nat_b_abertura"
+NAT_B_REATIV_30M = "nat_b_reativ_30m"
+NAT_B_REATIV_2H = "nat_b_reativ_2h"
+NAT_B_REATIV_4H = "nat_b_reativ_4h"
+NAT_B_REATIV_D1 = "nat_b_reativ_d1"
+
+CORPO_SUBMETIDO_FLUXO_B = {
+    # {{1}} nome · {{2}} pós
+    NAT_B_ABERTURA: (
+        "Oi, {{1}}! Que bom ver você por aqui 😊 Vi que você aplicou para a Pós em {{2}}. Me "
+        "conta, o que despertou seu interesse por essa pós?"
+    ),
+    # {{1}} nome
+    NAT_B_REATIV_30M: "Oi, {{1}}, está por aí? 👀",
+    # {{1}} nome
+    NAT_B_REATIV_2H: (
+        "Oi, {{1}}! Consegue me responder rapidinho? Assim já sigo com seu processo "
+        "seletivo 😊"
+    ),
+    # {{1}} nome
+    NAT_B_REATIV_4H: (
+        "Oi, {{1}}! Se preferir, já te mostro os horários disponíveis para sua conversa com a "
+        "consultora!"
+    ),
+    # {{1}} nome · {{2}} horários numa linha ("hoje 14h15, 16h30 ou amanhã 10h00")
+    NAT_B_REATIV_D1: (
+        "Oi, {{1}}! Como não tive seu retorno e estamos com pouca disponibilidade de agenda, "
+        "seguem os horários para você agendar sua conversa diretamente com a nossa "
+        "consultora: {{2}}. É só me responder com o horário que fica melhor."
+    ),
+}
+
+# Fala determinística do "prefere ligação" (Fluxo B). Não passa pelo LLM, como a recusa.
+TEXTO_PREFERE_LIGACAO = ("Combinado! 🙂 Já avisei a equipe: uma consultora vai te ligar neste "
+                         "número em breve.")
