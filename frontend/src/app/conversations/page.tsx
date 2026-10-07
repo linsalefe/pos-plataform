@@ -57,6 +57,17 @@ interface ExactLeadResult {
   stage: string | null;
 }
 
+// A reunião que representa a pessoa (GET /contacts, backend/app/reuniao_contato.py). Null sem
+// reunião no espelho ou só com reunião de mais de 7 dias. `inicio` é hora de SP sem fuso.
+interface ReuniaoContato {
+  meeting_id: number;
+  inicio: string;
+  marcada: boolean;
+  confirmada: boolean;
+  fora_do_padrao: boolean;
+  situacao: string;
+}
+
 interface Contact {
   wa_id: string;
   // As duas grafias do mesmo telefone, quando a conversa veio dividida (12 e 13 dígitos).
@@ -75,6 +86,7 @@ interface Contact {
   created_at: string | null;
   channel_id: number | null;
   assigned_to: number | null;
+  reuniao?: ReuniaoContato | null;
 }
 
 // Estado do fluxo NAT do contato aberto. Vem de GET /api/nat/{wa_id}/estado.
@@ -186,6 +198,8 @@ export default function ConversationsPage() {
   const [tagFilter, setTagFilter] = useState<number[]>([]);
   const [unreadFilter, setUnreadFilter] = useState(false);
   const [aiFilter, setAiFilter] = useState<'all' | 'on' | 'off'>('all');
+  // Filtros do SDR (07/10): reunião marcada, confirmou, respondeu fora do padrão.
+  const [reuniaoFilter, setReuniaoFilter] = useState<'all' | 'marcada' | 'confirmada' | 'fora'>('all');
   const [showFilters, setShowFilters] = useState(false);
   const [sdrFilter, setSdrFilter] = useState<number | null>(null);
   const [users, setUsers] = useState<{id: number; name: string}[]>([]);
@@ -805,6 +819,21 @@ export default function ConversationsPage() {
       default: return <Clock className="w-3.5 h-3.5 text-gray-400" />;
     }
   };
+  // "hoje 14:30", "amanhã 10:00", "qui 08/10 17:40". `inicio` é hora de parede de SP sem fuso,
+  // então é lido como texto: passar por `new Date(iso)` deslocaria a hora num navegador fora de SP.
+  const rotuloReuniao = (inicio: string) => {
+    const [data, hora] = inicio.split('T');
+    const [y, m, d] = data.split('-').map(Number);
+    const dia = new Date(y, m - 1, d);
+    const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+    const diff = Math.round((dia.getTime() - hoje.getTime()) / 86400000);
+    const hm = (hora || '').slice(0, 5);
+    if (diff === 0) return `hoje ${hm}`;
+    if (diff === 1) return `amanhã ${hm}`;
+    const sem = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'][dia.getDay()];
+    return `${sem} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')} ${hm}`;
+  };
+
   const getStatusConfig = (s: string) => leadStatuses.find(x => x.value === s) || leadStatuses[0];
   const getTagColorConfig = (c: string) => tagColors.find(x => x.value === c) || tagColors[0];
 
@@ -819,10 +848,21 @@ export default function ConversationsPage() {
     const mur = !unreadFilter || c.unread > 0;
     const mai = aiFilter === 'all' || (aiFilter === 'on' ? c.ai_active : !c.ai_active);
     const msdr = sdrFilter === null || (sdrFilter === 0 ? c.assigned_to === null : c.assigned_to === sdrFilter);
-    return ms && mst && mtag && mur && mai && msdr;
+    const r = c.reuniao;
+    const mreu = reuniaoFilter === 'all'
+      || (reuniaoFilter === 'marcada' && !!r?.marcada)
+      || (reuniaoFilter === 'confirmada' && !!r?.confirmada)
+      || (reuniaoFilter === 'fora' && !!r?.fora_do_padrao);
+    return ms && mst && mtag && mur && mai && msdr && mreu;
   });
+  // Com "Reunião marcada" ou "Confirmou", a lista vem pela reunião mais próxima primeiro.
+  // `inicio` é ISO sem fuso: a comparação de string já dá a ordem certa.
+  if (reuniaoFilter === 'marcada' || reuniaoFilter === 'confirmada') {
+    filteredContacts.sort((a, b) => (a.reuniao?.inicio || '').localeCompare(b.reuniao?.inicio || ''));
+  }
 
-  const hasActiveFilters = tagFilter.length > 0 || unreadFilter || aiFilter !== 'all' || sdrFilter !== null;
+  const hasActiveFilters = tagFilter.length > 0 || unreadFilter || aiFilter !== 'all' || sdrFilter !== null
+    || reuniaoFilter !== 'all';
 
   const clearAllFilters = () => {
     setStatusFilter('todos');
@@ -830,6 +870,7 @@ export default function ConversationsPage() {
     setUnreadFilter(false);
     setAiFilter('all');
     setSdrFilter(null);
+    setReuniaoFilter('all');
     setShowFilters(false);
   };
 
@@ -990,7 +1031,7 @@ export default function ConversationsPage() {
                 Filtros
                 {hasActiveFilters && (
                   <span className="w-4 h-4 bg-[#2A658F] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
-                    {(tagFilter.length > 0 ? 1 : 0) + (unreadFilter ? 1 : 0) + (aiFilter !== 'all' ? 1 : 0)}
+                    {(tagFilter.length > 0 ? 1 : 0) + (unreadFilter ? 1 : 0) + (aiFilter !== 'all' ? 1 : 0) + (reuniaoFilter !== 'all' ? 1 : 0)}
                   </span>
                 )}
               </button>
@@ -1055,6 +1096,33 @@ export default function ConversationsPage() {
                   >
                     <Bot className="w-3 h-3" />
                     IA off
+                  </button>
+                  <button
+                    onClick={() => setReuniaoFilter(reuniaoFilter === 'marcada' ? 'all' : 'marcada')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      reuniaoFilter === 'marcada' ? 'bg-[#2A658F]/10 text-[#2A658F]' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Calendar className="w-3 h-3" />
+                    Reunião marcada
+                  </button>
+                  <button
+                    onClick={() => setReuniaoFilter(reuniaoFilter === 'confirmada' ? 'all' : 'confirmada')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      reuniaoFilter === 'confirmada' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <CheckCheck className="w-3 h-3" />
+                    Confirmou
+                  </button>
+                  <button
+                    onClick={() => setReuniaoFilter(reuniaoFilter === 'fora' ? 'all' : 'fora')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      reuniaoFilter === 'fora' ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <MessageCircle className="w-3 h-3" />
+                    Respondeu fora do padrão
                   </button>
                 </div>
 
@@ -1172,6 +1240,24 @@ export default function ConversationsPage() {
                             {contact.last_message || 'Sem mensagens'}
                           </p>
                         </div>
+                        {(contact.reuniao?.marcada || contact.reuniao?.fora_do_padrao) && (
+                          <div className="flex items-center gap-1 mt-1">
+                            {contact.reuniao.marcada && (
+                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium ${
+                                contact.reuniao.confirmada ? 'bg-emerald-50 text-emerald-700' : 'bg-[#2A658F]/8 text-[#2A658F]'
+                              }`}>
+                                <Calendar className="w-2.5 h-2.5" />
+                                {rotuloReuniao(contact.reuniao.inicio)}
+                                {contact.reuniao.confirmada && ' ✓'}
+                              </span>
+                            )}
+                            {contact.reuniao.fora_do_padrao && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-amber-50 text-amber-700">
+                                fora do padrão
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       {contact.unread > 0 && (

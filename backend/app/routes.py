@@ -520,6 +520,9 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
     #               recebe inbound, e `assigned_to_conflito` avisa a tela (103 pares hoje)
     # ------------------------------------------------------------------------------------
     from app.contatos import chave_par, principal_do_par
+    # Filtros do SDR (07/10): a reunião de cada pessoa, numa consulta só. Ver reuniao_contato.
+    from app.reuniao_contato import reunioes_por_chave, reuniao_do_contato
+    reunioes = await reunioes_por_chave(db)
 
     grupos: dict = {}
     for r in rows:
@@ -564,6 +567,8 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
             # Só aparece quando há de fato duas grafias — a tela pode ignorar sem quebrar.
             "wa_ids": [m.wa_id for m in membros] if len(membros) > 1 else None,
             "assigned_to_conflito": len(set(donos)) > 1 or None,
+            # None = sem reunião no espelho (ou só reunião com mais de 7 dias).
+            "reuniao": reuniao_do_contato(reunioes, [m.wa_id for m in membros]),
         })
 
     # `last_message_time` já é ISO 8601 — ordena lexicograficamente na ordem certa, e a
