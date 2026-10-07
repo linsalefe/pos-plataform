@@ -30,13 +30,15 @@ import time as _time
 from collections import defaultdict, deque
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import agendar as fluxo
 from app.agendamento import client, consultoras as equipe_mod, disponibilidade
-from app.agendamento import extras as extras_mod, origens
+from app.agendamento import extras as extras_mod, origens, rastro
 from app.agendamento import token as tokens
 from app.models import Agendamento
 from app.database import get_db
@@ -47,6 +49,11 @@ router = APIRouter(prefix="/api/agendamento", tags=["agendamento"])
 # cada agendamento perdido; escrita fala com a Exact três vezes e por isso é bem mais apertada.
 LIMITE_LEITURA = (60, 60)
 LIMITE_ESCRITA = (5, 300)
+# Teto de linhas de rastro de 422 por IP. O 422 morre ANTES do `_limitar` do handler, então
+# sem este teto um laço de POST inválido viraria um INSERT por requisição — escrita de graça
+# para quem quiser encher a tabela. Estourado, o 422 continua 422 e continua no journal; só
+# deixa de gravar linha. Mesma folga da escrita: 5 em 5 minutos cobre quem erra e corrige.
+LIMITE_RASTRO_422 = (5, 300)
 
 _baldes: dict[str, deque] = defaultdict(deque)
 
@@ -64,7 +71,8 @@ def _ip(request: Request) -> str:
     return request.client.host if request.client else "desconhecido"
 
 
-def _limitar(request: Request, limite: tuple[int, int], escopo: str) -> None:
+def _cabe(request: Request, limite: tuple[int, int], escopo: str) -> bool:
+    """Consome uma vaga do balde do IP. False = estourou (e nada é consumido)."""
     maximo, janela = limite
     chave = f"{escopo}:{_ip(request)}"
     agora = _time.monotonic()
@@ -72,14 +80,37 @@ def _limitar(request: Request, limite: tuple[int, int], escopo: str) -> None:
     while balde and agora - balde[0] > janela:
         balde.popleft()
     if len(balde) >= maximo:
-        raise HTTPException(status_code=429,
-                            detail="Muitas tentativas. Aguarde alguns minutos.")
+        return False
     balde.append(agora)
     # Higiene do dicionário: sem isto, um IP por visitante vira vazamento lento de memória
     # num processo que fica meses de pé.
     if len(_baldes) > 10_000:
         for k in [k for k, v in _baldes.items() if not v]:
             del _baldes[k]
+    return True
+
+
+def _limitar(request: Request, limite: tuple[int, int], escopo: str) -> None:
+    if not _cabe(request, limite, escopo):
+        raise HTTPException(status_code=429,
+                            detail="Muitas tentativas. Aguarde alguns minutos.")
+
+
+async def _recusar(db: AsyncSession, request: Request, *, rota: str, motivo: str,
+                   pedido: "DadosLead", detalhe: str = "", gravar: bool = True) -> None:
+    """Rastro de uma recusa nossa: linha no journal SEMPRE, linha `recusado` se `gravar`.
+
+    Chamada nos `except` das rotas, ANTES de devolver o erro. Não levanta — ver rastro.py.
+    `gravar=False` é para o 409 (a linha já existe, marcada dentro do fluxo) e o 429 (gravar
+    daria a quem martela o endpoint uma escrita por requisição).
+    """
+    rastro.logar(rota=rota, motivo=motivo, telefone=pedido.telefone, nome=pedido.nome,
+                 origem=pedido.origem, ip=_ip(request), detalhe=detalhe)
+    if gravar:
+        await rastro.registrar(db, rota=rota, motivo=motivo, nome=pedido.nome,
+                               telefone=pedido.telefone, email=pedido.email,
+                               origem=pedido.origem, extras=pedido.extras,
+                               detalhe=detalhe, origem_ip=_ip(request))
 
 
 def _normalizar_telefone(bruto: str) -> str:
@@ -194,8 +225,20 @@ async def listar_slots(request: Request, db: AsyncSession = Depends(get_db)):
 @router.post("/agendar")
 async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
                             db: AsyncSession = Depends(get_db)):
-    """Cria o lead e agenda numa chamada. 409 = o horário foi tomado, recarregue a grade."""
-    _limitar(request, LIMITE_ESCRITA, "agendar")
+    """Cria o lead e agenda numa chamada. 409 = o horário foi tomado, recarregue a grade.
+
+    Toda recusa daqui deixa rastro (`_recusar`) antes de virar resposta — ver rastro.py.
+    """
+    rota = "/agendar"
+    # O slot e o leadId não têm coluna na linha `recusado` (ela nunca carrega lead — ver
+    # rastro.py), então vão no detalhe.
+    pedido_txt = f"slot={pedido.slot!r} leadId={pedido.lead_id}"
+    try:
+        _limitar(request, LIMITE_ESCRITA, "agendar")
+    except HTTPException:
+        await _recusar(db, request, rota=rota, motivo=rastro.RATE_LIMIT, pedido=pedido,
+                       detalhe=pedido_txt, gravar=False)
+        raise
     try:
         r = await fluxo.agendar(db, nome=pedido.nome, email=pedido.email,
                                 telefone=pedido.telefone, slot_id=pedido.slot,
@@ -205,10 +248,16 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
         # 400 e não 422: o corpo está bem formado, o valor é que não é aceito. E a mensagem
         # não lista as origens permitidas — é endpoint público, e a lista é dado interno.
         print(f"⚠️ /agendamento/agendar: {e} (ip {_ip(request)})")
+        await _recusar(db, request, rota=rota, motivo=rastro.ORIGEM_NAO_PERMITIDA,
+                       pedido=pedido, detalhe=f"{e} · {pedido_txt}")
         raise HTTPException(status_code=400, detail="Origem inválida.") from e
     except fluxo.SlotInvalido as e:
+        await _recusar(db, request, rota=rota, motivo=rastro.SLOT_INVALIDO, pedido=pedido,
+                       detalhe=f"{e} · {pedido_txt}")
         raise HTTPException(status_code=400, detail="Horário inválido ou expirado.") from e
     except fluxo.LeadNaoEncontrado as e:
+        await _recusar(db, request, rota=rota, motivo=rastro.LEAD_NAO_ENCONTRADO,
+                       pedido=pedido, detalhe=f"{e} · {pedido_txt}")
         # 404 e não 400: o corpo está correto, o recurso é que não existe. O front trata
         # reenviando SEM `leadId` — aí o /agendar cria o lead e o visitante não fica preso
         # por causa de um `?lead=` velho na URL.
@@ -217,6 +266,9 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
             detail="O cadastro informado não foi encontrado. "
                    "Recarregue a página e tente de novo.") from e
     except fluxo.SlotIndisponivel as e:
+        # A linha já existe (`falhou`, com `motivo_recusa` marcado dentro do fluxo): só log.
+        await _recusar(db, request, rota=rota, motivo=rastro.SLOT_OCUPADO, pedido=pedido,
+                       detalhe=f"{e} · {pedido_txt}", gravar=False)
         raise HTTPException(
             status_code=409,
             detail="Esse horário acabou de ser preenchido. Escolha outro, por favor.") from e
@@ -230,6 +282,13 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
                        "Nossa equipe entra em contato pelo WhatsApp.") from e
         raise HTTPException(status_code=502,
                             detail="Não consegui concluir o agendamento. Tente de novo.") from e
+
+    if r.duplo_clique:
+        # A resposta é a MESMA do agendamento anterior — o visitante vê a confirmação que
+        # espera. O rastro é só para a pergunta "por que esta submissão não virou linha?".
+        await _recusar(db, request, rota=rota, motivo=rastro.DUPLO_CLIQUE, pedido=pedido,
+                       detalhe=f"devolveu #{r.agendamento_id} (lead {r.lead_id}) · "
+                               f"{pedido_txt}")
 
     return {
         "ok": True,
@@ -252,13 +311,21 @@ async def criar_lead_sem_agendar(pedido: DadosLead, request: Request,
 
     É o que salva o contato quando não há horário na grade ou o visitante não quer escolher.
     """
-    _limitar(request, LIMITE_ESCRITA, "lead")
+    rota = "/lead"
+    try:
+        _limitar(request, LIMITE_ESCRITA, "lead")
+    except HTTPException:
+        await _recusar(db, request, rota=rota, motivo=rastro.RATE_LIMIT, pedido=pedido,
+                       gravar=False)
+        raise
     try:
         lead_id = await fluxo.cadastrar_lead_sem_agendar(
             db, nome=pedido.nome, email=pedido.email, telefone=pedido.telefone,
             origem=pedido.origem, extras=pedido.extras, origem_ip=_ip(request))
     except origens.OrigemInvalida as e:
         print(f"⚠️ /agendamento/lead: {e} (ip {_ip(request)})")
+        await _recusar(db, request, rota=rota, motivo=rastro.ORIGEM_NAO_PERMITIDA,
+                       pedido=pedido, detalhe=str(e))
         raise HTTPException(status_code=400, detail="Origem inválida.") from e
     except fluxo.AgendamentoFalhou as e:
         # 503 quando a Exact não respondeu, 502 quando ela respondeu recusando. A diferença
@@ -278,6 +345,61 @@ async def criar_lead_sem_agendar(pedido: DadosLead, request: Request,
     # as duas grafias aqui deixaria o contrato ambíguo sobre qual é a de verdade.
     return {"ok": True, "lead_id": lead_id,
             "aviso": "Recebemos seu contato. Nossa equipe fala com você em breve."}
+
+
+# ==========================================================================================
+# O 422 — a recusa que não chega ao handler
+# ==========================================================================================
+# O Pydantic valida o corpo ANTES de a rota rodar, então nenhum `except` acima enxerga um
+# telefone sem DDD. Este handler é registrado no app inteiro (main.py) porque é o único
+# lugar em que o FastAPI deixa interceptar a validação — e por isso ele só age nas duas rotas
+# da LP e DELEGA todo o resto ao handler padrão. A resposta é sempre a do handler padrão,
+# byte a byte: o rastro não muda nada do que o front recebe.
+ROTAS_COM_RASTRO_422 = {"/api/agendamento/lead": "/lead",
+                        "/api/agendamento/agendar": "/agendar"}
+
+
+async def validacao_recusada(request: Request, exc: RequestValidationError):
+    rota = ROTAS_COM_RASTRO_422.get(request.url.path)
+    if rota is not None:
+        try:
+            await _rastro_do_422(request, exc, rota)
+        except Exception as e:
+            # Cinto e suspensório: o rastro nunca muda a resposta ao visitante.
+            print(f"⚠️ agendamento: rastro do 422 falhou ({type(e).__name__}: {e})")
+    return await request_validation_exception_handler(request, exc)
+
+
+async def _rastro_do_422(request: Request, exc: RequestValidationError, rota: str) -> None:
+    erros = exc.errors()
+    corpo = exc.body if isinstance(exc.body, dict) else {}
+    motivo = rastro.motivo_de_validacao(erros)
+    detalhe = rastro.detalhe_de_validacao(erros)
+    # O que veio, mesmo inválido — é para isso que o rastro existe. Sem `.get` em cascata
+    # de tipo: `rastro` converte e corta qualquer coisa.
+    nome, telefone, origem = corpo.get("nome"), corpo.get("telefone"), corpo.get("origem")
+    if rota == "/agendar":
+        detalhe = f"{detalhe} · slot={corpo.get('slot')!r} " \
+                  f"leadId={corpo.get('leadId', corpo.get('lead_id'))}"
+    rastro.logar(rota=rota, motivo=motivo, telefone=telefone, nome=nome, origem=origem,
+                 ip=_ip(request), detalhe=detalhe)
+
+    if not _cabe(request, LIMITE_RASTRO_422, "rastro422"):
+        print(f"⚠️ agendamento: rastro do 422 NÃO gravado — teto por IP ({_ip(request)})")
+        return
+
+    # A sessão vem do MESMO provedor da rota, respeitando `dependency_overrides`: em teste é
+    # o dublê, em produção é o `get_db` de sempre. Um handler de exceção não recebe `Depends`.
+    provedor = request.app.dependency_overrides.get(get_db, get_db)
+    gerador = provedor()
+    db = await gerador.__anext__()
+    try:
+        await rastro.registrar(db, rota=rota, motivo=motivo, nome=nome, telefone=telefone,
+                               email=corpo.get("email"), origem=origem,
+                               extras=corpo.get("extras"), detalhe=detalhe,
+                               origem_ip=_ip(request))
+    finally:
+        await gerador.aclose()
 
 
 # ==========================================================================================

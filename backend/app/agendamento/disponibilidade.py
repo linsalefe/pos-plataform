@@ -49,7 +49,7 @@ from app.agendamento import client
 from app.agendamento.consultoras import Consultora, consultoras
 from app.agendamento.grade import Slot
 from app.agendamento.horarios import agora_sp, de_exact
-from app.models import PASSO_FALHOU, PASSO_INICIADO, Agendamento
+from app.models import PASSO_FALHOU, PASSO_INICIADO, PASSO_RECUSADO, Agendamento
 
 # Cache do resultado de /slots. 60s é o pedido do produto e casa com o custo: sem ele, cada
 # visitante que abre o obrigado.html dispara um GET /Boxes, e o rate limit da Exact
@@ -113,7 +113,9 @@ async def _ocupados_por_nos(db: AsyncSession, inicio: datetime, fim: datetime,
             Agendamento.slot_inicio >= inicio,
             Agendamento.slot_inicio <= fim,
             Agendamento.sales_rep_email == sales_rep_email,
-            Agendamento.passo.notin_([PASSO_FALHOU, PASSO_INICIADO]),
+            # `recusado` já cai no filtro de e-mail (a linha tem `sales_rep_email = ''`), mas
+            # fica explícito: a garantia não pode depender de um valor vazio. Ver rastro.py.
+            Agendamento.passo.notin_([PASSO_FALHOU, PASSO_INICIADO, PASSO_RECUSADO]),
         )
     )
     return [(linha[0], linha[1]) for linha in res.all()]

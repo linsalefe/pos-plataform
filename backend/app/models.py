@@ -618,6 +618,10 @@ PASSO_BOX_CRIADO = "box_criado"      # BoxesAdd passou. Reversível — a faxina
 PASSO_LEAD_CRIADO = "lead_criado"    # LeadsAdd passou. O lead está em Entrada.
 PASSO_AGENDADO = "agendado"          # scheduleAdd passou. DEFINITIVO.
 PASSO_FALHOU = "falhou"              # desistimos; `erro` diz por quê
+# Recusado por NÓS antes de qualquer chamada à Exact (origem fora da allowlist, 422, slot
+# inválido, duplo clique...). Existe só como rastro para achar a pessoa depois: nunca tem
+# `lead_id`, `box_id` nem consultora. `motivo_recusa` diz qual foi. Ver agendamento/rastro.py.
+PASSO_RECUSADO = "recusado"
 
 
 class Agendamento(Base):
@@ -644,7 +648,10 @@ class Agendamento(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     nome = Column(String(200), nullable=False)
     email = Column(String(200), nullable=True)   # a Exact não tem campo de e-mail no lead
-    telefone = Column(String(20), nullable=False)
+    # 30 e não 20: a linha `recusado` guarda o telefone COMO VEIO, inclusive o que o 422
+    # recusou por ser comprido demais ("+55 (66) 9 9905-0115" já tem 20). O valor do rastro é
+    # achar a pessoa, e cortar o número que ela digitou errado é justamente perder isso.
+    telefone = Column(String(30), nullable=False)
     slot_inicio = Column(DateTime, nullable=False)
     slot_fim = Column(DateTime, nullable=False)
     sales_rep_email = Column(String(200), nullable=False)
@@ -674,6 +681,11 @@ class Agendamento(Base):
     extras = Column(JSONB, nullable=True)
     meeting_id = Column(BigInteger, nullable=True)
     passo = Column(String(20), nullable=False, default=PASSO_INICIADO)
+    # Por que recusamos, em texto curto e padronizado (`origem_nao_permitida`,
+    # `validacao_telefone`, `slot_ocupado`...). NULL = não foi recusa. Preenchido nas linhas
+    # `recusado` e também na `falhou` do 409, que já existia e não ganha linha duplicada —
+    # por isso a pergunta "quem foi recusado?" é `motivo_recusa IS NOT NULL`, não `passo`.
+    motivo_recusa = Column(String(40), nullable=True)
     erro = Column(Text, nullable=True)           # mensagem crua da Exact, sem tradução
     origem_ip = Column(String(45), nullable=True)  # 45 = IPv6 textual
     created_at = Column(DateTime, nullable=False)
