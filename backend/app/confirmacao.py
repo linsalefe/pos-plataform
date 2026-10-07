@@ -918,15 +918,29 @@ async def inbound(wa_id: str, evento_botao: dict | None, content: str,
 
     Com a flag desligada devolve False sem tocar no banco. False = o webhook segue como sempre.
     """
+    from app import noshow
+    noshow_ligado = noshow.flag_ligada() and noshow.telefone_permitido(wa_id)
+    confirmacao_ligada = flag_ligada() and telefone_permitido(wa_id)
+    if not noshow_ligado and not confirmacao_ligada:
+        return False
+
+    # 07/10 (liberação geral): o inbound chega na grafia do WhatsApp, sem o 9º dígito para DDD
+    # fora de 11–28, e o contato pode estar gravado na outra. `enviar_nat` procura o contato por
+    # igualdade crua, então toda resposta fixa (confirmado, remarcar, ligar agora, dúvida)
+    # saía com "contato não existe no banco". MEDIDO: Ana Caroline, reunião 4774914, clicou
+    # "Confirmo" às 10:01 de 07/10 e não recebeu nada. `canonizar` devolve a grafia do contato
+    # que existe (a mesma regra do webhook para gravar), ou a própria se não há contato.
+    from app.contatos import canonizar
+    wa_id = await canonizar(wa_id, db)
+
     # Bloco 2: com régua de NO-SHOW viva (do D0 ao D8), a mensagem é dela. Vem antes da
     # régua de confirmação porque é a mais recente da pessoa: o corte já encerrou a outra.
-    from app import noshow
-    if noshow.flag_ligada() and noshow.telefone_permitido(wa_id):
+    if noshow_ligado:
         r_ns = await noshow.reuniao_em_regua(wa_id, db)
         if r_ns is not None:
             return await noshow.inbound(r_ns, wa_id, evento_botao, content, db)
 
-    if not flag_ligada() or not telefone_permitido(wa_id):
+    if not confirmacao_ligada:
         return False
     r, cortada = await _reuniao_dona(wa_id, db)
     if r is None:
