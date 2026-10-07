@@ -250,7 +250,7 @@ async def _wa_id(reuniao: ReuniaoStatus, db: AsyncSession) -> str | None:
     wa = format_phone(reuniao.telefone_bruto or "")
     if not wa:
         return None
-    contato = await _contato_ou_criar(wa, lead_id=reuniao.lead_id, db=db)
+    contato = await _contato_ou_criar(wa, lead_id=reuniao.lead_id, db=db, nome=reuniao.nome)
     return contato.wa_id if contato is not None else None
 
 
@@ -810,7 +810,7 @@ async def lembrete_por_espelho(acao: dict, db: AsyncSession) -> bool:
         raise AcaoAdiada(prox, f"fora da janela 8h–20h30 ({agora:%H:%M})")
 
     from app.qualificacao_fluxo import _contato_ou_criar
-    contato = await _contato_ou_criar(wa, lead_id=r.lead_id, db=db)
+    contato = await _contato_ou_criar(wa, lead_id=r.lead_id, db=db, nome=r.nome)
     if contato is None:
         raise AcaoIgnorada("não foi possível resolver nem criar o contato")
     wa = contato.wa_id
@@ -1061,7 +1061,7 @@ async def remarcar(r: ReuniaoStatus, wa_id: str, db: AsyncSession, *,
     if fluxo_b.ativo_para(wa_id):
         from app.qualificacao_fluxo import reabrir_para_oferta
         if await reabrir_para_oferta(wa_id, r.lead_id, db,
-                                     agendamento_antigo=r.agendamento_id):
+                                     agendamento_antigo=r.agendamento_id, nome=r.nome):
             await _notificar(r, wa_id, TIPO_NOTIF_CONFIRMACAO, "Lead pediu para remarcar",
                              f"Reunião de {r.slot_inicio:%d/%m às %H:%M}. O agente já mandou "
                              f"os horários de hoje e amanhã por aqui. Cancele a reunião "

@@ -518,7 +518,7 @@ async def _identidade_do_lead(lead_id: int | None, db: AsyncSession) -> tuple[st
 
 
 async def _contato_ou_criar(wa_id: str, *, lead_id: int | None,
-                            db: AsyncSession) -> Contact | None:
+                            db: AsyncSession, nome: str | None = None) -> Contact | None:
     """O `Contact` para quem a abertura vai sair — CRIANDO-O se ele ainda não existe.
 
     ------------------------------------------------------------------------------------
@@ -560,6 +560,12 @@ async def _contato_ou_criar(wa_id: str, *, lead_id: int | None,
 
     Devolve None só se não houver canal — sem canal o envio não sairia de qualquer forma, e
     um Contact órfão sem `channel_id` seria lixo.
+
+    `nome` (07/10/2026): o nome que o chamador já tem, em geral `reuniao_status.nome`, que é o
+    nome da reunião na Exact. As réguas de confirmação e no-show criam contato para reunião
+    marcada pela SDR, de lead que pode ainda não estar em `exact_leads` nem em `agendamentos`;
+    sem isto o contato nascia sem nome e o card ficava com o telefone. Tem precedência quando o
+    contato nasce ou existe sem nome; na falta dele vale o nome do lead, como antes.
     """
     # CANONIZAÇÃO (b): procura nas DUAS grafias. A abertura nasce com o telefone do lead
     # (13 dígitos, via `qualificacao_gatilho.wa_id_de`) e o inbound dessa pessoa chega com
@@ -571,7 +577,9 @@ async def _contato_ou_criar(wa_id: str, *, lead_id: int | None,
         # criado por outro caminho (disparo em massa, inbound de perfil sem nome) mantém o
         # nome vazio para sempre, e o `{{1}}` vazio faz a Meta recusar a abertura inteira.
         if not (achado.name or "").strip():
-            nome_do_lead, _ = await _identidade_do_lead(lead_id, db)
+            nome_do_lead = (nome or "").strip()
+            if not nome_do_lead:
+                nome_do_lead, _ = await _identidade_do_lead(lead_id, db)
             if nome_do_lead:
                 achado.name = nome_do_lead
                 print(f"👤 Agente: nome de {wa_id} preenchido do lead ({nome_do_lead})")
@@ -588,7 +596,8 @@ async def _contato_ou_criar(wa_id: str, *, lead_id: int | None,
     if channel_id is None:
         return None
 
-    nome, sdr_name = await _identidade_do_lead(lead_id, db)
+    nome_do_lead, sdr_name = await _identidade_do_lead(lead_id, db)
+    nome = (nome or "").strip() or nome_do_lead
     contato = Contact(
         wa_id=wa_id,
         name=nome or None,
@@ -2169,7 +2178,7 @@ async def lembrete_reuniao(acao: dict, db: AsyncSession) -> None:
     # tinha reunião marcada e não recebeu o lembrete. Mesmo caminho da abertura
     # (`_contato_ou_criar`: `ai_active=False`, canal da config, dono pelo SDR do lead), e a
     # mesma regra S5-2: se o contato existe na OUTRA grafia, o envio segue nela.
-    contato = await _contato_ou_criar(wa_id, lead_id=reuniao.lead_id, db=db)
+    contato = await _contato_ou_criar(wa_id, lead_id=reuniao.lead_id, db=db, nome=reuniao.nome)
     if contato is None:
         raise AcaoIgnorada("não foi possível resolver nem criar o contato "
                            "(sem canal configurado?)")
@@ -2917,7 +2926,8 @@ async def reativ_b_d1(acao: dict, db: AsyncSession) -> None:
 # ==========================================================================================
 
 async def reabrir_para_oferta(wa_id: str, lead_id: int | None, db: AsyncSession, *,
-                              agendamento_antigo: int | None = None) -> bool:
+                              agendamento_antigo: int | None = None,
+                              nome: str | None = None) -> bool:
     """O lead clicou "Preciso remarcar" / "Escolher horário" / "Reagendar": o agente oferece
     hoje e amanhã e agenda pelo mesmo caminho do Fluxo B. True se a oferta foi feita (o
     chamador então NÃO manda a resposta fixa); False se nem tentou (a resposta fixa sai).
@@ -2947,7 +2957,7 @@ async def reabrir_para_oferta(wa_id: str, lead_id: int | None, db: AsyncSession,
     """
     try:
         async with db.begin_nested():
-            return await _reabrir(wa_id, lead_id, agendamento_antigo, db)
+            return await _reabrir(wa_id, lead_id, agendamento_antigo, db, nome=nome)
     except Exception as e:
         print(f"⚠️  Agente: remarcação de {wa_id} não reabriu o agente "
               f"({type(e).__name__}: {e}) — segue a resposta fixa")
@@ -2955,7 +2965,7 @@ async def reabrir_para_oferta(wa_id: str, lead_id: int | None, db: AsyncSession,
 
 
 async def _reabrir(wa_id: str, lead_id: int | None, agendamento_antigo: int | None,
-                   db: AsyncSession) -> bool:
+                   db: AsyncSession, *, nome: str | None = None) -> bool:
     from app.models import ORIGEM_EXACT
 
     config = await guard._carregar_config(db)
@@ -2970,7 +2980,7 @@ async def _reabrir(wa_id: str, lead_id: int | None, agendamento_antigo: int | No
     agora = _agora_sp()
     estado = await estado_de(wa_id, db)
     if estado is None:
-        contato = await _contato_ou_criar(wa_id, lead_id=lead_id, db=db)
+        contato = await _contato_ou_criar(wa_id, lead_id=lead_id, db=db, nome=nome)
         if contato is None:
             return False
         estado = NatQualificacaoState(contact_wa_id=contato.wa_id, exact_lead_id=lead_id,
