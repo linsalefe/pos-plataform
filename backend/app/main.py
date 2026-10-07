@@ -385,6 +385,15 @@ async def lifespan(app: FastAPI):
     # estado ativo novo, e a fila vazia custa um SELECT indexado a cada 15 min.
     from app.agente_parado import agente_parado_job, ESPERA_MINIMA as PARADO_ESPERA
     agente_parado_task = asyncio.create_task(agente_parado_job())
+    # Espelho das reuniões da Exact em `reuniao_status` (Bloco 0, 07/10). Sobe SEMPRE; com
+    # REUNIAO_SYNC_ENABLED != true ele só loga uma linha por ciclo e não lê a Exact. O primeiro
+    # ciclo sai 120 s depois do boot para não coincidir com o `sync_job` de leads (cota da
+    # Exact é do token). Ver app/reuniao_sync.py.
+    from app.reuniao_sync import reuniao_sync_job, flag_ligada as _reuniao_sync_ligado
+    reuniao_sync_task = asyncio.create_task(reuniao_sync_job())
+    print(f"{'✅' if _reuniao_sync_ligado() else 'ℹ️ '} Espelho de reuniões da Exact: "
+          f"{'LIGADO' if _reuniao_sync_ligado() else 'DESLIGADO'} (a cada 10 min, "
+          f"1º ciclo em 2 min)")
     # Valida as consultoras contra GET /Sellers. Em TAREFA de fundo, não bloqueando o boot:
     # o backend serve o Hub, o webhook da Meta e a NAT, e nenhum deles pode esperar o CRM
     # responder para o processo subir. A função nunca levanta — ver consultoras.py.
@@ -428,6 +437,7 @@ async def lifespan(app: FastAPI):
     follow_estagio_task.cancel()
     delivery_health_task.cancel()
     agente_parado_task.cancel()
+    reuniao_sync_task.cancel()
     faxina_task.cancel()
     consultoras_task.cancel()
 

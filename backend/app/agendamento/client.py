@@ -21,6 +21,8 @@ Não tem retentativa. Um `BoxesAdd` repetido depois de timeout pode criar DOIS b
 primeiro pode ter chegado), e box sobrando na agenda de uma consultora é pior que uma falha
 visível na LP. Quem decide repetir é o visitante, clicando de novo.
 """
+from datetime import datetime
+
 import httpx
 
 from app.agendamento.horarios import para_exact
@@ -248,6 +250,40 @@ async def meeting_por_lead(lead_id: int) -> dict | None:
     resp = await _req("GET", "/Meetings", params={"$filter": f"lead/id eq {lead_id}"})
     valores = resp.json().get("value", [])
     return valores[0] if valores else None
+
+
+async def listar_meetings(*, register_date_ge: datetime | None = None,
+                          start_time_ge: datetime | None = None,
+                          top: int = 500) -> list[dict]:
+    """`GET /Meetings` com `$filter` OBRIGATÓRIO (FINDINGS §5). Exatamente um dos dois filtros.
+
+    Os dois formatos são os medidos no RECON_CONFIRMACAO_NOSHOW_20261007 §5.2, e são
+    DIFERENTES de propósito, porque os campos têm tipos diferentes na Exact:
+
+        registerDate ge 2026-09-07T00:00:00Z   DateTimeOffset, SEM aspas, UTC de verdade
+        startTime ge '2026-09-07'              String (hora de parede), COM aspas — data sem
+                                               aspas dá 400 (RECON_CONSULTORAS §2.1)
+
+    `register_date_ge` é UTC naive (é o cursor). `start_time_ge` só usa a DATA: o filtro é
+    comparação de string, e `'2026-10-05'` já pega o dia inteiro.
+
+    UMA PÁGINA SÓ. Medido: 249 reuniões em 30 dias; 500 cobre com folga. Página cheia vira
+    aviso no log e NÃO é paginada (Bloco 0). Não se confia no `@odata.nextLink`: a Exact o
+    devolve até em resposta vazia (`buscar_lead_por_id`, abaixo).
+    """
+    if (register_date_ge is None) == (start_time_ge is None):
+        raise ValueError("listar_meetings exige exatamente um filtro: register_date_ge "
+                         "ou start_time_ge")
+    if register_date_ge is not None:
+        filtro = f"registerDate ge {register_date_ge:%Y-%m-%dT%H:%M:%S}Z"
+    else:
+        filtro = f"startTime ge '{start_time_ge:%Y-%m-%d}'"
+    resp = await _req("GET", "/Meetings", params={"$filter": filtro, "$top": int(top)})
+    valores = resp.json().get("value", [])
+    if len(valores) >= top:
+        print(f"⚠️ /Meetings devolveu a página cheia ({len(valores)}) para {filtro!r} — "
+              "o excedente NÃO foi lido (sem paginação no Bloco 0)")
+    return valores
 
 
 async def listar_sources() -> list[dict]:
