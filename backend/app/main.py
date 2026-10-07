@@ -391,6 +391,18 @@ async def lifespan(app: FastAPI):
     # Exact é do token). Ver app/reuniao_sync.py.
     from app.reuniao_sync import reuniao_sync_job, flag_ligada as _reuniao_sync_ligado
     reuniao_sync_task = asyncio.create_task(reuniao_sync_job())
+    # Régua de confirmação (Bloco 1): uma linha de boot com o estado das flags e o que ela vai
+    # usar de cada consultora. O telefone vai no `nat_a_30min`; sem ele, o T-30 cai no template
+    # antigo. É a prova no journald de que o consultoras.json carregou (é lido uma vez por boot).
+    from app import confirmacao as _confirmacao
+    from app.agendamento import consultoras as _equipe
+    _lista = sorted(_confirmacao.allowlist())
+    print(f"{'✅' if _confirmacao.flag_ligada() else 'ℹ️ '} Régua de confirmação: "
+          f"{'LIGADA' if _confirmacao.flag_ligada() else 'DESLIGADA'}"
+          f"{f' (só {len(_lista)} telefone(s) de teste)' if _lista else ''} — "
+          + "; ".join(f"{c.nome_exibicao}: telefone {c.telefone or 'NÃO CADASTRADO'}, "
+                      f"usuário Hub {c.user_id_hub or 'não mapeado'}"
+                      for c in _equipe.consultoras()))
     print(f"{'✅' if _reuniao_sync_ligado() else 'ℹ️ '} Espelho de reuniões da Exact: "
           f"{'LIGADO' if _reuniao_sync_ligado() else 'DESLIGADO'} (a cada 10 min, "
           f"1º ciclo em 2 min)")
