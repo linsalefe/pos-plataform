@@ -101,7 +101,8 @@ async def send_nat_message(contact_wa_id: str, etapa: str, db: AsyncSession, *,
 
 async def enviar_nat(contact_wa_id: str, etapa: str, db: AsyncSession, *,
                      guard=None, corpo_livre: str | None = None,
-                     parametros: list | None = None, **vars) -> tuple[bool, str]:
+                     parametros: list | None = None, url_suffixes: list | None = None,
+                     **vars) -> tuple[bool, str]:
     """Envia a mensagem da NAT correspondente a `etapa`. `(saiu, motivo)`.
 
     ------------------------------------------------------------------------------------
@@ -229,7 +230,10 @@ async def enviar_nat(contact_wa_id: str, etapa: str, db: AsyncSession, *,
                 to=contact_wa_id, template_name=etapa, language=nat_copy.IDIOMA,
                 phone_number_id=canal.phone_number_id, token=canal.whatsapp_token,
                 parameters=parametros or None,
-                button_payloads=nat_copy.payloads_dos_botoes(etapa))
+                button_payloads=nat_copy.payloads_dos_botoes(etapa),
+                # 07/10: sufixo do botão URL dinâmico (nat_a_ementa). Só no ramo do template:
+                # com a janela aberta o link vai dentro do `corpo_livre`, que é texto.
+                url_suffixes=url_suffixes)
             tipo_msg = "template"
 
         if "messages" not in resultado:

@@ -64,10 +64,19 @@ ETAPA_ABERTURA_SEM_FORMACAO = "nat_abertura_sem_formacao"
 ETAPA_LEMBRETE_REUNIAO = "nat_lembrete_reuniao"
 ETAPA_CONVERSA = "qualif_conversa"
 
+# Os templates da régua de confirmação (Bloco 1, 07/10) entram aqui para o TETO POR HORA
+# contar tudo o que sai do número em nome da NAT: o teto é uma régua de reputação do número,
+# não de um fluxo. `confirm_a_resposta` é o texto fixo que responde a um clique.
+ETAPAS_REGUA_CONFIRMACAO = (
+    "nat_a_confirmacao", "nat_a_ementa", "nat_a_beneficio", "nat_a_pedido_confirmacao",
+    "nat_a_ultimo_aviso", "nat_a_30min", "nat_ns_d0_corte", "confirm_a_resposta",
+    "confirm_a_duvida",
+)
+
 ETAPAS_DE_ENVIO_DO_AGENTE = (
     ETAPA_ABERTURA_AGENDADO, ETAPA_ABERTURA_QUALIFICACAO, ETAPA_ABERTURA_SEM_FORMACAO,
     ETAPA_LEMBRETE_REUNIAO, ETAPA_CONVERSA,
-)
+) + ETAPAS_REGUA_CONFIRMACAO
 
 ABERTURAS = frozenset({ETAPA_ABERTURA_AGENDADO, ETAPA_ABERTURA_QUALIFICACAO,
                        ETAPA_ABERTURA_SEM_FORMACAO})

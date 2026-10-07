@@ -250,6 +250,21 @@ async def _silenciar_agente_apos_envio_manual(wa_id: str, quem, db: AsyncSession
         print(f"⚠️  Falha ao silenciar o agente em {wa_id} depois de envio manual "
               f"({type(e).__name__}: {e}). O agente segue ativo.")
 
+    # Bloco 1 (07/10): o SDR que escreve também encerra a régua de CONFIRMAÇÃO da pessoa,
+    # corte incluído (decisão 10: qualquer ação do SDR encerra a automação). SÓ COM HUMANO
+    # LOGADO: o `bulk_send_template` chamado pelo JOB do follow por estágio também passa por
+    # aqui, sem `User`, e um follow automático não é "o SDR assumiu" (mesmo critério de
+    # `autoria.quem_enviou`).
+    from app.models import User
+    if isinstance(quem, User):
+        try:
+            async with db.begin_nested():
+                from app.confirmacao import cancelar_regua_da_pessoa
+                await cancelar_regua_da_pessoa(wa_id, "sdr_assumiu", db)
+        except Exception as e:
+            print(f"⚠️  Régua de confirmação de {wa_id} não cancelada depois de envio manual "
+                  f"({type(e).__name__}: {e})")
+
 
 @router.post("/send/text")
 async def send_text(req: SendTextRequest, db: AsyncSession = Depends(get_db),

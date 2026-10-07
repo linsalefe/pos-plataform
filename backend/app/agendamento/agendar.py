@@ -571,6 +571,21 @@ async def _gatilho_do_agente(db: AsyncSession, ag: Agendamento) -> None:
         except Exception as e:
             print(f"⚠️ agendamento #{ag.id}: lembrete não agendado "
                   f"({type(e).__name__}: {e})")
+        # Bloco 1 (07/10): a régua de confirmação nasce AQUI para o site e o agente, na hora
+        # (a confirmação imediata sai no ciclo seguinte do scheduler, < 1 min). Precisa da
+        # linha em reuniao_status, que o sync só criaria em até 10 min: espelha agora, se o
+        # meeting_id já veio. Sem meeting_id, o reuniao_sync arma no próximo ciclo.
+        # `armar` devolve 0 com a flag desligada, sem tocar em nada.
+        try:
+            async with db.begin_nested():
+                from app.confirmacao import armar
+                from app.reuniao_sync import espelhar_agendamento
+                espelho = await espelhar_agendamento(ag, db)
+                if espelho is not None:
+                    enfileirou = (await armar(espelho, db)) > 0 or enfileirou
+        except Exception as e:
+            print(f"⚠️ agendamento #{ag.id}: régua de confirmação não armada "
+                  f"({type(e).__name__}: {e})")
 
     if not enfileirou:
         return

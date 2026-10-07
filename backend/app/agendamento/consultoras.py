@@ -66,6 +66,11 @@ class Consultora:
     email: str
     nome_exibicao: str
     grade: Grade
+    # Bloco 1 (07/10): o telefone de onde a consultora liga (vai no `nat_a_30min`, "vai entrar
+    # em contato pelo número {{3}}") e o usuário dela no Hub (para a notificação do corte).
+    # Opcionais: sem eles o T-30 cai no template antigo e a notificação vai ao dono do contato.
+    telefone: str = ""
+    user_id_hub: int | None = None
 
 
 def _cfg_bruta() -> list[dict] | None:
@@ -106,7 +111,10 @@ def _montar(dados: list[dict]) -> list[Consultora]:
             cfg.update(item.get("grade") or {})
             # O email da consultora manda. Ver o cabeçalho.
             cfg["sales_rep_email"] = email
-            saida.append(Consultora(email=email, nome_exibicao=nome, grade=Grade(cfg)))
+            uid = item.get("user_id_hub")
+            saida.append(Consultora(email=email, nome_exibicao=nome, grade=Grade(cfg),
+                                    telefone=str(item.get("telefone") or "").strip(),
+                                    user_id_hub=int(uid) if uid not in (None, "") else None))
         except (KeyError, TypeError, ValueError) as e:
             print(f"⚠️ agendamento: consultora #{i} ignorada, config inválida ({e})")
     return saida

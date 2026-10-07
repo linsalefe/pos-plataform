@@ -363,3 +363,80 @@ def _uso(resposta) -> str:
     saida = getattr(u, "completion_tokens", "?")
     return (f"tokens={getattr(u, 'prompt_tokens', '?')}/{saida}"
             f"{f'(racio {racio})' if racio is not None else ''}/teto {MAX_TOKENS}")
+
+
+# ==========================================================================================
+# DÚVIDA SIMPLES NA RÉGUA DE CONFIRMAÇÃO (Bloco 1, 07/10/2026)
+# ==========================================================================================
+# Spec da Isa (pág. 7): "Dúvida simples (duração, quem liga, se é por vídeo): responde e pede
+# a confirmação de novo. Qualquer outra resposta (objeção, preço, áudio): pausa e avisa o SDR."
+#
+# O MODELO NÃO DECIDE FLUXO. Ele só classifica e redige UMA frase com os FATOS abaixo. Quem
+# decide o que acontece é `confirmacao.inbound`, e o caminho padrão é humano: falha de rede,
+# JSON torto, tipo desconhecido, resposta vazia ou longa demais, tudo vira None, e None pausa.
+FATOS_DA_REUNIAO = (
+    "- É uma ligação rápida, de cerca de 15 minutos.\n"
+    "- Quem liga é a consultora indicada, pelo WhatsApp, no horário marcado.\n"
+    "- É ligação de voz, NÃO é videochamada; não precisa de câmera nem de link.\n"
+    "- A conversa é gratuita e não tem compromisso.\n")
+
+PROMPT_DUVIDA = """Você classifica a mensagem de uma pessoa que tem uma reunião marcada com a \
+consultora do CENAT ({quando}, com {consultora}).
+
+FATOS (os únicos que você pode afirmar):
+{fatos}
+É "duvida_simples" APENAS uma pergunta respondida INTEIRAMENTE pelos fatos acima: duração, \
+quem liga, se é por vídeo, se é gratuita. Qualquer outra coisa é "outro": preço da pós, \
+parcelamento, bolsa, desconto, objeção, pedido de remarcação, reclamação, conteúdo do curso, \
+qualquer dúvida que os fatos não respondam, ou mensagem que não seja pergunta.
+
+Devolva SÓ um JSON: {{"tipo": "duvida_simples" | "outro", "resposta": "<uma frase>"}}.
+Se "duvida_simples", "resposta" é UMA frase curta, em português, respondendo com os fatos, sem \
+pergunta, sem emoji. Se "outro", "resposta" é "".
+"""
+
+TIPOS_DUVIDA = frozenset({"duvida_simples", "outro"})
+MAX_RESPOSTA_DUVIDA = 300
+
+
+def _validar_duvida(bruto) -> dict | None:
+    try:
+        d = json.loads(bruto or "")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(d, dict) or d.get("tipo") not in TIPOS_DUVIDA:
+        return None
+    resposta = d.get("resposta")
+    if d["tipo"] == "outro":
+        return {"tipo": "outro", "resposta": ""}
+    if not isinstance(resposta, str) or not resposta.strip():
+        return None
+    resposta = " ".join(resposta.split())
+    if len(resposta) > MAX_RESPOSTA_DUVIDA or "?" in resposta:
+        return None
+    return {"tipo": "duvida_simples", "resposta": resposta}
+
+
+async def classificar_duvida(texto: str, *, quando: str, consultora: str,
+                             rotulo: str = "?") -> dict | None:
+    """`{"tipo", "resposta"}` ou None. UMA tentativa: aqui o fallback (humano) é o desfecho
+    seguro, e repetir só atrasaria a pausa."""
+    mensagens = [{"role": "system", "content": PROMPT_DUVIDA.format(
+                     quando=quando, consultora=consultora or "a consultora",
+                     fatos=FATOS_DA_REUNIAO)},
+                 {"role": "user", "content": (texto or "")[:1000]}]
+    marca = time.monotonic()
+    try:
+        extra = {"reasoning_effort": "minimal"} if MODELO.startswith("gpt-5") else {}
+        resposta = await _obter_cliente().chat.completions.create(
+            model=MODELO, messages=mensagens, max_completion_tokens=300,
+            response_format={"type": "json_object"}, **extra)
+        bruto = resposta.choices[0].message.content
+        validado = _validar_duvida(bruto)
+        log.info("🧠 LLM dúvida %s | %s | %dms | cru=%r", rotulo,
+                 validado["tipo"] if validado else "FORA DO CONTRATO",
+                 int((time.monotonic() - marca) * 1000), (bruto or "")[:200])
+        return validado
+    except Exception as e:
+        log.warning("⚠️  LLM dúvida %s ERRO | %s: %s", rotulo, type(e).__name__, e)
+        return None

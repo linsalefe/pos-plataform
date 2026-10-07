@@ -758,9 +758,17 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 # o caminho de sempre.
                 try:
                     async with db.begin_nested():
+                        # Bloco 1 (07/10): a RÉGUA DE CONFIRMAÇÃO vem antes do agente. Quem tem
+                        # reunião Vigente com régua viva (ou corte há < 24h, para os botões do
+                        # D0) é dela. Com CONFIRMACAO_ENABLED desligado devolve False sem tocar
+                        # no banco, e o caminho abaixo é o de sempre.
+                        from app.confirmacao import inbound as inbound_confirmacao
+                        dono_regua = await inbound_confirmacao(
+                            msg["from"], evento_botao, content, db)
+
                         from app.qualificacao_fluxo import (
                             processar_texto as processar_texto_agente)
-                        dono_agente = await processar_texto_agente(
+                        dono_agente = dono_regua or await processar_texto_agente(
                             msg["from"], content, wa_message_id, db)
 
                         if not dono_agente:
