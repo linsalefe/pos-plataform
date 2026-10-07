@@ -82,3 +82,23 @@ Tráfego real depois do deploy (15:01 UTC): os 3 navegadores do time com 200 em 
    `blob:`, o que dá mais trabalho no frontend.
 4. **Kanban IA e `/api/ai`** são do motor de IA antigo, que está desligado. Agora estão protegidos,
    mas candidatos a sair do código.
+
+## Adendo: checagem de dono em `GET /contacts/{id}/messages` (07/10, mesmo dia)
+
+Era o risco 2 da lista acima. Agora vale a mesma regra de `GET /contacts`: admin vê qualquer
+conversa; quem não é admin só abre a conversa atribuída a ele (`contacts.assigned_to`, em qualquer
+das duas grafias do telefone). Fora disso, **403** "Esta conversa não está atribuída a você."
+(`routes._e_dono_ou_admin`).
+
+Hoje só o user 8 (`atendente`, 107 contatos atribuídos) não é admin; os outros 7 usuários são
+admin e não mudam nada.
+
+```
+atendente (8) -> contato dele 200 · de outro dono 403 · sem dono 403
+admin (1)     -> contato do 8 200 · de outro dono 200 · sem dono 200
+sem token     -> 401
+```
+
+Continuam sem checagem de dono, e são candidatas ao mesmo tratamento: `GET /contacts/{wa_id}`,
+`PATCH /contacts/{wa_id}`, as tags, `POST /contacts/{wa_id}/read`, `/nat/{wa_id}/*` e
+`/media/{id}` (que vem por `media_id`, não por contato).

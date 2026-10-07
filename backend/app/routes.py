@@ -697,8 +697,24 @@ async def mark_as_read(wa_id: str, db: AsyncSession = Depends(get_db)):
     return {"status": "ok"}
 
 
+async def _e_dono_ou_admin(wa_id: str, user: User, db: AsyncSession) -> bool:
+    """Admin vê qualquer conversa; os demais, só a atribuída a eles (07/10/2026).
+
+    A MESMA regra de `GET /contacts`, que para quem não é admin lista só `assigned_to = user`.
+    Sem isto a lista escondia a conversa e a URL a entregava. Confere as duas grafias do
+    telefone, porque o dono pode estar registrado só numa delas (92 dos 406 pares).
+    """
+    if user.role == "admin":
+        return True
+    from app.telefone import variantes_wa_id
+    vs = variantes_wa_id(wa_id) or (wa_id,)
+    return bool((await db.execute(select(func.count()).select_from(Contact).where(
+        Contact.wa_id.in_(vs), Contact.assigned_to == user.id))).scalar())
+
+
 @router.get("/contacts/{wa_id}/messages", dependencies=[Depends(get_current_user)])
-async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db)):
+async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db),
+                       current_user: User = Depends(get_current_user)):
     """A conversa INTEIRA deste humano — as duas grafias do telefone, mescladas por timestamp.
 
     Era `== wa_id`, e é por isso que o SDR via meia conversa: a pessoa escreve na grafia de 12
@@ -709,6 +725,9 @@ async def get_messages(wa_id: str, db: AsyncSession = Depends(get_db)):
     `nat_sender.janela_aberta` e `qualificacao_fluxo.estado_de`. Nada é escrito aqui.
     """
     from app.telefone import variantes_wa_id
+
+    if not await _e_dono_ou_admin(wa_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Esta conversa não está atribuída a você.")
 
     vs = variantes_wa_id(wa_id) or (wa_id,)
     result = await db.execute(
