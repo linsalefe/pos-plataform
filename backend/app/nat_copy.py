@@ -221,3 +221,109 @@ def texto_livre(chave: str, *, nome: str = "", curso: str = "", formacao: str = 
 TEXTO_RECUSA_LIGACAO = ("Entendi, sem ligação então. 🙂 Vou pedir para uma consultora te "
                         "chamar por aqui, por mensagem, para combinar o melhor jeito de "
                         "seguir. Em breve ela fala com você.")
+
+
+# ==========================================================================================
+# FLUXO A (CONFIRMAÇÃO DE REUNIÃO) E D0 DO NO-SHOW — SUBMETIDOS À META EM 07/10/2026
+# ==========================================================================================
+# Texto da spec da Isa ("IA de Confirmação e No-show", 28/09, seção "Textos", págs. 7 e 8),
+# com os ajustes listados em SPRINT_TEMPLATES_FLUXO_A_20261007_REPORT.md. É a FONTE do texto:
+# `submit_templates_fluxo_a.py` monta os templates a partir daqui, então o que está aqui é,
+# por construção, o que foi submetido.
+#
+# AINDA NÃO HÁ ENVIO USANDO ISTO. Entra no Bloco 1.
+#
+# POR QUE NÃO ESTÁ EM `CORPO_APROVADO`: aquele dicionário é o que o teste de drift
+# (`test_nat_flow.py`, caso 13) confere contra a Meta exigindo `APPROVED`, e estes nascem
+# `PENDING`. Colocá-los lá agora quebraria o drift por um motivo que não é drift. Quando a Meta
+# aprovar, o Bloco 1 os promove para `CORPO_APROVADO` (e os botões para `BOTOES_APROVADOS`).
+NAT_A_CONFIRMACAO = "nat_a_confirmacao"
+NAT_A_EMENTA = "nat_a_ementa"
+NAT_A_BENEFICIO = "nat_a_beneficio"
+NAT_A_PEDIDO_CONFIRMACAO = "nat_a_pedido_confirmacao"
+NAT_A_ULTIMO_AVISO = "nat_a_ultimo_aviso"
+NAT_A_30MIN = "nat_a_30min"
+NAT_NS_D0_CORTE = "nat_ns_d0_corte"
+
+# Payload por MENSAGEM, não por intenção (ver o cabeçalho deste módulo): o "Confirmo" da
+# confirmação imediata, do pedido e do último aviso são três cliques diferentes, e o fluxo
+# precisa saber de qual mensagem cada um veio.
+A_CONF_SIM = "A_CONF_SIM"
+A_CONF_REMARCAR = "A_CONF_REMARCAR"
+A_PED_SIM = "A_PED_SIM"
+A_PED_REMARCAR = "A_PED_REMARCAR"
+A_PED_NAO = "A_PED_NAO"
+A_ULT_SIM = "A_ULT_SIM"
+A_ULT_REMARCAR = "A_ULT_REMARCAR"
+NS_D0_AGORA = "NS_D0_AGORA"
+NS_D0_HORARIO = "NS_D0_HORARIO"
+
+CORPO_SUBMETIDO_FLUXO_A = {
+    # {{1}} nome · {{2}} pós · {{3}} "quinta-feira, 09/10" · {{4}} hora · {{5}} consultora
+    NAT_A_CONFIRMACAO: (
+        "Olá, {{1}}! Sua reunião do processo seletivo da Pós em {{2}} está agendada para "
+        "{{3}}, às {{4}}. É uma ligação rápida, de cerca de 15 minutos, com a consultora "
+        "{{5}}, para tirar suas dúvidas e ver se a pós faz sentido para você.\n\n"
+        "Participando no horário combinado, você garante a isenção da taxa de matrícula e um "
+        "e-book exclusivo CENAT."
+    ),
+    # {{1}} nome · {{2}} pós · {{3}} dia · {{4}} hora; link no botão URL (sufixo dinâmico).
+    # "Até lá!" no fim: a 1ª submissão terminava em "às {{4}}!" e a Meta recusou (07/10,
+    # subcode 2388299, variável no fim; a pontuação não conta). Final escolhido pelo Álefe.
+    NAT_A_EMENTA: (
+        "Oi, {{1}}! Enquanto sua reunião não chega, separei a ementa da Pós em {{2}} para "
+        "você conhecer melhor o curso. É só tocar no botão abaixo. Nos falamos {{3}}, às "
+        "{{4}}. Até lá!"
+    ),
+    # {{1}} nome
+    NAT_A_BENEFICIO: (
+        "Oi, {{1}}! Esqueci de te avisar: participando da reunião com a consultora no horário "
+        "combinado, você garante a isenção da matrícula + um e-book exclusivo CENAT!"
+    ),
+    # {{1}} nome · {{2}} consultora · {{3}} "hoje"/"amanhã" · {{4}} hora
+    NAT_A_PEDIDO_CONFIRMACAO: (
+        "Oi, {{1}}! Sua ligação com a consultora {{2}} é {{3}}, às {{4}}. Nossa agenda está "
+        "bem disputada e, sem confirmação, o horário é liberado para outro candidato. Você "
+        "confirma?"
+    ),
+    # {{1}} nome · {{2}} hora da reunião · {{3}} hora do corte
+    NAT_A_ULTIMO_AVISO: (
+        "Oi, {{1}}! Ainda não recebemos sua confirmação para a ligação de hoje, às {{2}}. Se "
+        "não confirmar até as {{3}}, vamos liberar seu horário para outro candidato."
+    ),
+    # {{1}} nome · {{2}} consultora · {{3}} telefone da consultora
+    NAT_A_30MIN: (
+        "Oi, {{1}}! Aqui é do CENAT. Daqui a 30 minutos a consultora {{2}} vai entrar em "
+        "contato pelo número {{3}}. Fique de olho, porque o DDD pode ser diferente do seu. "
+        "Até já!"
+    ),
+    # {{1}} nome
+    NAT_NS_D0_CORTE: (
+        "Oi, {{1}}. Como não recebemos sua confirmação, liberamos seu horário para outro "
+        "candidato. Ainda quer participar do processo seletivo?"
+    ),
+}
+
+# Quick replies, na ordem submetida (= índice do botão no envio), com o payload de cada um.
+# Todos os rótulos têm até 20 caracteres, então servem também como título de botão livre
+# (interactive) quando a janela de 24h estiver aberta.
+BOTOES_FLUXO_A = {
+    NAT_A_CONFIRMACAO: [
+        {"payload": A_CONF_SIM, "titulo": "Confirmo"},
+        {"payload": A_CONF_REMARCAR, "titulo": "Preciso remarcar"},
+    ],
+    NAT_A_PEDIDO_CONFIRMACAO: [
+        {"payload": A_PED_SIM, "titulo": "Confirmo"},
+        {"payload": A_PED_REMARCAR, "titulo": "Preciso remarcar"},
+        {"payload": A_PED_NAO, "titulo": "Não vou conseguir"},
+    ],
+    NAT_A_ULTIMO_AVISO: [
+        {"payload": A_ULT_SIM, "titulo": "Confirmo"},
+        {"payload": A_ULT_REMARCAR, "titulo": "Preciso remarcar"},
+    ],
+    # "Escolher novo horário" da spec tem 21 caracteres: encurtado.
+    NAT_NS_D0_CORTE: [
+        {"payload": NS_D0_AGORA, "titulo": "Posso falar agora"},
+        {"payload": NS_D0_HORARIO, "titulo": "Escolher horário"},
+    ],
+}
