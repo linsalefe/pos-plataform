@@ -408,6 +408,12 @@ async def lifespan(app: FastAPI):
     print(f"{'✅' if _noshow.flag_ligada() else 'ℹ️ '} Régua de no-show (D0 a D8): "
           f"{'LIGADA' if _noshow.flag_ligada() else 'DESLIGADA'}"
           f"{f' (só {len(_lista_ns)} telefone(s) de teste)' if _lista_ns else ''}")
+    from app import fluxo_b as _fluxo_b
+    _lista_b = sorted(_fluxo_b.allowlist())
+    print(f"{'✅' if _fluxo_b.flag_ligada() else 'ℹ️ '} Fluxo B enxuto (uma pergunta, "
+          f"reativações, remarcar pelos botões): "
+          f"{'LIGADO' if _fluxo_b.flag_ligada() else 'DESLIGADO'}"
+          f"{f' (só {len(_lista_b)} telefone(s) de teste)' if _lista_b else ''}")
     print(f"{'✅' if _reuniao_sync_ligado() else 'ℹ️ '} Espelho de reuniões da Exact: "
           f"{'LIGADO' if _reuniao_sync_ligado() else 'DESLIGADO'} (a cada 10 min, "
           f"1º ciclo em 2 min)")

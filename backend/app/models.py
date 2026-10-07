@@ -565,6 +565,17 @@ KINDS_NOSHOW = (KIND_NOSHOW_D0_1H, KIND_NOSHOW_D0_8H, KIND_NOSHOW_D1, KIND_NOSHO
                 KIND_NOSHOW_D3, KIND_NOSHOW_D5, KIND_NOSHOW_D7, KIND_NOSHOW_D8)
 TIPO_NOTIF_SEMINARIO = "seminario_quero"
 
+# Reativações do FLUXO B enxuto (Bloco 3, 07/10): +30 min, +2h, +4h e D+1 às 9h depois de
+# cada pergunta do agente. Um kind por degrau, pela mesma razão do índice único parcial (um
+# kind com o degrau no payload faria o +2h apagar o +30 min). Ver app/qualificacao_fluxo.py.
+KIND_REATIV_B_30M = "reativ_b_30m"
+KIND_REATIV_B_2H = "reativ_b_2h"
+KIND_REATIV_B_4H = "reativ_b_4h"
+KIND_REATIV_B_D1 = "reativ_b_d1"
+KINDS_REATIV_B = (KIND_REATIV_B_30M, KIND_REATIV_B_2H, KIND_REATIV_B_4H, KIND_REATIV_B_D1)
+# O lead prefere ligação (spec da Isa, Fluxo B): aviso ao SDR na hora. Sem migração.
+TIPO_NOTIF_PREFERE_LIGACAO = "prefere_ligacao"
+
 # Quantas vezes uma ação é tentada antes de virar `falhou` e sair do loop de retry.
 MAX_TENTATIVAS_ACAO = 3
 
