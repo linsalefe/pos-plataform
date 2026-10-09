@@ -576,7 +576,23 @@ async def _contato_ou_criar(wa_id: str, *, lead_id: int | None,
         # faz no passo 7 (`if not contact.name: contact.name = name`). Sem isto, um contato
         # criado por outro caminho (disparo em massa, inbound de perfil sem nome) mantém o
         # nome vazio para sempre, e o `{{1}}` vazio faz a Meta recusar a abertura inteira.
+        #
+        # SKIP LOCKED (09/10/2026): o nome é cosmético, e quem segura a linha é quase sempre
+        # o webhook DESTA MESMA pessoa (`main.py`, `contact.name = name`), que está esperando
+        # a gente terminar. Em 07/10 18:29 a Shirley (5512981952632) escolheu horário: o
+        # `_agendar` abriu a sessão própria do `agendar`, ela caiu aqui, e o UPDATE do nome
+        # esperou o lock do webhook — que esperava o `agendar`. O Postgres não enxerga esse
+        # ciclo (está no Python), então ninguém morreu: a transação ficou aberta 47h e foi
+        # prendendo tudo que tocava o contato até o pool esgotar e o LOGIN cair (09/10).
+        # Linha travada por outro = não preenche agora; o próximo caminho preenche.
         if not (achado.name or "").strip():
+            livre = (await db.execute(
+                select(Contact.id).where(Contact.id == achado.id)
+                .with_for_update(skip_locked=True))).scalar_one_or_none()
+            if livre is None:
+                print(f"👤 Agente: nome de {wa_id} NÃO preenchido — linha travada por outra "
+                      f"transação")
+                return achado
             nome_do_lead = (nome or "").strip()
             if not nome_do_lead:
                 nome_do_lead, _ = await _identidade_do_lead(lead_id, db)
