@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models import KnowledgeDocument, AIConfig, Message, AIConversationSummary, ExactLead
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=60.0)  # sem teto, segurava transação ociosa sem limite (09/10)
 
 DEFAULT_MODEL = "gpt-5-mini"
 EMBEDDING_MODEL = "text-embedding-3-small"

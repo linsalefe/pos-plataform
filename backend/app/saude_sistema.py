@@ -72,14 +72,16 @@ def _capacidade() -> int:
 
 
 async def _checar_pool() -> dict:
-    """Tira uma conexão do pool e roda SELECT 1. Devolve também o lock_timeout da sessão."""
+    """Tira uma conexão do pool e roda SELECT 1. Devolve também o lock_timeout e o
+    idle_in_transaction_session_timeout da sessão (este vem do ALTER ROLE, não do connect_args)."""
     inicio = time.monotonic()
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
             lock_timeout = (await conn.execute(text("SHOW lock_timeout"))).scalar()
+            idle_tx = (await conn.execute(text("SHOW idle_in_transaction_session_timeout"))).scalar()
         return {"ok": True, "ms": round((time.monotonic() - inicio) * 1000),
-                "lock_timeout": lock_timeout}
+                "lock_timeout": lock_timeout, "idle_in_transaction_session_timeout": idle_tx}
     except Exception as e:
         return {"ok": False, "ms": round((time.monotonic() - inicio) * 1000),
                 "erro": f"{type(e).__name__}: {e}"[:200]}
