@@ -3,6 +3,7 @@
 # sem isto, todo `log.info` do projeto morre no `lastResort` do uvicorn, que corta
 # abaixo de WARNING, e a instrumentação do P0-E nunca sai do processo.
 import app.logging_config  # noqa: F401  (efeito no import é o ponto)
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, Request, Query, HTTPException, Depends
 from app.ai_engine import generate_ai_response
 from app.whatsapp import send_text_message
@@ -399,6 +400,10 @@ async def lifespan(app: FastAPI):
     # Exact é do token). Ver app/reuniao_sync.py.
     from app.reuniao_sync import reuniao_sync_job, flag_ligada as _reuniao_sync_ligado
     reuniao_sync_task = asyncio.create_task(reuniao_sync_job())
+    # Vigia da saúde do sistema (09/10, incidente do pool). Mesmo check do GET /health; no 503
+    # avisa a gestão no sino e por WhatsApp (ALERTA_TELEFONE). Ver app/saude_sistema.py.
+    from app.saude_sistema import vigia_saude_job, telefone_alerta
+    vigia_saude_task = asyncio.create_task(vigia_saude_job())
     # Régua de confirmação (Bloco 1): uma linha de boot com o estado das flags e o que ela vai
     # usar de cada consultora. O telefone vai no `nat_a_30min`; sem ele, o T-30 cai no template
     # antigo. É a prova no journald de que o consultoras.json carregou (é lido uma vez por boot).
@@ -454,6 +459,8 @@ async def lifespan(app: FastAPI):
     print(f"✅ Follow por estágio da Exact (checa a cada {FOLLOW_EST_S}s, "
           f"envio {'LIGADO' if _follow_estagio_ligado() else 'DESLIGADO'}"
           + (f", MODO DE TESTE com {len(_fe_allow)} telefone(s)" if _fe_allow else "") + ")")
+    print(f"✅ Vigia de saúde do sistema ativo (a cada 5 min, WhatsApp para "
+          f"{('…' + telefone_alerta()[-4:]) if telefone_alerta() else 'NINGUÉM — ALERTA_TELEFONE vazio'})")
     print(f"✅ Faxina de agendamento ativa (remove box nosso parado há {FAXINA_IDADE})")
     print(f"✅ Varredura de agente parado ativa (a cada 15 min, régua de "
           f"{int(PARADO_ESPERA.total_seconds() // 60)} min — só notifica)")
@@ -469,6 +476,7 @@ async def lifespan(app: FastAPI):
     delivery_health_task.cancel()
     agente_parado_task.cancel()
     reuniao_sync_task.cancel()
+    vigia_saude_task.cancel()
     faxina_task.cancel()
     consultoras_task.cancel()
 
@@ -985,4 +993,8 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
 @app.get("/health")
 async def health():
-    return {"status": "online"}
+    """503 com pool acima de 80%, pool sem conexão, transação ociosa > 5 min ou espelho de
+    reuniões parado > 30 min. Ver app/saude_sistema.py e INCIDENTE_LOGIN_POOL_20261009.md."""
+    from app.saude_sistema import verificar
+    r = await verificar()
+    return JSONResponse(r, status_code=200 if r["status"] == "online" else 503)
