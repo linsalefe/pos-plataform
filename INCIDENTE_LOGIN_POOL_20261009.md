@@ -50,3 +50,31 @@ a troca de nome pendente e o que esperava atrás dela.
 - `idle_in_transaction_session_timeout` no Postgres não foi configurado: exige conferir se algum
   job segura transação ociosa por muito tempo de propósito.
 - Não há alerta de pool esgotado: o sistema ficou 47h acumulando e só foi notado quando o login caiu.
+
+## Impacto medido (09/10, depois do restart)
+Duas janelas diferentes:
+
+**A) `reuniao_sync` parado de 07/10 18:27 a 09/10 17:30 UTC (47h).** O job ficou preso num
+`INSERT INTO reuniao_status` atrás da transação travada e não rodou mais nenhuma vez. Reunião
+marcada pelo SITE não depende dele (o `agendar` espelha e arma a régua na hora): as 9 do período
+tiveram régua. Ficou sem régua quem dependia do sync ou do agente:
+
+| Reunião | Pessoa | Horário (SP) | Quem marcou | O que faltou | Status na Exact |
+|---|---|---|---|---|---|
+| 4775777 | Shirley Aparecida (5512981952632) | 08/10 18:15 | agente (travou) | aviso de agendado, régua, lembrete | Cancelada |
+| 4777339 | Fábio Vasconcelos (5541984293059) | 09/10 13:45 | agente (travou) | aviso de agendado, régua, lembrete | Cancelada |
+| 4776066 | Catia Maria (5521995097910) | 08/10 17:50 | SDR na Exact | régua inteira | Cancelada |
+| 4776374 | Andreia Menezes (5521984612850) | 08/10 16:40 | SDR na Exact | régua inteira | Cancelada |
+| 4777388 | luciana oliveira (5534996605783) | 13/10 17:20 | SDR na Exact | régua armada atrasada (09/10 14:30) | já confirmou |
+
+Os DOIS agendamentos do agente na janela travaram (2 de 2): o contato criado pelo agente tinha
+`name` vazio, e é isso que dispara o preenchimento na segunda sessão.
+
+Depois do restart saíram reativações atrasadas para Shirley e Fábio (09/10 14:29, duas cada), que
+estavam presas no mesmo lock. O Fábio respondeu "Mas dia 9 é hoje" e o agente transferiu para humano.
+O estado da Shirley no agente segue `escolhendo_slot`.
+
+**B) Pool esgotado em 09/10, ~11h–14h28 SP.** 276 `POST /webhook` com 500. Nenhuma mensagem
+recebida entre 12h e 14h SP entrou no banco até agora; a Meta reentrega webhooks com falha por até
+7 dias, então podem chegar mais tarde. O lembrete da Solange (14h) saiu às 14h29, 1 minuto antes da
+reunião.
