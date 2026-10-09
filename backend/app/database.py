@@ -57,6 +57,12 @@ engine = create_async_engine(
     max_overflow=20,
     pool_timeout=10,
     pool_pre_ping=True,
+    # lock_timeout=30s (09/10/2026): esperar lock para sempre derrubou o sistema. Em 07/10 o
+    # webhook segurou o lock de um contato enquanto aguardava uma segunda sessão do mesmo
+    # turno que queria o mesmo lock — um ciclo que o Postgres não detecta, porque metade
+    # dele está no Python. 47h depois as 40 conexões estavam presas atrás dele e o login dava
+    # 500. Com o teto, a espera vira erro em 30s, num lugar só, e o resto segue vivo.
+    connect_args={"server_settings": {"lock_timeout": "30s"}},
 )
 
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
