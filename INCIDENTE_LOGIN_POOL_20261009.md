@@ -47,8 +47,8 @@ a troca de nome pendente e o que esperava atrás dela.
 ## Em aberto
 - O mesmo padrão (sessão própria aberta enquanto a do webhook segura escrita) pode existir em
   outros pontos; o `lock_timeout` é a rede, não a varredura.
-- `idle_in_transaction_session_timeout` no Postgres não foi configurado: exige conferir se algum
-  job segura transação ociosa por muito tempo de propósito.
+- ~~`idle_in_transaction_session_timeout` no Postgres não foi configurado~~ — aplicado em 09/10,
+  ver seção 3 de "Depois do incidente".
 - Não há alerta de pool esgotado: o sistema ficou 47h acumulando e só foi notado quando o login caiu.
 
 ## Impacto medido (09/10, depois do restart)
@@ -117,7 +117,7 @@ reprodução da seção Verificação.
 - Com isso, o incidente de 07/10 teria alertado por volta das 18:35 UTC de 07/10 (ociosa > 5
   min no ciclo seguinte), e não 47h depois.
 
-### 3. `idle_in_transaction_session_timeout = 10min` (AINDA NÃO APLICADO)
+### 3. `idle_in_transaction_session_timeout = 10min` (APLICADO 09/10 18:04 UTC)
 Pedido: mostrar a lista antes de aplicar. Auditoria do código (jobs do lifespan e caminhos
 pesados) + amostragem de `pg_stat_activity` a cada 1 s em produção:
 
@@ -133,13 +133,30 @@ pesados) + amostragem de `pg_stat_activity` a cada 1 s em produção:
 | webhook → turno do agente (`qualificacao_fluxo.py:591`) | sim: LLM 10 s × 2 tentativas | ≤~80 s | não |
 | webhook → fluxo.agendar (sessão própria) | sim: a do webhook fica ociosa durante o agendar | ~3 min; teórico 4–5 min | não |
 | window_alerts, delivery_health, agente_parado | só banco | ms | não |
-| kanban generate-summary, toggle IA → nota na Exact, test_chat da IA | sim: OpenAI pelo `ai_engine.py:15` **sem timeout** | normal <1 min; sem teto se a OpenAI pendurar | teórico |
+| kanban generate-summary, toggle IA → nota na Exact, test_chat da IA | sim: OpenAI pelo `ai_engine.py:15` (era **sem timeout**; agora 60 s) | normal <1 min; teto de 60 s por chamada | não (era teórico) |
 
 Nenhum `pg_advisory*` no código; nenhum job segura transação ociosa DE PROPÓSITO (todos os
 `FOR UPDATE` soltam no commit do item). Sem cron nem timer rodando script com o role `cenat`.
 Amostragem: maior ociosa vista foi de segundos. Efeito da aplicação: sessão morta → rollback e
 erro no próximo comando; o pior estrago seria um `bulk_send_template` (mensagens já saíram,
 linhas de `messages` desfeitas), só se um intervalo passar de 10 min, o que não se vê hoje.
+
+**Aplicação (09/10, ~18:04 UTC, commit d28d6cc):**
+- `ALTER ROLE cenat SET idle_in_transaction_session_timeout = '10min'` com o próprio role da
+  app (não é superuser; parâmetro de sessão, o role pode fixar o default dele). `pg_roles.rolconfig`
+  = `{idle_in_transaction_session_timeout=10min}`. Sessão nova de `psql` → `SHOW` = `10min`.
+- Vale só para conexões ABERTAS DEPOIS do ALTER. Por isso o `sudo systemctl restart
+  cenat-backend` (18:04:40 UTC) renovou o pool.
+- `/health` passou a devolver o valor tirado de uma conexão do PRÓPRIO pool, depois do restart:
+  `"pool.teste": {"lock_timeout": "30s", "idle_in_transaction_session_timeout": "10min"}`,
+  status `online`, 0 ociosas. `test_saude_sistema.py` 10/10.
+- A única linha "teórico" da tabela foi fechada no mesmo commit: `ai_engine.py:15` cria o
+  `AsyncOpenAI` com `timeout=60.0`. Chamada que passar disso levanta `APITimeoutError` (o SDK
+  ainda faz as retentativas default dele, 2, então o pior caso fica em ~3 min, longe dos 10).
+- Efeito esperado se alguma sessão passar de 10 min ociosa em transação: o Postgres a encerra,
+  a transação vira rollback e o próximo comando dela dá erro de conexão (o `pool_pre_ping`
+  descarta a conexão morta no próximo checkout). Procurar no log por
+  `terminating connection due to idle-in-transaction timeout`.
 
 ### 4. Limpeza
 - **Shirley (5512981952632)**: estado `escolhendo_slot` → `encerrado`, motivo
