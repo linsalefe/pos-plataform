@@ -216,6 +216,7 @@ from app.nat_routes import router as nat_router
 from app.agendamento.routes import (router as agendamento_router,
                                     validacao_recusada as agendamento_validacao_recusada)
 from app.relatorios import router as relatorios_router
+from app.atendimento_routes import router as atendimento_router
 from app.agendamento.cors import (PADRAO_ENV as _SUFIXOS_PADRAO, PREFIXO as _PREFIXO_AGENDAMENTO,
                                   AgendamentoCORSMiddleware)
 from app.exact_spotter import sync_exact_leads
@@ -517,6 +518,7 @@ app.include_router(agendamento_router)
 # handler padrão, e a resposta é idêntica em todas as rotas.
 app.add_exception_handler(RequestValidationError, agendamento_validacao_recusada)
 app.include_router(relatorios_router)
+app.include_router(atendimento_router)
 VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
 app.include_router(twilio_router)
 

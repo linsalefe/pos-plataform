@@ -34,6 +34,7 @@ import {
   UserCheck
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import { useAuth } from '@/contexts/auth-context';
 import api from '@/lib/api';
 
 interface ChannelInfo {
@@ -160,6 +161,27 @@ const tagColors = [
   { value: 'cyan', bg: 'bg-cyan-100', text: 'text-cyan-700' },
 ];
 
+const AGUARDANDO_JANELA_MS = 7 * 24 * 3_600_000;
+
+/** Há quanto tempo o lead espera: cinza < 2 h (SLA), âmbar 2 h a 20 h, vermelho > 20 h
+ *  (a janela de 24 h está fechando). Mesmos limiares do painel /atendimento e do
+ *  window_alerts_job. Conta da última mensagem do lead; `agora` vem de um relógio em estado
+ *  da página (render puro: o React Compiler recusa `Date.now()` aqui). */
+function BadgeEspera({ desde, agora }: { desde: string; agora: number }) {
+  const h = (agora - new Date(desde).getTime()) / 3_600_000;
+  if (!Number.isFinite(h) || h < 0) return null;
+  const cor = h < 2 ? 'bg-gray-100 text-gray-500'
+    : h < 20 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600';
+  const texto = h < 1 ? `${Math.max(1, Math.round(h * 60))} min`
+    : h < 48 ? `${Math.floor(h)} h` : `${Math.floor(h / 24)} d`;
+  return (
+    <span className={`ml-auto flex-shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-medium tabular-nums ${cor}`}
+          title="Tempo desde a última mensagem do lead, sem resposta nossa">
+      {texto}
+    </span>
+  );
+}
+
 export default function ConversationsPage() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [activeChannel, setActiveChannel] = useState<ChannelInfo | null>(null);
@@ -203,6 +225,15 @@ export default function ConversationsPage() {
   const [sendFeedback, setSendFeedback] = useState<'ok' | 'error' | null>(null);
   const [tagFilter, setTagFilter] = useState<number[]>([]);
   const [unreadFilter, setUnreadFilter] = useState(false);
+  // Aguardando resposta (13/10): o lead falou por último. Mesma regra da lista viva do
+  // painel /atendimento, lida aqui do `direction` da mensagem mais recente da conversa
+  // (já fundida entre as duas grafias pelo GET /contacts).
+  const [aguardandoFilter, setAguardandoFilter] = useState(false);
+  const [agora, setAgora] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setAgora(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
   const [aiFilter, setAiFilter] = useState<'all' | 'on' | 'off'>('all');
   // Filtros do SDR (07/10): reunião marcada, confirmou, respondeu fora do padrão.
   const [reuniaoFilter, setReuniaoFilter] = useState<
@@ -254,10 +285,16 @@ export default function ConversationsPage() {
     document.title = unreadCount > 0 ? `(${unreadCount}) Conversas - Cenat Hub` : 'Conversas - Cenat Hub';
   }, [unreadCount]);
 
+  // Espera o login. Em carga completa (F5, nova aba, o "Abrir conversa" do /atendimento) o
+  // efeito desta página roda ANTES do efeito do AuthProvider, que é quem põe o header: o
+  // /channels saía sem token, 401, e a tela ficava em "Nenhum canal" sem lista nenhuma.
+  // Medido no nginx em 13/10: 3 de 23 aberturas de /conversations.
+  const { user: usuarioLogado } = useAuth();
   useEffect(() => {
+    if (!usuarioLogado) return;
     loadChannels();
     loadTags();
-  }, []);
+  }, [usuarioLogado]);
 
   useEffect(() => {
     if (activeChannel) {
@@ -873,6 +910,10 @@ export default function ConversationsPage() {
     const mst = statusFilter === 'todos' || c.lead_status === statusFilter;
     const mtag = tagFilter.length === 0 || c.tags.some(t => tagFilter.includes(t.id));
     const mur = !unreadFilter || c.unread > 0;
+    // Só a última semana, o mesmo recorte da lista do /atendimento: sem ele o filtro trazia
+    // 1 103 conversas e as primeiras (a ordem é do mais antigo) tinham 221 dias.
+    const mag = !aguardandoFilter || (c.direction === 'inbound' && !!c.last_message_time
+      && agora - new Date(c.last_message_time).getTime() <= AGUARDANDO_JANELA_MS);
     const mai = aiFilter === 'all' || (aiFilter === 'on' ? c.ai_active : !c.ai_active);
     const msdr = sdrFilter === null || (sdrFilter === 0 ? c.assigned_to === null : c.assigned_to === sdrFilter);
     const r = c.reuniao;
@@ -883,7 +924,7 @@ export default function ConversationsPage() {
       || (reuniaoFilter === 'nao_confirmou' && !!r?.nao_confirmou)
       || (reuniaoFilter === 'cancelar' && !!r?.cancelar_na_exact)
       || (reuniaoFilter === 'devolver' && !!r?.devolver_ao_funil);
-    return ms && mst && mtag && mur && mai && msdr && mreu;
+    return ms && mst && mtag && mur && mag && mai && msdr && mreu;
   });
   // Com "Reunião marcada" ou "Confirmou", a lista vem pela reunião mais próxima primeiro.
   // `inicio` é ISO sem fuso: a comparação de string já dá a ordem certa.
@@ -891,13 +932,19 @@ export default function ConversationsPage() {
     filteredContacts.sort((a, b) => (a.reuniao?.inicio || '').localeCompare(b.reuniao?.inicio || ''));
   }
 
-  const hasActiveFilters = tagFilter.length > 0 || unreadFilter || aiFilter !== 'all' || sdrFilter !== null
+  // Aguardando resposta: quem espera há mais tempo primeiro (a fila do SDR).
+  if (aguardandoFilter) {
+    filteredContacts.sort((a, b) => (a.last_message_time || '').localeCompare(b.last_message_time || ''));
+  }
+
+  const hasActiveFilters = tagFilter.length > 0 || unreadFilter || aguardandoFilter || aiFilter !== 'all' || sdrFilter !== null
     || reuniaoFilter !== 'all';
 
   const clearAllFilters = () => {
     setStatusFilter('todos');
     setTagFilter([]);
     setUnreadFilter(false);
+    setAguardandoFilter(false);
     setAiFilter('all');
     setSdrFilter(null);
     setReuniaoFilter('all');
@@ -1061,7 +1108,7 @@ export default function ConversationsPage() {
                 Filtros
                 {hasActiveFilters && (
                   <span className="w-4 h-4 bg-[#2A658F] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
-                    {(tagFilter.length > 0 ? 1 : 0) + (unreadFilter ? 1 : 0) + (aiFilter !== 'all' ? 1 : 0) + (reuniaoFilter !== 'all' ? 1 : 0)}
+                    {(tagFilter.length > 0 ? 1 : 0) + (unreadFilter ? 1 : 0) + (aguardandoFilter ? 1 : 0) + (aiFilter !== 'all' ? 1 : 0) + (reuniaoFilter !== 'all' ? 1 : 0)}
                   </span>
                 )}
               </button>
@@ -1108,6 +1155,16 @@ export default function ConversationsPage() {
                   >
                     <MessageCircle className="w-3 h-3" />
                     Não lidos
+                  </button>
+                  <button
+                    onClick={() => setAguardandoFilter(!aguardandoFilter)}
+                    title="O lead falou por último nos últimos 7 dias e ninguém respondeu. Do mais antigo para o mais novo."
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      aguardandoFilter ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Clock className="w-3 h-3" />
+                    Aguardando resposta
                   </button>
                   <button
                     onClick={() => setAiFilter(aiFilter === 'on' ? 'all' : 'on')}
@@ -1296,6 +1353,9 @@ export default function ConversationsPage() {
                             {contact.direction === 'outbound' && '✓ '}
                             {contact.last_message || 'Sem mensagens'}
                           </p>
+                          {contact.direction === 'inbound' && contact.last_message_time && (
+                            <BadgeEspera desde={contact.last_message_time} agora={agora} />
+                          )}
                         </div>
                         {(contact.reuniao?.marcada || contact.reuniao?.fora_do_padrao
                           || contact.reuniao?.telefone_invalido || contact.reuniao?.cancelar_na_exact

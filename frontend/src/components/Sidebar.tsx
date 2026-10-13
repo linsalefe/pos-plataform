@@ -22,6 +22,7 @@ import {
   Phone,
   LayoutTemplate,
   BarChart3,
+  Timer,
 } from 'lucide-react';
 
 const menuItems = [
@@ -37,6 +38,7 @@ const menuItems = [
   { href: '/calls', label: 'Ligações', icon: Phone },
   { href: '/agenda', label: 'Agenda', icon: CalendarIcon },
   { href: '/relatorios', label: 'Relatórios', icon: BarChart3, adminOnly: true },
+  { href: '/atendimento', label: 'Atendimento', icon: Timer, adminOnly: true },
 ];
 
 export default function Sidebar() {
