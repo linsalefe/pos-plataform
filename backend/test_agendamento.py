@@ -8,7 +8,7 @@ real, nenhum lead é cadastrado.
    1. grade: 12 slots por dia útil, nada no fim de semana, antecedência respeitada
    2. fuso: para_exact NÃO converte para UTC — é este teste que trava o erro de 3 horas
    3. slot_por_id recusa horário forjado que não está na grade
-   4. disponibilidade subtrai bloco sobreposto; encostar não é sobrepor
+   4. disponibilidade subtrai bloco sobreposto; encostar não é sobrepor (sem folga)
    5. caminho feliz: as 3 chamadas na ordem box -> lead -> schedule
    6. LeadsAdd falha -> box é removido, nada sobra
    7. scheduleAdd falha -> box é removido e O LEAD FICA (nunca LeadsDelete)
@@ -71,7 +71,7 @@ for _v in ("AGENDAMENTO_CONSULTORAS", "AGENDAMENTO_CONSULTORAS_PATH",
            "AGENDAMENTO_GRADE_JSON", "AGENDAMENTO_GRADE_PATH",
            "AGENDAMENTO_FUNIL_DESTINO", "AGENDAMENTO_SUBSOURCES",
            "AGENDAMENTO_SUBSOURCE_PADRAO", "AGENDAMENTO_JANELA_DIAS",
-           "AGENDAMENTO_ORIGEM_ALIASES"):
+           "AGENDAMENTO_ORIGEM_ALIASES", "AGENDAMENTO_FOLGA_MIN"):
     os.environ.pop(_v, None)
 
 # ------------------------------------------------------------------------------------------
@@ -208,15 +208,27 @@ async def caso_4_disponibilidade_subtrai():
         livres = await disponibilidade.slots_livres(_DbFalso(), usar_cache=False)
     assert all(s.id != alvo.id for s in livres), "ofereceu slot já ocupado"
 
-    # Um bloco que só ENCOSTA (termina onde o slot começa) não pode remover nada.
+    # Um bloco que só ENCOSTA (termina onde o slot começa) não pode remover nada — SEM folga.
+    # Com a folga padrão de 30 min (14/10/2026) o mesmo bloco remove. Os detalhes da folga
+    # estão em test_folga_agenda.py.
     encosta = [{"start": para_exact(alvo.inicio - timedelta(minutes=45)),
                 "end": para_exact(alvo.inicio)}]
-    with patch.object(client, "listar_boxes", AsyncMock(return_value=encosta)):
+    try:
+        os.environ["AGENDAMENTO_FOLGA_MIN"] = "0"
+        with patch.object(client, "listar_boxes", AsyncMock(return_value=encosta)):
+            disponibilidade.invalidar_cache()
+            livres = await disponibilidade.slots_livres(_DbFalso(), usar_cache=False)
+        assert any(s.id == alvo.id for s in livres), "removeu slot que só encostava no bloco"
+
+        os.environ.pop("AGENDAMENTO_FOLGA_MIN")
+        with patch.object(client, "listar_boxes", AsyncMock(return_value=encosta)):
+            disponibilidade.invalidar_cache()
+            livres = await disponibilidade.slots_livres(_DbFalso(), usar_cache=False)
+        assert all(s.id != alvo.id for s in livres), "folga de 30 não removeu slot colado"
+    finally:
+        os.environ.pop("AGENDAMENTO_FOLGA_MIN", None)
         disponibilidade.invalidar_cache()
-        livres = await disponibilidade.slots_livres(_DbFalso(), usar_cache=False)
-    assert any(s.id == alvo.id for s in livres), "removeu slot que só encostava no bloco"
-    disponibilidade.invalidar_cache()
-    print(f"  4. bloco sobreposto remove {alvo.id}; bloco que encosta não remove")
+    print(f"  4. bloco sobreposto remove {alvo.id}; encostado: sem folga fica, com folga sai")
 
 
 async def caso_5_caminho_feliz():

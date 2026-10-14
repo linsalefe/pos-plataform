@@ -37,7 +37,23 @@ quem oferecer o slot, e faria isso com dados de até 60s atrás.
 Uma consulta a `/Boxes` por consultora, por chamada não-cacheada. Com duas, são 2 de 30
 req/20s — folgado. Se um dia forem dez, o cache de 60s deixa de ser conforto e vira
 necessidade.
+
+------------------------------------------------------------------------------------------
+FOLGA DE 30 MIN EM VOLTA DE TODA OCUPAÇÃO (14/10/2026)
+------------------------------------------------------------------------------------------
+Pedido da Isa em 13/10: reunião caindo colada em almoço, follow e outra reunião. Uma ocupação
+(box da Exact OU agendamento nosso) passa a bloquear `[inicio - folga, fim + folga]`, com
+`AGENDAMENTO_FOLGA_MIN` (padrão 30). `_sobrepoe` continua meio-aberto: com o bloco já
+alargado, um slot que termina exatamente em `inicio - folga` cabe.
+
+É regra de OFERTA, não de reserva. O `BoxesAdd` não conhece a folga e continua aceitando
+um box colado — quem garante a folga é não oferecer o horário. Reunião já marcada não muda.
+
+O almoço NÃO depende disto: ele saiu da janela em `consultoras.json` (10:00–12:00 +
+13:30–19:00). Em 14/10 as agendas da Exact não tinham bloco de almoço nem de follow, só
+reuniões. Se um dia tiverem, a folga empurra o primeiro slot da tarde de 13:30 para 14:15.
 """
+import os
 import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -57,6 +73,28 @@ from app.models import (EXACT_TYPE_CANCELADA, PASSO_FALHOU, PASSO_INICIADO, PASS
 # (30 req/20s) é do TOKEN INTEIRO — dividido com o sync_job que roda a cada 10 min.
 CACHE_SEGUNDOS = 60
 _cache: "tuple[float, list[SlotDisponivel]] | None" = None
+
+FOLGA_MIN_PADRAO = 30
+
+
+def folga() -> timedelta:
+    """`AGENDAMENTO_FOLGA_MIN`, lido a cada chamada. Valor ruim ou negativo cai no padrão.
+
+    Lido na hora, não no import, para o teste poder trocar o env sem recarregar o módulo.
+    Mesma política da grade: um typo no env não derruba nada, grita no log.
+    """
+    bruto = os.getenv("AGENDAMENTO_FOLGA_MIN")
+    if bruto is None:
+        return timedelta(minutes=FOLGA_MIN_PADRAO)
+    try:
+        minutos = int(bruto)
+    except ValueError:
+        minutos = -1
+    if minutos < 0:
+        print(f"⚠️ agendamento: AGENDAMENTO_FOLGA_MIN={bruto!r} inválido. "
+              f"Usando {FOLGA_MIN_PADRAO}.")
+        minutos = FOLGA_MIN_PADRAO
+    return timedelta(minutes=minutos)
 
 
 @dataclass(frozen=True)
@@ -153,6 +191,7 @@ async def slots_livres(db: AsyncSession, *,
         return _cache[1]
 
     equipe = consultoras()
+    margem = folga()
     if not any(c.grade.slots_candidatos() for c in equipe):
         _cache = (agora, [])
         return []
@@ -177,6 +216,8 @@ async def slots_livres(db: AsyncSession, *,
             continue
         # Por consultora, não global — ver `_ocupados_por_nos`.
         ocupados = ocupados + await _ocupados_por_nos(db, ini, fim, c.email)
+        # Alarga cada ocupação pela folga ANTES de comparar. Ver "FOLGA DE 30 MIN" no topo.
+        ocupados = [(oi - margem, of + margem) for oi, of in ocupados]
         for slot in candidatos:
             if any(_sobrepoe(slot.inicio, slot.fim, oi, of) for oi, of in ocupados):
                 continue
