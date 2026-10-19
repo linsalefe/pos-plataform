@@ -842,6 +842,32 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         title=f"Nova mensagem de {owner_row[1] or msg['from']}",
                         body=preview,
                     ))
+                else:
+                    # SPRINT_REMARCACAO (19/10): sem dono e com a conversa pausada para
+                    # humano, cada mensagem nova vai para todos os SDRs e a gestão. Antes não
+                    # gerava nada: o "Podemos remarcar?" da Luciana e o "Remarcar para após dia
+                    # 26" da Lilian chegaram e ninguém foi avisado (RECON_REAGENDAMENTO §4).
+                    # Savepoint: aviso não derruba o lote de mensagens.
+                    try:
+                        async with db.begin_nested():
+                            from app import remarcacao
+                            if await remarcacao.conversa_pausada(msg["from"], db):
+                                from app.models import Notification
+                                nome_row = (await db.execute(select(Contact.name).where(
+                                    Contact.wa_id == wa_gravacao))).first()
+                                preview = ("[mídia]" if (content or "").startswith("media:")
+                                           else (content or "")[:80])
+                                for uid in await remarcacao.destinatarios(
+                                        msg["from"], db, consultar_dono=False):
+                                    db.add(Notification(
+                                        user_id=uid, contact_wa_id=msg["from"],
+                                        type="new_message", ref=wa_message_id,
+                                        title=f"Nova mensagem de "
+                                              f"{(nome_row[0] if nome_row else None) or msg['from']}",
+                                        body=preview))
+                    except Exception as e:
+                        print(f"⚠️ new_message sem dono não gravado ({wa_message_id}): "
+                              f"{type(e).__name__}: {e}")
 
             # Atualizar status de mensagens enviadas
             for status_update in value.get("statuses", []):

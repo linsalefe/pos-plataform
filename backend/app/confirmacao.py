@@ -45,7 +45,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import nat_copy
+from app import nat_copy, remarcacao
 from app.models import (ACAO_EXECUTADO, ACAO_PENDENTE, EXACT_TYPE_VIGENTE,
                         KIND_CONFIRM_A_BENEFICIO, KIND_CONFIRM_A_CORTE, KIND_CONFIRM_A_EMENTA,
                         KIND_CONFIRM_A_IMEDIATA, KIND_CONFIRM_A_PEDIDO,
@@ -330,22 +330,30 @@ async def _notificar(reuniao: ReuniaoStatus, wa_id: str, tipo: str, titulo: str,
                      db: AsyncSession, *, consultora: bool = False, todas: bool = False) -> None:
     """Notifica o dono do contato e, quando pedido, a consultora da reunião (ou as duas).
 
-    Sem dono e sem consultora mapeada, vai para a gestão (`GESTOR_USER_ID`): um aviso que não
+    Sem dono, vai para os SDRs de `SDR_USER_IDS` e a gestão (`GESTOR_USER_ID`): um aviso que não
     chega a ninguém é o silêncio que esta régua existe para evitar.
     """
+    from app import remarcacao
     from app.agendamento import consultoras as equipe
-    alvos: set[int] = set()
-    dono = await _dono(wa_id, db)
-    if dono:
-        alvos.add(dono)
+    # 19/10 (SPRINT_REMARCACAO): sem dono, TODOS os `SDR_USER_IDS` e a gestão, não só a
+    # gestão. Lead da LP nasce sem dono e o aviso caía só na Isa (RECON_REAGENDAMENTO §4).
+    alvos: list[int] = await remarcacao.destinatarios(wa_id, db)
+    extras: set[int] = set()
     if todas:
-        alvos |= {c.user_id_hub for c in equipe.consultoras() if c.user_id_hub}
+        extras = {c.user_id_hub for c in equipe.consultoras() if c.user_id_hub}
     elif consultora:
         c = _consultora(reuniao)
         if c is not None and c.user_id_hub:
-            alvos.add(c.user_id_hub)
+            extras = {c.user_id_hub}
+    alvos += [uid for uid in extras if uid not in alvos]
     if not alvos:
-        alvos.add(GESTOR_USER_ID)
+        alvos = [GESTOR_USER_ID]
+    # O corpo termina com a ÚLTIMA mensagem do lead, não a que causou o aviso: na Lilian, o
+    # aviso mostrava "gostaria de mais informações" e o "Remarcar para após dia 26" que veio
+    # 19 s depois não aparecia em lugar nenhum (RECON §1.3).
+    ultima = await remarcacao.ultima_mensagem(wa_id, db)
+    if ultima:
+        corpo = f"{corpo} Última mensagem: {ultima}"
     for uid in alvos:
         db.add(Notification(user_id=uid, contact_wa_id=wa_id, type=tipo,
                             ref=str(reuniao.meeting_id), title=titulo[:255], body=corpo))
@@ -898,6 +906,18 @@ async def _reuniao_dona(wa_id: str, db: AsyncSession) -> tuple[ReuniaoStatus | N
     return (cortada, True) if cortada is not None else (None, False)
 
 
+async def _reuniao_pausada(wa_id: str, db: AsyncSession) -> ReuniaoStatus | None:
+    """A reunião Vigente e futura cuja régua parou para humano (`pausar`). A mais próxima."""
+    chave = chave_telefone(wa_id)
+    if not chave:
+        return None
+    return (await db.execute(select(ReuniaoStatus).where(
+        ReuniaoStatus.telefone_chave == chave, ReuniaoStatus.exact_type == EXACT_TYPE_VIGENTE,
+        ReuniaoStatus.slot_inicio > _agora_sp(), ReuniaoStatus.cancelado_motivo.is_(None),
+        ReuniaoStatus.regua_encerrada_motivo == "humano")
+        .order_by(ReuniaoStatus.slot_inicio).limit(1))).scalar_one_or_none()
+
+
 async def _payload_pelo_contexto(r: ReuniaoStatus, evento: dict, db: AsyncSession) -> str | None:
     """Clique SEM payload: só roteia pelo rótulo se o `context.id` é uma mensagem que ESTA
     régua mandou para ESTA reunião (decisão 11). Senão, None (vira texto livre)."""
@@ -948,6 +968,15 @@ async def inbound(wa_id: str, evento_botao: dict | None, content: str,
         return False
     r, cortada = await _reuniao_dona(wa_id, db)
     if r is None:
+        # SPRINT_REMARCACAO (19/10): a régua já pausou para humano (`regua_encerrada_em`
+        # preenchido tira a reunião de `_reuniao_dona`), e a mensagem SEGUINTE pede para
+        # remarcar. Era o "Podemos remarcar?" da Luciana, 5 s depois da pausa, que não gerava
+        # nada (RECON_REAGENDAMENTO §1.4). Agora vira a mesma oferta do botão.
+        if not evento_botao and remarcacao.pede_remarcacao(content):
+            pausada = await _reuniao_pausada(wa_id, db)
+            if pausada is not None:
+                await remarcar(pausada, wa_id, db)
+                return True
         return False
 
     payload = None
@@ -965,6 +994,10 @@ async def inbound(wa_id: str, evento_botao: dict | None, content: str,
         if payload == nat_copy.NS_D0_HORARIO:
             await remarcar(r, wa_id, db, ja_cortada=True)
             return True
+        # SPRINT_REMARCACAO: texto pedindo para remarcar vale o botão "Escolher horário".
+        if not evento_botao and remarcacao.pede_remarcacao(content):
+            await remarcar(r, wa_id, db, ja_cortada=True)
+            return True
         return False
 
     if payload in PAYLOADS_SIM:
@@ -977,6 +1010,11 @@ async def inbound(wa_id: str, evento_botao: dict | None, content: str,
         await confirmar(r, wa_id, "texto", db)
     elif payload is None and not evento_botao and _recusa(content):
         await sem_interesse(r, wa_id, db)
+    elif payload is None and not evento_botao and remarcacao.pede_remarcacao(content):
+        # SPRINT_REMARCACAO (19/10): texto de remarcação vira a oferta de horários do botão
+        # "Preciso remarcar", em vez de pausar e esperar humano (RECON §4). Depois da recusa
+        # de propósito: "não tenho mais interesse, pode desmarcar" é recusa.
+        await remarcar(r, wa_id, db)
     elif payload is None and not evento_botao and await _duvida_simples(r, wa_id, content, db):
         pass                                     # respondeu e pediu a confirmação de novo
     else:
@@ -1163,8 +1201,8 @@ async def pausar(r: ReuniaoStatus, wa_id: str, db: AsyncSession, content: str) -
     r.regua_encerrada_em = _agora_sp()
     r.regua_encerrada_motivo = "humano"
     await _nota(r, "Aguardando humano")
-    previa = "[mídia]" if (content or "").startswith("media:") else (content or "")[:120]
+    # A mensagem do lead entra no corpo pelo `_notificar` (a ÚLTIMA, SPRINT_REMARCACAO).
     await _notificar(r, wa_id, TIPO_NOTIF_CONFIRMACAO, "Lead respondeu a confirmação: assuma",
-                     f"Reunião de {r.slot_inicio:%d/%m às %H:%M}. Mensagem: {previa}. O corte "
-                     f"automático continua valendo se não houver confirmação.", db)
+                     f"Reunião de {r.slot_inicio:%d/%m às %H:%M}. O corte automático continua "
+                     f"valendo se não houver confirmação.", db)
     print(f"🤝 confirmacao: reunião {r.meeting_id} pausada para humano ({wa_id})")

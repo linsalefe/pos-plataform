@@ -573,6 +573,15 @@ KIND_REATIV_B_2H = "reativ_b_2h"
 KIND_REATIV_B_4H = "reativ_b_4h"
 KIND_REATIV_B_D1 = "reativ_b_d1"
 KINDS_REATIV_B = (KIND_REATIV_B_30M, KIND_REATIV_B_2H, KIND_REATIV_B_4H, KIND_REATIV_B_D1)
+# Remarcação pendente (SPRINT_REMARCACAO_20261019): o lead escolheu o horário novo, mas a
+# reunião antiga segue Vigente na Exact e o `scheduleAdd` recusaria. `remarcacao_retry` tenta o
+# horário desejado depois que o sync vê a antiga Cancelada (e de novo 10 min depois, se a Exact
+# recusar); `remarcacao_expira` devolve para humano se ninguém cancelou em 24h. Ver
+# app/remarcacao.py.
+KIND_REMARCACAO_RETRY = "remarcacao_retry"
+KIND_REMARCACAO_EXPIRA = "remarcacao_expira"
+# Sem migração (`notifications.type` não tem CHECK).
+TIPO_NOTIF_REMARCACAO = "remarcacao_pendente"
 # O lead prefere ligação (spec da Isa, Fluxo B): aviso ao SDR na hora. Sem migração.
 TIPO_NOTIF_PREFERE_LIGACAO = "prefere_ligacao"
 # A Meta devolveu 131026 (número não entregável) na 1ª mensagem: o SDR precisa corrigir o
@@ -819,6 +828,13 @@ class ReuniaoStatus(Base):
     # "Devolver ao funil". Migração própria: `migrate_sdr_tratado.py`.
     sdr_tratado_em = Column(DateTime)
     sdr_tratado_por = Column(Integer)
+    # 19/10 (SPRINT_REMARCACAO): o horário que o lead escolheu para substituir ESTA reunião,
+    # esperando a Exact cancelá-la. NULL = nada pendente. Migração própria:
+    # `migrate_remarcacao_pendente.py`. Ver `app/remarcacao.py`.
+    slot_desejado_inicio = Column(DateTime)            # SP naive
+    slot_desejado_consultora = Column(String(255))     # e-mail, como `sales_rep_email`
+    remarcacao_tentativas = Column(Integer, nullable=False, server_default=text("0"), default=0)
+    remarcacao_expira_em = Column(DateTime)            # SP naive
 
     created_at = Column(DateTime, server_default=text("(now() AT TIME ZONE 'America/Sao_Paulo')"))
     updated_at = Column(DateTime, server_default=text("(now() AT TIME ZONE 'America/Sao_Paulo')"))

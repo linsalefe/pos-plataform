@@ -216,6 +216,11 @@ async def slots_livres(db: AsyncSession, *,
             continue
         # Por consultora, não global — ver `_ocupados_por_nos`.
         ocupados = ocupados + await _ocupados_por_nos(db, ini, fim, c.email)
+        # 19/10 (SPRINT_REMARCACAO): o horário que um lead escolheu numa remarcação pendente
+        # fica reservado para a consultora até a antiga ser cancelada na Exact (ou a reserva
+        # expirar em 24h). Sem isto ele seria oferecido a outro lead. Ver `app/remarcacao.py`.
+        from app.remarcacao import ocupados_pendentes
+        ocupados = ocupados + await ocupados_pendentes(db, ini, fim, c.email)
         # Alarga cada ocupação pela folga ANTES de comparar. Ver "FOLGA DE 30 MIN" no topo.
         ocupados = [(oi - margem, of + margem) for oi, of in ocupados]
         for slot in candidatos:

@@ -47,6 +47,7 @@ from app.models import (ACAO_EXECUTADO, KIND_CONFIRM_A_CORTE, KIND_NOSHOW_D0_1H,
                         NatScheduledAction, ReuniaoStatus)
 from app.nat_guard import _agora_sp, dentro_janela_envio, proxima_janela_envio
 from app.nat_scheduler import AcaoAdiada, AcaoIgnorada, registrar_handler
+from app.remarcacao import pede_remarcacao
 from app.telefone import chave_telefone, variantes_wa_id
 
 # ==========================================================================================
@@ -547,10 +548,15 @@ async def inbound(r: ReuniaoStatus, wa_id: str, evento: dict | None, content: st
         await encerrar(r, "sem_interesse", db, nota="Sem interesse agora")
         await cf._notificar(r, wa_id, TIPO_NOTIF_CONFIRMACAO, "Lead disse que não tem interesse",
                             "Régua de no-show encerrada.", db)
+    elif payload is None and not evento and pede_remarcacao(content):
+        # SPRINT_REMARCACAO (19/10): texto pedindo para remarcar vale o botão "Escolher
+        # horário" (RECON_REAGENDAMENTO_20261018 §4: virava pausa e esperava humano).
+        await encerrar(r, "remarcar_texto", db)
+        await cf.remarcar(r, wa_id, db, ja_cortada=True)
     else:
         await encerrar(r, "humano", db, nota="Aguardando humano")
-        previa = "[mídia]" if (content or "").startswith("media:") else (content or "")[:120]
+        # A mensagem vai no corpo pelo `_notificar` (a ÚLTIMA do lead, SPRINT_REMARCACAO).
         await cf._notificar(r, wa_id, TIPO_NOTIF_CONFIRMACAO,
                             "Lead respondeu a régua de no-show: assuma",
-                            f"Mensagem: {previa}", db)
+                            "Régua de no-show encerrada.", db)
     return True

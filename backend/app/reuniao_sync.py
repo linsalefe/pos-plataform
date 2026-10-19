@@ -322,10 +322,17 @@ async def sincronizar(db: AsyncSession, *, listar=None, agora: datetime | None =
     # ou remarcada pela equipe no CRM: para todas as mensagens pendentes". Roda com a flag
     # desligada também: cancelar é sempre seguro.
     reguas_canceladas = 0
+    remarcacoes = 0
     for l, de in mudancas:
         if de != EXACT_TYPE_VIGENTE or l["exact_type"] == EXACT_TYPE_VIGENTE:
             continue
         reguas_canceladas += await _encerrar_regua(db, l)
+        # SPRINT_REMARCACAO (19/10): a antiga de uma remarcação pendente saiu da frente. Só
+        # ENFILEIRA o `remarcacao_retry`: quem chama a Exact e fala com o lead é o handler, fora
+        # desta transação (ver "O QUE ESTE BLOCO NÃO FAZ" no cabeçalho).
+        if l["exact_type"] == EXACT_TYPE_CANCELADA:
+            from app.remarcacao import ao_cancelar
+            remarcacoes += int(await ao_cancelar(db, l["meeting_id"]))
 
     # Bloco 2: reunião NOVA e Vigente da mesma pessoa = ela remarcou com a consultora. A régua
     # de no-show dela para ('reagendou'). Vigente -> Cancelada NÃO mexe no no-show: a reunião
@@ -350,6 +357,7 @@ async def sincronizar(db: AsyncSession, *, listar=None, agora: datetime | None =
     resumo = (f"novas={novas_n} atualizadas={atualizadas} mudancas_status={len(mudancas)} "
               f"canceladas_hub={len(canceladas_hub)} lembretes_cancelados={lembretes_cancelados} "
               f"reguas_armadas={reguas_armadas} reguas_canceladas={reguas_canceladas} "
+              f"remarcacoes_enfileiradas={remarcacoes} "
               f"lidas={len(novas)}+{len(janela)}")
     cursor.ultimo_ciclo_em = agora
     cursor.ultimo_ciclo_resultado = resumo

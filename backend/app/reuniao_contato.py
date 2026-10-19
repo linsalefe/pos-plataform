@@ -15,6 +15,11 @@ OS FILTROS, como o front recebe:
     fora_do_padrao a régua parou porque o lead respondeu algo fora dos botões e da lista
                    fechada (`regua_encerrada_motivo = 'humano'`, confirmação ou no-show)
     nao_confirmou  marcada, sem `confirmado_em`, régua de confirmação ainda viva: ligar
+    remarcacao_pendente  {meeting_id, slot}: o lead escolheu horário novo e a antiga segue
+                   Vigente na Exact; o Hub marca sozinho quando ela for cancelada
+                   (`app/remarcacao.py`). None se não há
+    solicitou_reagendamento  meeting_id da reunião em que o lead pediu para remarcar (botão ou
+                   texto) e que ainda não tem reunião nova Vigente nem "Tratado"; None se não há
     cancelar_na_exact  meeting_id da reunião cortada (`sem_confirmacao`) que a Exact ainda
                    diz Vigente e o SDR não marcou como tratada; None se não há
     devolver_ao_funil  meeting_id da régua de no-show que acabou sem resposta
@@ -38,6 +43,13 @@ MOTIVO_FORA_DO_PADRAO = "humano"
 MOTIVO_TELEFONE_INVALIDO = "telefone_invalido"     # = confirmacao.MOTIVO_TELEFONE_INVALIDO
 MOTIVO_CORTE = "sem_confirmacao"                    # confirmacao.confirm_a_corte
 MOTIVO_D8 = "d8_sem_resposta"                       # noshow.noshow_d8
+# Pedido de remarcação. Antes do corte, `confirmacao.remarcar` grava `cancelado_motivo`; depois
+# do corte (régua de no-show), o pedido fica só no motivo de encerramento da régua: o payload
+# do botão (`noshow.PAYLOADS_HORARIO`) ou `remarcar_texto`.
+MOTIVO_REMARCAR = "remarcar"
+MOTIVOS_REGUA_REMARCAR = frozenset({
+    "remarcar_texto", "NS_D0_HORARIO", "NS_1H_HORARIO", "NS_8H_HORARIO", "NS_D1_HORARIO",
+    "NS_D2_REAGENDAR", "NS_D7_REAGENDAR", "NS_D8_REAGENDAR"})
 
 
 def _resumo(r, agora: datetime) -> dict:
@@ -55,6 +67,8 @@ def _resumo(r, agora: datetime) -> dict:
         "nao_confirmou": marcada and r.confirmado_em is None and r.regua_encerrada_em is None,
         "cancelar_na_exact": None,      # preenchidos em `reunioes_por_chave`, sobre todas
         "devolver_ao_funil": None,
+        "remarcacao_pendente": None,
+        "solicitou_reagendamento": None,
         # Para o tooltip do badge: por que a reunião não está "marcada", quando não está.
         "situacao": ("marcada" if marcada else r.cancelado_motivo
                      or ("cancelada" if r.exact_type == "Cancelada"
@@ -69,7 +83,8 @@ async def reunioes_por_chave(db: AsyncSession, agora: datetime | None = None) ->
     try:
         linhas = (await db.execute(text("""
             SELECT meeting_id, telefone_chave, slot_inicio, exact_type, confirmado_em,
-                   cancelado_motivo, regua_encerrada_em, regua_encerrada_motivo, sdr_tratado_em
+                   cancelado_motivo, regua_encerrada_em, regua_encerrada_motivo, sdr_tratado_em,
+                   slot_desejado_inicio, registrado_em
             FROM reuniao_status
             WHERE telefone_chave <> ''
               AND (slot_inicio >= :desde
@@ -84,7 +99,17 @@ async def reunioes_por_chave(db: AsyncSession, agora: datetime | None = None) ->
     escolhida: dict = {}
     pend_corte: dict = {}
     pend_d8: dict = {}
+    pend_remarcacao: dict = {}
+    pediu: dict = {}
     for r in linhas:
+        # Remarcação pendente: a escolha mora na linha da reunião ANTIGA, ainda Vigente.
+        if r.slot_desejado_inicio is not None and r.exact_type == "Vigente":
+            pend_remarcacao[r.telefone_chave] = {"meeting_id": r.meeting_id,
+                                                 "slot": r.slot_desejado_inicio.isoformat()}
+        if r.sdr_tratado_em is None and r.slot_inicio >= agora - JANELA_RECENTE and (
+                r.cancelado_motivo == MOTIVO_REMARCAR
+                or r.regua_encerrada_motivo in MOTIVOS_REGUA_REMARCAR):
+            pediu[r.telefone_chave] = r.meeting_id            # o pedido mais recente vence
         if r.sdr_tratado_em is None and r.confirmado_em is None \
                 and r.cancelado_motivo == MOTIVO_CORTE and r.exact_type == "Vigente":
             pend_corte[r.telefone_chave] = r.meeting_id       # a mais recente vence (ordem)
@@ -103,7 +128,20 @@ async def reunioes_por_chave(db: AsyncSession, agora: datetime | None = None) ->
         elif not (atual.exact_type == "Vigente" and atual.slot_inicio > agora):
             escolhida[r.telefone_chave] = r          # sem futura: a mais recente
     saida = {k: _resumo(r, agora) for k, r in escolhida.items()}
-    for chave in set(pend_corte) | set(pend_d8):
+    # "Solicitou reagendamento" some quando o reagendamento já aconteceu: existe reunião
+    # registrada DEPOIS da do pedido (pelo Hub ou pela Exact, qualquer status), ou a própria
+    # reunião do pedido acabou acontecendo (`Concluido`). Medido no deploy de 19/10: com "nova
+    # Vigente e futura" o filtro mostrava Viviane e Maria, remarcadas à mão e já atendidas.
+    por_id = {r.meeting_id: r for r in linhas}
+    for chave, mid in list(pediu.items()):
+        pedido = por_id[mid]
+        resolvido = pedido.exact_type == "Concluido" or any(
+            r.telefone_chave == chave and r.meeting_id != mid and r.registrado_em
+            and pedido.registrado_em and r.registrado_em > pedido.registrado_em
+            for r in linhas)
+        if resolvido or chave in pend_remarcacao:
+            del pediu[chave]          # a pendente tem filtro próprio, mais específico
+    for chave in set(pend_corte) | set(pend_d8) | set(pend_remarcacao) | set(pediu):
         resumo = saida.get(chave)
         if resumo is None:
             # A pessoa só tem a reunião antiga da pendência: o card ainda precisa do badge.
@@ -113,6 +151,8 @@ async def reunioes_por_chave(db: AsyncSession, agora: datetime | None = None) ->
                                      "situacao": "pendente"}
         resumo["cancelar_na_exact"] = pend_corte.get(chave)
         resumo["devolver_ao_funil"] = pend_d8.get(chave)
+        resumo["remarcacao_pendente"] = pend_remarcacao.get(chave)
+        resumo["solicitou_reagendamento"] = pediu.get(chave)
     return saida
 
 

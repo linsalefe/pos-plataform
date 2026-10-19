@@ -31,7 +31,8 @@ import {
   PhoneCall,
   PhoneOff,
   CheckCircle2,
-  UserCheck
+  UserCheck,
+  RotateCcw
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { useAuth } from '@/contexts/auth-context';
@@ -72,6 +73,11 @@ interface ReuniaoContato {
   nao_confirmou?: boolean;
   cancelar_na_exact?: number | null;
   devolver_ao_funil?: number | null;
+  // Remarcação (19/10): o lead escolheu horário novo e a antiga segue Vigente na Exact; o Hub marca
+  // sozinho quando ela for cancelada. `slot` é hora de SP sem fuso.
+  remarcacao_pendente?: { meeting_id: number; slot: string } | null;
+  // meeting_id da reunião em que o lead pediu para remarcar (botão ou texto), sem reunião nova.
+  solicitou_reagendamento?: number | null;
   situacao: string;
 }
 
@@ -237,7 +243,8 @@ export default function ConversationsPage() {
   const [aiFilter, setAiFilter] = useState<'all' | 'on' | 'off'>('all');
   // Filtros do SDR (07/10): reunião marcada, confirmou, respondeu fora do padrão.
   const [reuniaoFilter, setReuniaoFilter] = useState<
-    'all' | 'marcada' | 'confirmada' | 'fora' | 'nao_confirmou' | 'cancelar' | 'devolver'>('all');
+    'all' | 'marcada' | 'confirmada' | 'fora' | 'nao_confirmou' | 'cancelar' | 'devolver'
+    | 'remarcacao' | 'reagendamento'>('all');
   const [tratando, setTratando] = useState<number | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [sdrFilter, setSdrFilter] = useState<number | null>(null);
@@ -923,7 +930,9 @@ export default function ConversationsPage() {
       || (reuniaoFilter === 'fora' && !!r?.fora_do_padrao)
       || (reuniaoFilter === 'nao_confirmou' && !!r?.nao_confirmou)
       || (reuniaoFilter === 'cancelar' && !!r?.cancelar_na_exact)
-      || (reuniaoFilter === 'devolver' && !!r?.devolver_ao_funil);
+      || (reuniaoFilter === 'devolver' && !!r?.devolver_ao_funil)
+      || (reuniaoFilter === 'remarcacao' && !!r?.remarcacao_pendente)
+      || (reuniaoFilter === 'reagendamento' && !!r?.solicitou_reagendamento);
     return ms && mst && mtag && mur && mag && mai && msdr && mreu;
   });
   // Com "Reunião marcada" ou "Confirmou", a lista vem pela reunião mais próxima primeiro.
@@ -1238,6 +1247,24 @@ export default function ConversationsPage() {
                     <ArrowLeft className="w-3 h-3" />
                     Devolver ao funil
                   </button>
+                  <button
+                    onClick={() => setReuniaoFilter(reuniaoFilter === 'remarcacao' ? 'all' : 'remarcacao')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      reuniaoFilter === 'remarcacao' ? 'bg-orange-50 text-orange-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Remarcação pendente
+                  </button>
+                  <button
+                    onClick={() => setReuniaoFilter(reuniaoFilter === 'reagendamento' ? 'all' : 'reagendamento')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      reuniaoFilter === 'reagendamento' ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Calendar className="w-3 h-3" />
+                    Solicitou reagendamento
+                  </button>
                 </div>
 
                 {/* SDR filter */}
@@ -1359,7 +1386,8 @@ export default function ConversationsPage() {
                         </div>
                         {(contact.reuniao?.marcada || contact.reuniao?.fora_do_padrao
                           || contact.reuniao?.telefone_invalido || contact.reuniao?.cancelar_na_exact
-                          || contact.reuniao?.devolver_ao_funil) && (
+                          || contact.reuniao?.devolver_ao_funil || contact.reuniao?.remarcacao_pendente
+                          || contact.reuniao?.solicitou_reagendamento) && (
                           <div className="flex items-center gap-1 mt-1">
                             {contact.reuniao.telefone_invalido ? (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-red-50 text-red-600"
@@ -1398,14 +1426,31 @@ export default function ConversationsPage() {
                                 devolver ao funil
                               </span>
                             )}
+                            {contact.reuniao.remarcacao_pendente && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-orange-50 text-orange-700"
+                                    title={`O lead escolheu este horário. Cancele a reunião ${contact.reuniao.remarcacao_pendente.meeting_id} na Exact e o Hub marca a nova sozinho.`}>
+                                <RotateCcw className="w-2.5 h-2.5" />
+                                remarcação pendente {rotuloReuniao(contact.reuniao.remarcacao_pendente.slot)}
+                              </span>
+                            )}
+                            {contact.reuniao.solicitou_reagendamento && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-amber-50 text-amber-700"
+                                    title="O lead pediu para remarcar (botão ou mensagem) e ainda não tem reunião nova.">
+                                pediu remarcação
+                              </span>
+                            )}
                             {((reuniaoFilter === 'cancelar' && contact.reuniao.cancelar_na_exact)
-                              || (reuniaoFilter === 'devolver' && contact.reuniao.devolver_ao_funil)) && (
+                              || (reuniaoFilter === 'devolver' && contact.reuniao.devolver_ao_funil)
+                              || (reuniaoFilter === 'reagendamento' && contact.reuniao.solicitou_reagendamento)) && (
                               <span
                                 role="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   marcarTratado((reuniaoFilter === 'cancelar'
-                                    ? contact.reuniao!.cancelar_na_exact : contact.reuniao!.devolver_ao_funil)!);
+                                    ? contact.reuniao!.cancelar_na_exact
+                                    : reuniaoFilter === 'reagendamento'
+                                      ? contact.reuniao!.solicitou_reagendamento
+                                      : contact.reuniao!.devolver_ao_funil)!);
                                 }}
                                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-gray-800 text-white hover:bg-gray-700 cursor-pointer"
                               >

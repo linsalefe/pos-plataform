@@ -1210,21 +1210,31 @@ async def _falar(estado: NatQualificacaoState, texto: str, db: AsyncSession) -> 
 
 async def _notificar(estado: NatQualificacaoState, titulo: str, corpo: str,
                      db: AsyncSession, *, tipo: str = TIPO_NOTIF_AGENTE) -> None:
-    """Avisa o SDR dono; sem dono, a gestão. Nunca levanta — aviso não derruba fluxo."""
-    from app.nat_flow import telefone_legivel, usuario_existe
+    """Avisa o SDR dono; sem dono, todos os `SDR_USER_IDS` e a gestão. Nunca levanta.
+
+    19/10 (SPRINT_REMARCACAO): era "sem dono, a gestão". Lead da LP nasce sem dono, e o aviso
+    caía só na Isa (RECON_REAGENDAMENTO_20261018 §4: 2 de 3 nunca respondidos). O corpo leva a
+    ÚLTIMA mensagem do lead, que é o que o SDR precisa ler para responder.
+    """
+    from app import remarcacao
+    from app.nat_flow import telefone_legivel
     try:
         contato = await _contato_de(estado.contact_wa_id, db)
-        dono = contato.assigned_to if contato else None
-        destinatario = dono if await usuario_existe(dono, db) else GESTOR_USER_ID
-        if not await usuario_existe(destinatario, db):
+        alvos = await remarcacao.destinatarios(
+            estado.contact_wa_id, db, dono=contato.assigned_to if contato else None,
+            consultar_dono=False)
+        if not alvos:
             print(f"❌ Agente: sem destinatário para avisar sobre {estado.contact_wa_id}")
             return
-        db.add(Notification(
-            user_id=destinatario, contact_wa_id=estado.contact_wa_id,
-            type=tipo, ref=estado.ultimo_wa_message_id,
-            title=titulo,
-            body=f"{corpo} — {telefone_legivel(estado.contact_wa_id)}"))
-        print(f"🔔 Agente notificou user {destinatario}: {titulo}")
+        ultima = await remarcacao.ultima_mensagem(estado.contact_wa_id, db)
+        for destinatario in alvos:
+            db.add(Notification(
+                user_id=destinatario, contact_wa_id=estado.contact_wa_id,
+                type=tipo, ref=estado.ultimo_wa_message_id,
+                title=titulo,
+                body=f"{corpo} — {telefone_legivel(estado.contact_wa_id)}"
+                     f"{f' Última mensagem: {ultima}' if ultima else ''}"))
+        print(f"🔔 Agente notificou user(s) {alvos}: {titulo}")
     except Exception as e:
         print(f"⚠️  Agente: notificação falhou ({type(e).__name__}: {e})")
 
@@ -1834,7 +1844,8 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
                                 f"({slot_id!r})", db)
         return
 
-    livres = {d.id for d in await disponibilidade.slots_livres(db, usar_cache=False)}
+    grade = {d.id: d for d in await disponibilidade.slots_livres(db, usar_cache=False)}
+    livres = set(grade)
     if slot_id not in livres:
         # Corrida: alguém pegou o horário. Não é falha — reapresenta a grade.
         print(f"↩️  Agente: slot {slot_id} não está mais livre; reofertando")
@@ -1854,6 +1865,20 @@ async def _agendar(estado: NatQualificacaoState, resposta: dict, ofertados: dict
         estado.agendamento_id = existente.id
         await _concluir(estado, existente, db, confirmar=True)
         return
+
+    # REMARCAÇÃO COM A ANTIGA VIGENTE NA EXACT (SPRINT_REMARCACAO_20261019). O `scheduleAdd`
+    # recusa enquanto ela existe: 0 de 3 remarcações passaram entre 07 e 18/10
+    # (RECON_REAGENDAMENTO_20261018 §3, `Stage not found` e `already gone through this stage`).
+    # A escolha do lead fica guardada na reunião antiga, os SDRs são avisados para cancelá-la,
+    # e o `reuniao_sync` cria a nova quando a vir Cancelada. Só na remarcação (a chave
+    # `reunioes_remarcadas` é escrita por `_reabrir`): numa primeira conversa com reunião
+    # Vigente, o lead não pediu para cancelar nada.
+    if fluxo_b.e_fluxo_b(estado) and CHAVE_REUNIOES_IGNORADAS in (estado.dados_extras or {}):
+        from app import remarcacao
+        antiga = await remarcacao.reuniao_que_bloqueia(estado.contact_wa_id, db)
+        if antiga is not None:
+            await remarcacao.estacionar(estado, grade[slot_id], antiga, db)
+            return
 
     contato = await _contato_de(estado.contact_wa_id, db)
     nome = (contato.name if contato else "") or "Lead"

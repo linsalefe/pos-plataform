@@ -94,7 +94,7 @@ ATRASO_RETENTATIVA_SEGUNDOS = 60
 # ruidoso em vez de silencioso, e é o comportamento certo.
 MODULOS_DE_HANDLERS: tuple[str, ...] = ("app.nat_sla", "app.nat_recuperacao",
                                        "app.qualificacao_fluxo", "app.confirmacao",
-                                       "app.noshow")
+                                       "app.noshow", "app.remarcacao")
 
 # Rótulo do desfecho "adiada" no resumo de processar_pendentes. NÃO é status de banco: a
 # linha continua `pendente`, com o run_at empurrado. Existe separado de ACAO_PENDENTE para o
