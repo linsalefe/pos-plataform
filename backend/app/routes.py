@@ -359,6 +359,10 @@ async def send_template(req: SendTemplateRequest, db: AsyncSession = Depends(get
             template_name=req.template_name,
         )
         db.add(message)
+        # 24/10: template de vagas marca o contato (a tela do SDR filtra por isso).
+        from app.tags_auto import marcar_vagas
+        await db.flush()
+        await marcar_vagas(db, wa_id, req.template_name)
         await _silenciar_agente_apos_envio_manual(wa_id, current_user, db)
         await db.commit()
 
@@ -455,11 +459,12 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
             lm.content AS last_message,
             lm.timestamp AS last_message_time,
             lm.direction,
+            lm.sent_by AS last_sent_by,
             COALESCE(ur.unread, 0) AS unread,
             COALESCE(ur.inbound_total, 0) AS inbound_total
         FROM contacts c
         LEFT JOIN LATERAL (
-            SELECT content, timestamp, direction
+            SELECT content, timestamp, direction, sent_by
             FROM messages WHERE contact_wa_id = c.wa_id
             ORDER BY timestamp DESC LIMIT 1
         ) lm ON true
@@ -558,6 +563,10 @@ async def list_contacts(channel_id: Optional[int] = None, assigned_to: Optional[
             "last_message": (recente.last_message or "") if recente else "",
             "last_message_time": recente.last_message_time.isoformat() if recente else None,
             "direction": recente.direction if recente else None,
+            # 24/10: quem mandou a última mensagem (users.id; None = agente/sistema/inbound).
+            # A tela usa com o `papel` do autor para esconder do SDR a rajada de follows de
+            # vagas que a consultora dispara (RECON_4_PEDIDOS_COMERCIAL_20261024 §4).
+            "last_sent_by": recente.last_sent_by if recente else None,
             "tags": list(tags.values()),
             "unread": sum(m.unread or 0 for m in membros),
             "ai_active": any(m.ai_active for m in membros),

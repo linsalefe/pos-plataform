@@ -50,6 +50,9 @@ interface ContactTag {
   color: string;
 }
 
+// Aplicada pelo backend a todo contato que recebeu template *vagasafirmativas* (app/tags_auto.py).
+const TAG_VAGAS = 'Vagas afirmativas';
+
 interface ExactLeadResult {
   id: number;
   exact_id: number;
@@ -94,6 +97,8 @@ interface Contact {
   last_message: string;
   last_message_time: string | null;
   direction: string | null;
+  // 24/10: users.id de quem mandou a última mensagem (null = agente, sistema ou o lead).
+  last_sent_by?: number | null;
   tags: ContactTag[];
   unread: number;
   created_at: string | null;
@@ -248,7 +253,18 @@ export default function ConversationsPage() {
   const [tratando, setTratando] = useState<number | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [sdrFilter, setSdrFilter] = useState<number | null>(null);
-  const [users, setUsers] = useState<{id: number; name: string}[]>([]);
+  const [users, setUsers] = useState<{id: number; name: string; papel?: string}[]>([]);
+  // Filtro padrão por PAPEL de quem está logado (24/10, RECON_4_PEDIDOS_COMERCIAL §4).
+  // Esconde, não bloqueia: "Ver tudo" desliga, e a escolha fica no localStorage desta pessoa.
+  const [verTudo, setVerTudo] = useState<boolean>(() => {
+    try { return typeof window !== 'undefined' && localStorage.getItem('conversas.verTudo') === '1'; }
+    catch { return false; }
+  });
+  const alternarVerTudo = () => {
+    const novo = !verTudo;
+    setVerTudo(novo);
+    try { localStorage.setItem('conversas.verTudo', novo ? '1' : '0'); } catch {}
+  };
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -908,6 +924,21 @@ export default function ConversationsPage() {
   const getStatusConfig = (s: string) => leadStatuses.find(x => x.value === s) || leadStatuses[0];
   const getTagColorConfig = (c: string) => tagColors.find(x => x.value === c) || tagColors[0];
 
+  // sdr: esconde a rajada de follows de vagas que a consultora disparou e ninguém respondeu.
+  // consultora: só vagas e os contatos dela. gestao/outro: tudo. Ver `passaNoPapel`.
+  const meuPapel = usuarioLogado?.papel || 'outro';
+  const filtroPapelAtivo = !verTudo && (meuPapel === 'sdr' || meuPapel === 'consultora');
+  const papelDoUsuario = (id: number | null | undefined) =>
+    id == null ? undefined : users.find(u => u.id === id)?.papel;
+  const passaNoPapel = (c: Contact) => {
+    if (!filtroPapelAtivo) return true;
+    const ehVagas = c.tags.some(t => t.name === TAG_VAGAS);
+    if (meuPapel === 'sdr') {
+      return !(ehVagas && c.direction === 'outbound' && papelDoUsuario(c.last_sent_by) === 'consultora');
+    }
+    return ehVagas || c.assigned_to === usuarioLogado?.id;
+  };
+
   const filteredContacts = contacts.filter(c => {
     // Busca por número casa as DUAS grafias: quem digitar o telefone com o 9º dígito tem que
     // achar a conversa mesmo quando ela é representada pela grafia sem ele.
@@ -933,7 +964,7 @@ export default function ConversationsPage() {
       || (reuniaoFilter === 'devolver' && !!r?.devolver_ao_funil)
       || (reuniaoFilter === 'remarcacao' && !!r?.remarcacao_pendente)
       || (reuniaoFilter === 'reagendamento' && !!r?.solicitou_reagendamento);
-    return ms && mst && mtag && mur && mag && mai && msdr && mreu;
+    return ms && mst && mtag && mur && mag && mai && msdr && mreu && passaNoPapel(c);
   });
   // Com "Reunião marcada" ou "Confirmou", a lista vem pela reunião mais próxima primeiro.
   // `inicio` é ISO sem fuso: a comparação de string já dá a ordem certa.
@@ -1121,9 +1152,24 @@ export default function ConversationsPage() {
                   </span>
                 )}
               </button>
-              <span className="text-[11px] text-gray-400 tabular-nums">
-                {filteredContacts.length} contato{filteredContacts.length !== 1 ? 's' : ''}
-              </span>
+              <div className="flex items-center gap-2">
+                {(meuPapel === 'sdr' || meuPapel === 'consultora') && (
+                  <button
+                    onClick={alternarVerTudo}
+                    title={meuPapel === 'sdr'
+                      ? 'Por padrão some a rajada de follows de vagas afirmativas que ninguém respondeu'
+                      : 'Por padrão aparecem só vagas afirmativas e os seus contatos'}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${
+                      verTudo ? 'bg-gray-50 text-gray-500 hover:bg-gray-100' : 'bg-[#2A658F]/10 text-[#2A658F]'
+                    }`}
+                  >
+                    {verTudo ? 'Filtro do meu papel' : 'Ver tudo'}
+                  </button>
+                )}
+                <span className="text-[11px] text-gray-400 tabular-nums">
+                  {filteredContacts.length} contato{filteredContacts.length !== 1 ? 's' : ''}
+                </span>
+              </div>
             </div>
 
             {/* Painel de filtros avançados */}

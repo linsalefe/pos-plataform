@@ -161,7 +161,9 @@ async def dono_de(wa_id: str, db: AsyncSession) -> int | None:
 
 async def destinatarios(wa_id: str, db: AsyncSession, *, dono: int | None = None,
                         consultar_dono: bool = True) -> list[int]:
-    """Com dono: só ele. Sem dono: todos os SDRs de `SDR_USER_IDS` + a gestão (decisão 4).
+    """Com dono: só ele. Sem dono: todos os SDRs + a gestão (decisão 4).
+
+    24/10: os SDRs vêm de `users.papel = 'sdr'` (app/usuarios.py); `SDR_USER_IDS` virou reserva.
 
     Só ids que existem em `users`: `notifications.user_id` tem FK e um id errado no `.env`
     derrubaria o savepoint inteiro (`nat_flow.usuario_existe`).
@@ -169,7 +171,8 @@ async def destinatarios(wa_id: str, db: AsyncSession, *, dono: int | None = None
     from app.nat_flow import usuario_existe
     if dono is None and consultar_dono:
         dono = await dono_de(wa_id, db)
-    candidatos = [dono] if dono else [*sdr_user_ids(), GESTOR_USER_ID]
+    from app import usuarios
+    candidatos = [dono] if dono else [*await usuarios.sdr_ids(db), GESTOR_USER_ID]
     saida: list[int] = []
     for uid in candidatos:
         if uid not in saida and await usuario_existe(uid, db):

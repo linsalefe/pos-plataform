@@ -12,6 +12,7 @@ interface UserInfo {
   name: string;
   email: string;
   role: string;
+  papel?: string;
   is_active: boolean;
   created_at: string | null;
 }
@@ -26,6 +27,7 @@ export default function UsersPage() {
   const [newEmail, setNewEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState('atendente');
+  const [newPapel, setNewPapel] = useState('outro');
   const [showPassword, setShowPassword] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
@@ -33,6 +35,7 @@ export default function UsersPage() {
   const [editingUser, setEditingUser] = useState<UserInfo | null>(null);
   const [editName, setEditName] = useState('');
   const [editRole, setEditRole] = useState('');
+  const [editPapel, setEditPapel] = useState('outro');
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -64,12 +67,14 @@ export default function UsersPage() {
         email: newEmail,
         password: newPassword,
         role: newRole,
+        papel: newPapel,
       });
       setShowModal(false);
       setNewName('');
       setNewEmail('');
       setNewPassword('');
       setNewRole('atendente');
+      setNewPapel('outro');
       await loadUsers();
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Erro ao criar usuário');
@@ -91,6 +96,7 @@ export default function UsersPage() {
     setEditingUser(u);
     setEditName(u.name);
     setEditRole(u.role);
+    setEditPapel(u.papel || 'outro');
     setError('');
   };
 
@@ -102,6 +108,7 @@ export default function UsersPage() {
       await api.patch(`/auth/users/${editingUser.id}`, {
         name: editName,
         role: editRole,
+        papel: editPapel,
       });
       setEditingUser(null);
       await loadUsers();
@@ -129,6 +136,33 @@ export default function UsersPage() {
 
   const getRoleLabel = (role: string) => role === 'admin' ? 'Administrador' : 'Atendente';
   const getRoleColor = (role: string) => role === 'admin' ? 'bg-purple-50 text-purple-700' : 'bg-blue-50 text-blue-700';
+  // Papel é operação (quem é SDR, quem é consultora); a Função continua sendo a permissão.
+  const PAPEIS: { valor: string; rotulo: string }[] = [
+    { valor: 'sdr', rotulo: 'SDR' },
+    { valor: 'consultora', rotulo: 'Consultora' },
+    { valor: 'gestao', rotulo: 'Gestão' },
+    { valor: 'outro', rotulo: 'Outro' },
+  ];
+  const getPapelLabel = (papel?: string) => PAPEIS.find(p => p.valor === papel)?.rotulo || 'Outro';
+  const seletorPapel = (valor: string, mudar: (v: string) => void) => (
+    <div>
+      <label className="block text-[13px] font-medium text-gray-500 mb-1.5">Papel</label>
+      <div className="grid grid-cols-4 gap-2">
+        {PAPEIS.map(p => (
+          <button
+            key={p.valor}
+            type="button"
+            onClick={() => mudar(p.valor)}
+            className={`py-2 rounded-xl text-[12px] font-medium border transition-all ${
+              valor === p.valor ? 'border-[#2A658F] bg-[#2A658F]/5 text-[#2A658F]' : 'border-gray-200 text-gray-400 hover:bg-gray-50'
+            }`}
+          >
+            {p.rotulo}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
   const getInitials = (name: string) => name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   const getAvatarColor = (name: string) => {
     const c = ['from-blue-500 to-blue-600','from-purple-500 to-purple-600','from-emerald-500 to-emerald-600','from-orange-500 to-orange-600','from-pink-500 to-pink-600'];
@@ -233,10 +267,13 @@ export default function UsersPage() {
                     </div>
                   </div>
 
-                  {/* Role */}
-                  <div>
+                  {/* Role + papel */}
+                  <div className="flex flex-wrap gap-1">
                     <span className={`inline-flex items-center px-2 py-0.5 text-[11px] font-semibold rounded-md ${getRoleColor(u.role)}`}>
                       {getRoleLabel(u.role)}
+                    </span>
+                    <span className="inline-flex items-center px-2 py-0.5 text-[11px] font-semibold rounded-md bg-gray-100 text-gray-600">
+                      {getPapelLabel(u.papel)}
                     </span>
                   </div>
 
@@ -359,6 +396,7 @@ export default function UsersPage() {
                     </button>
                   </div>
                 </div>
+                {seletorPapel(newPapel, setNewPapel)}
               </div>
 
               <button
@@ -437,6 +475,7 @@ export default function UsersPage() {
                     </button>
                   </div>
                 </div>
+                {seletorPapel(editPapel, setEditPapel)}
               </div>
 
               <div className="flex gap-3 mt-6">
