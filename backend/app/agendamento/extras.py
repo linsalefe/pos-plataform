@@ -52,6 +52,8 @@ Sanitizar não é o mesmo que validar: o que estoura CONTRATO (mais de 10 chaves
 demais) é recusado com 422 lá em `routes.py`, porque é a LP mandando errado. O que é só
 sujeira de digitação é limpo aqui, em silêncio.
 """
+import json
+import os
 import re
 import unicodedata
 
@@ -158,3 +160,79 @@ def montar_descricao(email: str | None, extras: dict[str, str] | None) -> str | 
         # come 2 caracteres a mais. Quem ler o CRM vê que faltou pedaço.
         texto = texto[:ORCAMENTO_DESCRICAO - 1].rstrip() + "…"
     return texto
+
+
+# ==========================================================================================
+# CAMPOS PERSONALIZADOS DA EXACT (24/10/2026)
+# ==========================================================================================
+# O SDR redigitava à mão, em `Possui Graduação?` e `investimento pós graduação online`, o que a
+# LP já mandava no `description`: 137 leads da LP com graduação preenchida contra 321 sem nada
+# desde 19/09 (RECON_4_PEDIDOS_COMERCIAL_20261024 §3.2). O `LeadsAdd` aceita `customFields`
+# (teste controlado de 24/10 com lead `zz`, SPRINT_ITENS_3_4_20261024_REPORT.md).
+#
+# O de/para mora em `backend/custom_fields.json`, não aqui: cada campo novo é config, não
+# deploy. Envio por ID da opção, não por texto: imune a acento e espaço.
+#
+# OPÇÃO INVÁLIDA DERRUBA O LEAD INTEIRO. Medido: `options: [{"id": 999999}]` dá 400
+# "Custom field '_possuigraduacao': Option(s) 999999 not found" e o lead NÃO nasce. Por isso
+# só sai daqui o que casa com uma opção conhecida, e `client.criar_lead` repete sem os campos
+# se a Exact recusar mesmo assim.
+
+CUSTOM_FIELDS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "custom_fields.json")
+_cfg_custom: dict | None = None
+
+
+def _norm(texto) -> str:
+    """Sem acento, minúsculo, espaços colapsados: `" Não "` e `"nao"` casam."""
+    base = unicodedata.normalize("NFKD", str(texto or ""))
+    base = "".join(c for c in base if not unicodedata.combining(c))
+    return _ESPACOS.sub(" ", base).strip().lower()
+
+
+def _config_custom() -> dict:
+    """`{chave_norm: (key, {valor_norm: id_opcao})}`, carregado uma vez. Ilegível = vazio."""
+    global _cfg_custom
+    if _cfg_custom is None:
+        caminho = os.getenv("AGENDAMENTO_CUSTOM_FIELDS_PATH") or CUSTOM_FIELDS_PATH
+        try:
+            with open(caminho, encoding="utf-8") as fh:
+                bruto = json.load(fh)
+            _cfg_custom = {
+                _norm(chave): (str(item["key"]),
+                               {_norm(v): int(i) for v, i in (item.get("opcoes") or {}).items()})
+                for chave, item in bruto.items()
+                if item.get("tipo") == "escolha_unica"
+            }
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            print(f"⚠️ custom_fields: {caminho} ilegível ({e}). Nenhum campo personalizado.")
+            _cfg_custom = {}
+    return _cfg_custom
+
+
+def recarregar_custom_fields() -> None:
+    global _cfg_custom
+    _cfg_custom = None
+
+
+def montar_custom_fields(extras: dict[str, str] | None) -> list[dict]:
+    """Os `customFields` do `LeadsAdd`, só com o que casa com uma opção conhecida.
+
+        {"Ensino Superior": "Sim"} -> [{"id": "_possuigraduacao", "options": [{"id": 136999}]}]
+
+    Valor fora das opções é descartado com log, nunca derruba o lead. O `description` não
+    muda: continua levando tudo, inclusive o que virou campo (o SDR lê o texto).
+    """
+    cfg = _config_custom()
+    saida: list[dict] = []
+    for chave, valor in (extras or {}).items():
+        campo = cfg.get(_norm(chave))
+        if campo is None:
+            continue
+        key, opcoes = campo
+        opcao = opcoes.get(_norm(valor))
+        if opcao is None:
+            print(f"⚠️ custom_fields: {chave!r}={valor!r} não casa com nenhuma opção de {key}; "
+                  "fica só no description")
+            continue
+        saida.append({"id": key, "options": [{"id": opcao}]})
+    return saida

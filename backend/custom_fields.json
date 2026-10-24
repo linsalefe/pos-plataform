@@ -1,0 +1,17 @@
+{
+  "Ensino Superior": {
+    "key": "_possuigraduacao",
+    "tipo": "escolha_unica",
+    "opcoes": {"Sim": 136999, "Não": 137000}
+  },
+  "Faixa de investimento": {
+    "key": "_investimentoposgraduacaoonline",
+    "tipo": "escolha_unica",
+    "opcoes": {
+      "Até R$100,00": 137002,
+      "De R$100,00 a R$200,00": 137003,
+      "De R$200,00 a R$300,00": 137004,
+      "De R$300,00 a R$400,00": 137005
+    }
+  }
+}
