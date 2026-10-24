@@ -206,7 +206,7 @@ async def slots_livres(db: AsyncSession, *,
     # slot_inicio -> (Slot, [consultoras livres]). dict preserva a ordem de inserção, e a
     # ordenação final é por horário de qualquer forma.
     por_horario: dict[datetime, tuple[Slot, list[Consultora]]] = {}
-    # (dia, email) -> horários que o Google tiraria. Só para o log de comparação.
+    # (dia, email) -> horários que o Google tira (ou tiraria, em comparação). Só para o log.
     sairiam: dict[tuple[str, str], list[str]] = {}
 
     for c in equipe:
@@ -251,7 +251,7 @@ async def slots_livres(db: AsyncSession, *,
         for slot in candidatos:
             livre_antigo = not any(_sobrepoe(slot.inicio, slot.fim, oi, of)
                                    for oi, of in antigos)
-            if usar_google and not servir_google and livre_antigo and (
+            if usar_google and livre_antigo and (
                     google_falhou or any(_sobrepoe(slot.inicio, slot.fim, oi, of)
                                          for oi, of in com_google)):
                 sairiam.setdefault((slot.inicio.strftime("%Y-%m-%d"), c.email),
@@ -264,8 +264,9 @@ async def slots_livres(db: AsyncSession, *,
             else:
                 entrada[1].append(c)
 
-    if usar_google and not servir_google:
-        _logar_comparacao(sairiam)
+    if usar_google:
+        # Também com o Google ativo: é o que conta, depois, quantos horários ele tirou.
+        _logar_comparacao(sairiam, "tirados" if servir_google else "sairiam")
 
     livres = [SlotDisponivel(slot=s, consultoras=tuple(cs))
               for s, cs in sorted(por_horario.values(), key=lambda x: x[0].inicio)]
@@ -294,17 +295,18 @@ async def _google_da_rodada(equipe: list[Consultora], margem: timedelta) -> dict
 _ultima_comparacao: tuple | None = None
 
 
-def _logar_comparacao(sairiam: dict[tuple[str, str], list[str]]) -> None:
+def _logar_comparacao(sairiam: dict[tuple[str, str], list[str]], rotulo: str) -> None:
+    """`sairiam` em comparação (LOG_ONLY), `tirados` com o Google decidindo a grade."""
     global _ultima_comparacao
-    assinatura = tuple(sorted((k, tuple(v)) for k, v in sairiam.items()))
+    assinatura = (rotulo,) + tuple(sorted((k, tuple(v)) for k, v in sairiam.items()))
     if assinatura == _ultima_comparacao:
         return
     _ultima_comparacao = assinatura
     if not sairiam:
-        print("📊 google_grade: nenhum horário sairia com o Google")
+        print(f"📊 google_grade: nenhum horário {rotulo} pelo Google")
         return
     for (dia, email), horas in sorted(sairiam.items()):
-        print(f"📊 google_grade dia={dia} consultora={email} sairiam={horas}")
+        print(f"📊 google_grade dia={dia} consultora={email} {rotulo}={horas}")
 
 
 async def filtrar_pelo_google(slot: Slot, candidatas: list[Consultora]) -> list[Consultora]:

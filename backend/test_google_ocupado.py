@@ -12,6 +12,7 @@ O QUE ESTE TESTE PROVA
   4. Google 403 numa consultora: ela some da rodada e a outra segue
   5. GOOGLE_GRADE_ENABLED=false: grade idêntica à de antes e o Google nem é consultado
   6. GOOGLE_GRADE_LOG_ONLY=true: serve a grade antiga e loga o que sairia
+     (com o Google ativo, o caso 1 confere o log `tirados=`)
   7. cache: duas chamadas em 60 s fazem UMA consulta ao Google, com as duas consultoras
   8. fuso: `-03:00` e `Z` viram a mesma hora de parede de SP
   9. resposta com `errors` num calendário vira GoogleIndisponivel só dele
@@ -105,7 +106,8 @@ async def _livres(google: dict | None, *, usar_cache=False, consulta=None):
 
 async def caso_1_almoco_da_amorim():
     _flags(True, False)
-    por, _, _ = await _livres({ANA: [(_h("13:30"), _h("14:30"))], BIA: []})
+    por, _, log = await _livres({ANA: [(_h("13:30"), _h("14:30"))], BIA: []})
+    checa("ativo: log dos tirados", f"consultora={ANA} tirados=['13:30', '14:15']" in log, True)
     checa("Ana perde 13:30 e 14:15 (folga)", por[ANA],
           [h for h in TODOS if h not in ("13:30", "14:15")])
     checa("Bia intacta", por[BIA], TODOS)
