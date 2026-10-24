@@ -382,6 +382,9 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
     # ---- passo 1: o lock, tentando cada consultora ----------------------------------
     # `Boxes are occupied` numa consultora NÃO significa que o horário morreu — significa
     # que morreu para ela. Só depois que todas recusarem é que o visitante vê 409.
+    # 24/10: quem está ocupada no Google não entra na disputa (ver `filtrar_pelo_google`).
+    # Sem nenhuma, a lista vazia cai no mesmo caminho do "todas recusaram": 409.
+    candidatas = await disponibilidade.filtrar_pelo_google(slot, candidatas)
     ordem = await escolher_consultora(db, candidatas, slot.inicio.date())
     box_id = None
     consultora = None
