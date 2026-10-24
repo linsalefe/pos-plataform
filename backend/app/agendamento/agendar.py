@@ -451,6 +451,7 @@ async def agendar(db: AsyncSession, *, nome: str, email: str | None, telefone: s
                 source=origens.source_configurado(), sub_source=sub_source,
                 funnel_id=FUNIL_POS_GRADUACAO,
                 description=extras_mod.montar_descricao(email, extras),
+                custom_fields=extras_mod.montar_custom_fields(extras),
             )
         except client.ExactErro as e:
             await _compensar_box(db, ag, motivo="LeadsAdd falhou")
@@ -664,6 +665,7 @@ async def cadastrar_lead_sem_agendar(db: AsyncSession, *, nome: str, email: str 
             source=origens.source_configurado(), sub_source=sub_source,
             funnel_id=FUNIL_POS_GRADUACAO,
             description=extras_mod.montar_descricao(email, extras),
+            custom_fields=extras_mod.montar_custom_fields(extras),
         )
     except client.ExactErro as e:
         await _marcar(db, ag, PASSO_FALHOU, erro=str(e))

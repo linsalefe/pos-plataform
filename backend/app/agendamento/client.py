@@ -153,7 +153,7 @@ async def remover_box(box_id: int) -> None:
 
 async def criar_lead(*, nome: str, telefone: str, source: str, sub_source: str,
                      funnel_id: int, description: str | None = None,
-                     ddi: str = "55") -> int:
+                     ddi: str = "55", custom_fields: list[dict] | None = None) -> int:
     """`POST /LeadsAdd`. Devolve o `leadId`. O lead nasce em `Entrada` do funil.
 
     `duplicityValidation=False` porque a LP é pública e um bloqueio por duplicidade viraria
@@ -188,6 +188,20 @@ async def criar_lead(*, nome: str, telefone: str, source: str, sub_source: str,
     }
     if description:
         lead["description"] = description
+    if custom_fields:
+        # 24/10: graduação e faixa de investimento (extras.montar_custom_fields). Uma opção que
+        # a Exact não conheça derruba o LeadsAdd inteiro com 400 (medido), e o lead vale mais
+        # que o campo: recusou, repete sem eles. Só 4xx: rede/5xx (ExactIndisponivel) pode ter
+        # gravado, e repetir criaria um segundo lead.
+        try:
+            resp = await _req("POST", "/LeadsAdd", json={
+                "duplicityValidation": False, "lead": {**lead, "customFields": custom_fields}})
+            return int(resp.json()["value"])
+        except ExactIndisponivel:
+            raise
+        except ExactErro as e:
+            print(f"❌ custom_fields: LeadsAdd recusou os campos personalizados ({e}). "
+                  f"Repetindo sem eles: {custom_fields}")
     resp = await _req("POST", "/LeadsAdd", json={"duplicityValidation": False, "lead": lead})
     return int(resp.json()["value"])
 
