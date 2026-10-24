@@ -67,7 +67,7 @@ reuniao_status: 4789469 | Vigente | 2026-10-27 18:00 | hub | agendamento 1346
 
 No journal, cada reaplicação deixou um `🔁 reaplicação travada: 8388046720 já tem reunião 4789469 em 27/10 18:00` e a linha `agendamento recusa: ... motivo=ja_agendado`. Não apareceu `📦` nem `👤` para as linhas 1347 a 1349, ou seja, nenhum box nem lead foi criado na Exact.
 
-**Pendente, ação manual:** a reunião de teste 4789469 (lead 53203786) ocupa a agenda da Victória Amorim na **terça 27/10 às 18:00**. Ela precisa ser cancelada na UI da Exact; não existe cancelamento pela API. Enquanto ela estiver Vigente, o número do Álefe continua travado na LP.
+**Reunião de teste mantida (decisão do Álefe, 24/10):** a reunião 4789469 (lead 53203786) continua Vigente na agenda da Victória Amorim na **terça 27/10 às 18:00** e **não** será cancelada; o comercial vai ser avisado de que é teste. Até ela passar, o número do Álefe continua travado na LP, e as reaplicações dele entram na contagem de `ja_agendado` (por isso o filtro `id > 1349` e, depois, excluir a chave `8388046720`).
 
 ## 4. Primeiras 24 h
 
