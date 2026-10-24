@@ -771,7 +771,23 @@ sudo journalctl -u cenat-backend.service --since "7 days ago" --no-pager | grep 
 ```
 
 Os prefixos são estáveis e servem de filtro: `📦` box criado · `👤` lead · `✅` agendado ·
-`↪️` retry de consultora · `↩️` compensação · `🧹` faxina · `🔁` duplo clique · `➡️` passo 4.
+`↪️` retry de consultora · `↩️` compensação · `🧹` faxina · `🔁` duplo clique e
+reaplicação travada (`🔁 reaplicação travada: <chave> já tem reunião <meeting_id> em <slot>`) ·
+`➡️` passo 4.
+
+**Reaplicações travadas** (`ja_agendado`): quantas pessoas, e se alguma travou com reunião que
+já não estava Vigente e futura no momento (deveria dar zero):
+
+```sql
+SELECT count(*) AS linhas, count(DISTINCT right(regexp_replace(telefone,'\D','','g'),8)) AS pessoas
+FROM agendamentos WHERE motivo_recusa = 'ja_agendado'
+  AND created_at >= (now() AT TIME ZONE 'America/Sao_Paulo') - interval '1 day';
+
+SELECT a.id, a.created_at, r.meeting_id, r.exact_type, r.slot_inicio
+FROM agendamentos a
+JOIN reuniao_status r ON r.meeting_id = substring(a.erro from 'meeting_id=(\d+)')::bigint
+WHERE a.motivo_recusa = 'ja_agendado' AND r.slot_inicio <= a.created_at;
+```
 
 E o estado local responde o que o log não guarda:
 
@@ -904,6 +920,37 @@ qualquer jeito, sem `lead=`. Nenhum dos dois é 500 — 500 diria "quebrou aqui 
 `lead_id` (snake) é a chave canônica de **resposta** em todo o módulo. `leadId` camelCase é
 aceito só na **entrada** do `/agendar`, porque é o formato que o front tem em mãos.
 
+#### Reaplicação travada: `ja_agendado` (24/10/2026)
+
+Vale para `POST /agendar`, `POST /lead`, `POST /espontaneo/{token}/agendar` e
+`POST /espontaneo/{token}/lead`. Se a `chave_telefone` do pedido tem reunião **Vigente** com
+`slot_inicio > agora` em `reuniao_status` (inclui a reunião que a SDR marcou direto na Exact,
+com até 10 min de atraso do sync), a rota responde **200** sem `LeadsAdd`, sem `BoxesAdd`, sem
+fila do RD e sem abertura do agente (`agendamento/trava.py`):
+
+```json
+{"ok": true, "ja_agendado": true, "agendamento_id": 1311, "lead_id": 53133966,
+ "inicio": "2026-10-26T10:00:00", "fim": "2026-10-26T10:45:00", "fuso": "America/Sao_Paulo",
+ "consultora_nome": "Victória Amorim",
+ "mensagem": "Você já tem uma conversa marcada com a nossa consultora.",
+ "whatsapp_url": "https://wa.me/5511952137432",
+ "aviso": "Para remarcar ou cancelar, fale com a gente pelo WhatsApp."}
+```
+
+- **Privacidade.** `inicio`, `fim` e `consultora_nome` só vêm preenchidos quando o primeiro nome
+  (sem acento, minúsculo) bate com `reuniao_status.nome` **ou** o e-mail bate com algum e-mail
+  digitado na LP para aquela reunião ou lead (`agendamentos.email`; `exact_leads` não guarda
+  e-mail). Senão vêm `null` e `mensagem` é a genérica. Nas rotas do token a identidade é dada
+  por provada: o telefone vem do link mandado para aquele WhatsApp.
+- **Snippet antigo:** mostra "Agendado! <data>" (com dados) ou "Recebemos seu contato!" (sem).
+  **Snippet novo:** mostra a reunião existente e o botão "Remarcar pelo WhatsApp"; o form
+  nativo passa `&ja=1&inicio=&consultora=&wa=` e o obrigado nem carrega a grade.
+- Vigente com horário **passado** não trava, Cancelada não trava. O token não é consumido.
+- `fluxo.agendar` e `cadastrar_lead_sem_agendar` não conhecem a trava: agente e remarcação
+  seguem criando reunião.
+- No fluxo de duas etapas com o snippet antigo, uma reaplicação grava **duas** linhas
+  `ja_agendado` (uma no `/lead`, outra no `/agendar`): conte pessoas, não linhas.
+
 ### 4.2 Variáveis de ambiente
 
 Em `backend/.env` (lido pelo `EnvironmentFile` do systemd **e** pelo python-dotenv). Nenhuma
@@ -948,7 +995,7 @@ Uma linha por **tentativa**, inclusive as que falharam. Migrações idempotentes
 | `lead_externo` | BOOL NOT NULL | `true` = o `leadId` veio pronto no corpo; **o lead não é nosso para desfazer** |
 | `extras` | JSONB | respostas livres. JSONB e não Text porque existe para ser consultado (`extras->>'Como conheceu'`) |
 | `passo` | VARCHAR | `iniciado` → `box_criado` → `lead_criado` → `agendado` \| `falhou` \| `recusado` |
-| `motivo_recusa` | VARCHAR(40) | NULL = não foi recusa. `origem_nao_permitida` · `validacao_<campo>` (`validacao_telefone`, `validacao_nome`, `validacao_extras`, `validacao_leadid`, `validacao_corpo`…) · `slot_invalido` · `slot_ocupado` (na linha `falhou`) · `lead_nao_encontrado` · `duplo_clique`. `rate_limit` só aparece no journal |
+| `motivo_recusa` | VARCHAR(40) | NULL = não foi recusa. `origem_nao_permitida` · `validacao_<campo>` (`validacao_telefone`, `validacao_nome`, `validacao_extras`, `validacao_leadid`, `validacao_corpo`…) · `slot_invalido` · `slot_ocupado` (na linha `falhou`) · `lead_nao_encontrado` · `duplo_clique` · `ja_agendado` (reunião Vigente futura; `erro` traz `meeting_id`). `rate_limit` só aparece no journal |
 | `erro` | TEXT | mensagem **crua** da Exact, sem tradução |
 | `origem_ip` | VARCHAR(45) | 45 = IPv6 textual |
 | `created_at`, `updated_at` | TIMESTAMP | naive SP |
@@ -1232,3 +1279,4 @@ Log de boot esperado:
 | 05/10 | 15ª origem: `Pos Psicologia Clinica Aplicada` — id 178352, sem alias (a LP já mandava o canônico). LP em WordPress no ápice, publicada antes da integração: 8 recusas em 01/10. Gêmeo antigo `pospsiclinicaaplicada` (177651) em `Rd Marketing`. Identifier do RD pendente |
 | 25/08 | janela de dias corridos (o horizonte de 14 dias morreu) + grade no comercial inteiro 09:00–18:30, com os números recalculados contra os blocos reais (`AGENDAMENTO_JANELA_GRADE_20260825.md`) |
 | 25/08 | `AGENDAMENTO_JANELA_DIAS=4` **no ar**, escolhido contra a chegada real de 2 933 leads (§7 do mesmo doc): com 3, 5,3% dos leads veriam oferta zero |
+| 24/10 | trava de reaplicação: telefone com reunião Vigente futura recebe 200 `ja_agendado` sem lead nem box (`trava.py`, §4.1); `_duplo_clique` por chave do telefone; botão "Remarcar pelo WhatsApp" no snippet (`SPRINT_TRAVA_REAPLICACAO_20261024_REPORT.md`) |

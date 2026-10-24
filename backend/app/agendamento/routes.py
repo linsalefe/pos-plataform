@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agendamento import agendar as fluxo
 from app.agendamento import client, consultoras as equipe_mod, disponibilidade
-from app.agendamento import extras as extras_mod, origens, rastro
+from app.agendamento import extras as extras_mod, origens, rastro, trava
 from app.agendamento import token as tokens
 from app.models import Agendamento
 from app.database import get_db
@@ -97,20 +97,47 @@ def _limitar(request: Request, limite: tuple[int, int], escopo: str) -> None:
 
 
 async def _recusar(db: AsyncSession, request: Request, *, rota: str, motivo: str,
-                   pedido: "DadosLead", detalhe: str = "", gravar: bool = True) -> None:
+                   pedido: "DadosLead", detalhe: str = "", gravar: bool = True,
+                   telefone: str | None = None) -> None:
     """Rastro de uma recusa nossa: linha no journal SEMPRE, linha `recusado` se `gravar`.
 
     Chamada nos `except` das rotas, ANTES de devolver o erro. Não levanta — ver rastro.py.
     `gravar=False` é para o 409 (a linha já existe, marcada dentro do fluxo) e o 429 (gravar
     daria a quem martela o endpoint uma escrita por requisição).
     """
-    rastro.logar(rota=rota, motivo=motivo, telefone=pedido.telefone, nome=pedido.nome,
-                 origem=pedido.origem, ip=_ip(request), detalhe=detalhe)
+    # `telefone` explícito é o da página do token, cujo corpo não carrega telefone nem
+    # origem nem extras (PedidoEspontaneo): por isso o `getattr`.
+    telefone = telefone or pedido.telefone
+    origem = getattr(pedido, "origem", None)
+    rastro.logar(rota=rota, motivo=motivo, telefone=telefone, nome=pedido.nome,
+                 origem=origem, ip=_ip(request), detalhe=detalhe)
     if gravar:
         await rastro.registrar(db, rota=rota, motivo=motivo, nome=pedido.nome,
-                               telefone=pedido.telefone, email=pedido.email,
-                               origem=pedido.origem, extras=pedido.extras,
+                               telefone=telefone, email=pedido.email,
+                               origem=origem, extras=getattr(pedido, "extras", None),
                                detalhe=detalhe, origem_ip=_ip(request))
+
+
+async def _travar_reaplicacao(db: AsyncSession, request: Request, *, rota: str,
+                              pedido: "DadosLead", telefone: str, detalhe: str = "",
+                              identidade_provada: bool = False) -> dict | None:
+    """O 200 da reaplicação travada, ou None para seguir o fluxo normal. Ver trava.py.
+
+    Roda ANTES de qualquer escrita: com reunião Vigente e futura, nada de `LeadsAdd`,
+    `BoxesAdd`, fila do RD ou abertura do agente. Só a linha `recusado/ja_agendado`.
+    """
+    reuniao = await trava.reuniao_vigente_futura(db, telefone)
+    if reuniao is None:
+        return None
+    trava.logar(telefone, reuniao)
+    await _recusar(db, request, rota=rota, motivo=rastro.JA_AGENDADO, pedido=pedido,
+                   telefone=telefone,
+                   detalhe=f"meeting_id={reuniao.meeting_id} lead={reuniao.lead_id} "
+                           f"slot={reuniao.slot_inicio:%Y-%m-%d %H:%M}"
+                           + (f" · {detalhe}" if detalhe else ""))
+    bate = identidade_provada or await trava.identidade_bate(
+        reuniao, pedido.nome, pedido.email, db)
+    return trava.resposta_ja_agendado(reuniao, bate, await trava.whatsapp_url(db))
 
 
 def _normalizar_telefone(bruto: str) -> str:
@@ -239,6 +266,10 @@ async def criar_agendamento(pedido: PedidoAgendamento, request: Request,
         await _recusar(db, request, rota=rota, motivo=rastro.RATE_LIMIT, pedido=pedido,
                        detalhe=pedido_txt, gravar=False)
         raise
+    travada = await _travar_reaplicacao(db, request, rota=rota, pedido=pedido,
+                                        telefone=pedido.telefone, detalhe=pedido_txt)
+    if travada is not None:
+        return travada
     try:
         r = await fluxo.agendar(db, nome=pedido.nome, email=pedido.email,
                                 telefone=pedido.telefone, slot_id=pedido.slot,
@@ -318,6 +349,10 @@ async def criar_lead_sem_agendar(pedido: DadosLead, request: Request,
         await _recusar(db, request, rota=rota, motivo=rastro.RATE_LIMIT, pedido=pedido,
                        gravar=False)
         raise
+    travada = await _travar_reaplicacao(db, request, rota=rota, pedido=pedido,
+                                        telefone=pedido.telefone)
+    if travada is not None:
+        return travada
     try:
         lead_id = await fluxo.cadastrar_lead_sem_agendar(
             db, nome=pedido.nome, email=pedido.email, telefone=pedido.telefone,
@@ -499,6 +534,13 @@ async def agendar_por_token(segredo: str, pedido: PedidoEspontaneo, request: Req
         raise _recusa_de(r.status)
 
     telefone = r.token.contact_wa_id
+    # Antes da claim: o link não é queimado por uma reaplicação que não vira nada.
+    travada = await _travar_reaplicacao(db, request, rota="/espontaneo/agendar",
+                                        pedido=pedido, telefone=telefone,
+                                        detalhe=f"slot={pedido.slot!r}",
+                                        identidade_provada=True)
+    if travada is not None:
+        return travada
     if not await tokens.consumir(db, segredo):
         # Perdeu a corrida para outro clique. Não é erro do visitante.
         raise HTTPException(409, "Este link já foi usado para agendar.")
@@ -561,6 +603,11 @@ async def lead_por_token(segredo: str, pedido: PedidoEspontaneo, request: Reques
         raise _recusa_de(r.status)
 
     telefone = r.token.contact_wa_id
+    travada = await _travar_reaplicacao(db, request, rota="/espontaneo/lead",
+                                        pedido=pedido, telefone=telefone,
+                                        identidade_provada=True)
+    if travada is not None:
+        return travada
     if not await tokens.consumir(db, segredo):
         raise HTTPException(409, "Este link já foi usado.")
 

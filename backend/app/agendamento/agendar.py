@@ -113,6 +113,7 @@ from app.agendamento.horarios import agora_sp
 # Não há nada aqui que puxe `whatsapp` ou o LLM, que é o que a nota de horarios.py:26-27
 # manda evitar no caminho de request da landing page.
 from app import rd_outbox
+from app.telefone import formas_gravadas
 from app.models import (PASSO_AGENDADO, PASSO_BOX_CRIADO, PASSO_FALHOU, PASSO_INICIADO,
                         PASSO_LEAD_CRIADO, PASSO_RECUSADO, Agendamento)
 
@@ -225,10 +226,15 @@ class Resultado:
 
 
 async def _duplo_clique(db: AsyncSession, telefone: str) -> Agendamento | None:
+    # Por todas as grafias do mesmo número (com e sem 55, com e sem o 9º dígito): a coluna
+    # guarda o que o visitante digitou, e o segundo clique pode vir digitado diferente.
+    formas = formas_gravadas(telefone)
+    if not formas:
+        return None
     corte = agora_sp() - JANELA_DUPLO_CLIQUE
     res = await db.execute(
         select(Agendamento)
-        .where(Agendamento.telefone == telefone,
+        .where(Agendamento.telefone.in_(formas),
                Agendamento.created_at >= corte,
                Agendamento.passo == PASSO_AGENDADO)
         .order_by(Agendamento.created_at.desc())

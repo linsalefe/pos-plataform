@@ -115,7 +115,7 @@
     return d;
   }
 
-  function irParaObrigado(leadId, dados) {
+  function irParaObrigado(leadId, dados, ja) {
     // nome/email/tel viajam na query para o obrigado.html não pedir tudo de novo. São dados
     // que o próprio visitante acabou de digitar — não há nada aqui que ele já não saiba.
     // O que NÃO viaja é qualquer identificador de sessão: `lead` é um id de CRM, e o
@@ -124,6 +124,15 @@
           + "&email=" + encodeURIComponent(dados.email)
           + "&tel=" + encodeURIComponent(dados.telefone);
     if (leadId) { q += "&lead=" + encodeURIComponent(leadId); }
+    // Quem já tem conversa marcada não vê a grade: o obrigado.html mostra a reunião
+    // existente (ou a mensagem genérica, quando o backend não devolve a data) e o botão
+    // de remarcar pelo WhatsApp. Ver trava.py no backend.
+    if (ja && ja.ja_agendado) {
+      q += "&ja=1";
+      if (ja.inicio) { q += "&inicio=" + encodeURIComponent(ja.inicio); }
+      if (ja.consultora_nome) { q += "&consultora=" + encodeURIComponent(ja.consultora_nome); }
+      if (ja.whatsapp_url) { q += "&wa=" + encodeURIComponent(ja.whatsapp_url); }
+    }
     window.location.href = OBRIGADO_URL + q;
   }
 
@@ -176,7 +185,7 @@
       .then(function (res) {
         if (expirou) { clearTimeout(expirou); }
         if (res.status >= 200 && res.status < 300 && res.corpo.lead_id) {
-          return irParaObrigado(res.corpo.lead_id, dados);
+          return irParaObrigado(res.corpo.lead_id, dados, res.corpo);
         }
         // 400 (origem inválida) e 422 (corpo malformado) são erro NOSSO de configuração ou
         // de validação, não do CRM. Vale registrar no console para quem for depurar a LP —
