@@ -80,15 +80,16 @@ NIVEL_OUTRO_SDR = 1
 NIVEL_GESTAO = 2
 
 
-def outro_sdr(dono: int | None) -> int | None:
+def outro_sdr(dono: int | None, sdrs=SDR_IDS_PERMITIDOS) -> int | None:
     """O SDR que NÃO é o dono. None se o dono não é um dos SDRs conhecidos.
 
     Subtração de conjunto e não round-robin: são exatamente dois (Valéria 4, Thobias 5), e uma
     fila circular para dois elementos seria estado a mais para guardar sem nada em troca.
     """
-    if dono not in SDR_IDS_PERMITIDOS:
+    sdrs = frozenset(sdrs)
+    if dono not in sdrs:
         return None
-    restantes = SDR_IDS_PERMITIDOS - {dono}
+    restantes = sdrs - {dono}
     return next(iter(restantes)) if len(restantes) == 1 else None
 
 
@@ -204,7 +205,9 @@ async def sla_check(acao: dict, db: AsyncSession) -> None:
 
     # --- nível 0 -> avisa o OUTRO SDR e reagenda ---
     if nivel == NIVEL_SDR_DONO:
-        alvo = outro_sdr(state.sdr_user_id)
+        from app import usuarios
+        sdrs_ativos = frozenset(await usuarios.sdr_ids(db))
+        alvo = outro_sdr(state.sdr_user_id, sdrs_ativos)
 
         if alvo is None:
             # LEAD SEM SDR. Não existe "o outro SDR", mas existem OS DOIS — e são eles que
@@ -218,12 +221,12 @@ async def sla_check(acao: dict, db: AsyncSession) -> None:
             # 5: um terceiro aviso para ela não acrescenta informação, e quem faltava saber
             # eram os SDRs.
             print(f"↪️  NAT SLA: {wa_id} sem SDR dono (sdr_user_id={state.sdr_user_id}) — "
-                  f"avisando AMBOS os SDRs {sorted(SDR_IDS_PERMITIDOS)}")
+                  f"avisando os SDRs {sorted(sdrs_ativos)}")
             title, body = montar_notificacao_escalonamento(
                 NIVEL_OUTRO_SDR, dados["nome"], wa_id, dados["curso"], dono,
                 state.transferido_em, sem_dono=True)
             avisados = []
-            for sdr in sorted(SDR_IDS_PERMITIDOS):
+            for sdr in sorted(sdrs_ativos):
                 if await _notificar(db, user_id=sdr, wa_id=wa_id,
                                     tipo=TIPO_NOTIF_SLA_SDR, acao_id=acao_id,
                                     title=title, body=body):

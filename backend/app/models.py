@@ -121,6 +121,9 @@ class User(Base):
     role = Column(String(20), nullable=False, default="atendente")
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
+    # 24/10: OPERAÇÃO (sdr/consultora/gestao/outro), independente de `role`, que é permissão.
+    # Fonte única de "quem é SDR" (app/usuarios.py, migrate_papel_usuarios.py).
+    papel = Column(String(20), nullable=False, default="outro", server_default="outro")
 
 
 class ExactLead(Base):

@@ -6,6 +6,7 @@ from typing import Optional
 
 from app.database import get_db
 from app.models import User
+from app.usuarios import PAPEIS
 from app.auth import hash_password, verify_password, create_access_token, get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -21,6 +22,13 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     role: str = "atendente"
+    # Operação, não permissão (app/usuarios.py). Valor fora de PAPEIS vira 400.
+    papel: str = "outro"
+
+
+def _papel_valido(papel: str | None) -> None:
+    if papel is not None and papel not in PAPEIS:
+        raise HTTPException(status_code=400, detail=f"papel inválido; use um de {list(PAPEIS)}")
 
 
 @router.post("/login")
@@ -44,6 +52,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
             "name": user.name,
             "email": user.email,
             "role": user.role,
+            "papel": user.papel,
         },
     }
 
@@ -55,6 +64,7 @@ async def me(user: User = Depends(get_current_user)):
         "name": user.name,
         "email": user.email,
         "role": user.role,
+        "papel": user.papel,
     }
 
 
@@ -63,6 +73,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db), cur
     # Apenas admin pode criar usuários
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Apenas administradores podem criar usuários")
+    _papel_valido(req.papel)
 
     # Verificar se email já existe
     existing = await db.execute(select(User).where(User.email == req.email))
@@ -74,6 +85,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db), cur
         email=req.email,
         password_hash=hash_password(req.password),
         role=req.role,
+        papel=req.papel,
     )
     db.add(user)
     await db.commit()
@@ -84,6 +96,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db), cur
         "name": user.name,
         "email": user.email,
         "role": user.role,
+        "papel": user.papel,
     }
 
 
@@ -101,6 +114,7 @@ async def list_users(db: AsyncSession = Depends(get_db), current_user: User = De
             "name": u.name,
             "email": u.email,
             "role": u.role,
+            "papel": u.papel,
             "is_active": u.is_active,
             "created_at": u.created_at.isoformat() if u.created_at else None,
         }
@@ -111,6 +125,7 @@ async def list_users(db: AsyncSession = Depends(get_db), current_user: User = De
 class UpdateUserRequest(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
+    papel: Optional[str] = None
     is_active: Optional[bool] = None
 
 
@@ -123,16 +138,20 @@ async def update_user(user_id: int, req: UpdateUserRequest, db: AsyncSession = D
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    _papel_valido(req.papel)
 
     if req.name is not None:
         user.name = req.name
     if req.role is not None:
         user.role = req.role
+    if req.papel is not None:
+        user.papel = req.papel
     if req.is_active is not None:
         user.is_active = req.is_active
 
     await db.commit()
-    return {"id": user.id, "name": user.name, "role": user.role, "is_active": user.is_active}
+    return {"id": user.id, "name": user.name, "role": user.role, "papel": user.papel,
+            "is_active": user.is_active}
 
 
 @router.delete("/users/{user_id}")

@@ -579,6 +579,9 @@ async def bulk_send_template(
                 # Com o flush aqui, uma falha deste lead é contabilizada como falha DESTE
                 # lead (`failed`/`errors`) e os demais seguem — que é o contrato do laço.
                 await db.flush()
+                # 24/10: template de vagas marca o contato (a tela do SDR filtra por isso).
+                from app.tags_auto import marcar_vagas
+                await marcar_vagas(db, wa_id, template_name)
                 # NUNCA DUAS VOZES NA MESMA THREAD — a mesma regra de routes.py /send/*.
                 # O disparo em massa não é um SDR conversando 1:1, mas o efeito no lead é
                 # idêntico: um template cai na conversa que o agente está conduzindo, e a

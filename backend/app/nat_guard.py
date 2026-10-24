@@ -47,6 +47,9 @@ FUNIL_NAT = 18535
 # Auditado de novo em 2026-07-26: `users` não tem CHECK em role, e os 7 gates do código são
 # todos o literal `role != "admin"`. Não existe valor 'gestor' a que recorrer — por isso a
 # gestora também entra por id, e o item "role gestor" saiu da migração desta sprint.
+#
+# 24/10/2026: a fonte passou a ser `users.papel = 'sdr'` (app/usuarios.py). Esta constante fica
+# só para quem ainda a importa como referência histórica; o guard e o SLA leem o banco.
 SDR_IDS_PERMITIDOS = frozenset({4, 5})
 
 # Gestora (Isa). Último degrau do escalonamento do SLA, e destinatário de fallback quando um
@@ -326,9 +329,11 @@ async def nat_pode_atuar(lead_ou_contato, db: AsyncSession, *,
         if row is None:
             return bloqueia(f"contato {wa_id} não existe no banco")
         assigned_to = row[0]
-        if assigned_to not in SDR_IDS_PERMITIDOS:
+        from app import usuarios
+        sdrs = set(await usuarios.sdr_ids(db))
+        if assigned_to not in sdrs:
             return bloqueia(
-                f"assigned_to={assigned_to} fora dos SDRs permitidos {sorted(SDR_IDS_PERMITIDOS)}")
+                f"assigned_to={assigned_to} fora dos SDRs permitidos {sorted(sdrs)}")
 
         # 5) TETO POR HORA — só envios atribuíveis à NAT (ver COLUNA_MARCADOR_ENVIO_NAT).
         contador = contar_envios or contar_envios_nat_ultima_hora

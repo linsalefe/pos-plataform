@@ -8,6 +8,8 @@ interface User {
   name: string;
   email: string;
   role: string;
+  // Operação (sdr/consultora/gestao/outro), não permissão. Decide o filtro padrão das conversas.
+  papel?: string;
 }
 
 interface AuthContextType {
