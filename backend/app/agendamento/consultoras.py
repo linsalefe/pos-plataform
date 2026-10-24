@@ -71,6 +71,9 @@ class Consultora:
     # Opcionais: sem eles o T-30 cai no template antigo e a notificação vai ao dono do contato.
     telefone: str = ""
     user_id_hub: int | None = None
+    # 24/10 (SPRINT_GRADE_GOOGLE_FREEBUSY): o calendário do Google cujo livre/ocupado é
+    # subtraído da grade (google_ocupado.py). Vazio = o Google não é consultado para ela.
+    google_calendar_id: str = ""
 
 
 def _cfg_bruta() -> list[dict] | None:
@@ -114,7 +117,9 @@ def _montar(dados: list[dict]) -> list[Consultora]:
             uid = item.get("user_id_hub")
             saida.append(Consultora(email=email, nome_exibicao=nome, grade=Grade(cfg),
                                     telefone=str(item.get("telefone") or "").strip(),
-                                    user_id_hub=int(uid) if uid not in (None, "") else None))
+                                    user_id_hub=int(uid) if uid not in (None, "") else None,
+                                    google_calendar_id=str(
+                                        item.get("google_calendar_id") or "").strip()))
         except (KeyError, TypeError, ValueError) as e:
             print(f"⚠️ agendamento: consultora #{i} ignorada, config inválida ({e})")
     return saida

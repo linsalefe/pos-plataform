@@ -61,7 +61,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agendamento import client
+from app.agendamento import client, google_ocupado
 from app.agendamento.consultoras import Consultora, consultoras
 from app.agendamento.grade import Slot
 from app.agendamento.horarios import agora_sp, de_exact
@@ -196,9 +196,18 @@ async def slots_livres(db: AsyncSession, *,
         _cache = (agora, [])
         return []
 
+    # 24/10 (SPRINT_GRADE_GOOGLE_FREEBUSY): o livre/ocupado do Google é mais uma fonte, lida
+    # numa consulta só para a equipe inteira. Com a chave desligada, nem é consultado e a
+    # grade sai idêntica à de antes. Ver google_ocupado.py.
+    usar_google = google_ocupado.habilitado()
+    servir_google = usar_google and not google_ocupado.so_log()
+    google = await _google_da_rodada(equipe, margem) if usar_google else {}
+
     # slot_inicio -> (Slot, [consultoras livres]). dict preserva a ordem de inserção, e a
     # ordenação final é por horário de qualquer forma.
     por_horario: dict[datetime, tuple[Slot, list[Consultora]]] = {}
+    # (dia, email) -> horários que o Google tira (ou tiraria, em comparação). Só para o log.
+    sairiam: dict[tuple[str, str], list[str]] = {}
 
     for c in equipe:
         candidatos = c.grade.slots_candidatos()
@@ -221,10 +230,33 @@ async def slots_livres(db: AsyncSession, *,
         # expirar em 24h). Sem isto ele seria oferecido a outro lead. Ver `app/remarcacao.py`.
         from app.remarcacao import ocupados_pendentes
         ocupados = ocupados + await ocupados_pendentes(db, ini, fim, c.email)
+
+        do_google = google.get(c.google_calendar_id) if usar_google else None
+        if usar_google and c.google_calendar_id and do_google is None:
+            do_google = google_ocupado.GoogleIndisponivel(f"{c.google_calendar_id}: sem resposta")
+        google_falhou = isinstance(do_google, google_ocupado.GoogleIndisponivel)
+        if servir_google and google_falhou:
+            # Decisão do Álefe (24/10): sem o Google, a consultora sai da rodada. Oferecer no
+            # escuro é exatamente a colisão que esta fonte existe para evitar.
+            print(f"⚠️ disponibilidade: Google de {c.email} ilegível ({do_google}). "
+                  "Fora desta rodada.")
+            continue
+        blocos_google = do_google if isinstance(do_google, list) else []
+
         # Alarga cada ocupação pela folga ANTES de comparar. Ver "FOLGA DE 30 MIN" no topo.
-        ocupados = [(oi - margem, of + margem) for oi, of in ocupados]
+        # A folga vale também em volta do Google (decisão do Álefe, 24/10).
+        antigos = [(oi - margem, of + margem) for oi, of in ocupados]
+        com_google = antigos + [(oi - margem, of + margem) for oi, of in blocos_google]
+        servidos = com_google if servir_google else antigos
         for slot in candidatos:
-            if any(_sobrepoe(slot.inicio, slot.fim, oi, of) for oi, of in ocupados):
+            livre_antigo = not any(_sobrepoe(slot.inicio, slot.fim, oi, of)
+                                   for oi, of in antigos)
+            if usar_google and livre_antigo and (
+                    google_falhou or any(_sobrepoe(slot.inicio, slot.fim, oi, of)
+                                         for oi, of in com_google)):
+                sairiam.setdefault((slot.inicio.strftime("%Y-%m-%d"), c.email),
+                                   []).append(slot.inicio.strftime("%H:%M"))
+            if any(_sobrepoe(slot.inicio, slot.fim, oi, of) for oi, of in servidos):
                 continue
             entrada = por_horario.get(slot.inicio)
             if entrada is None:
@@ -232,10 +264,82 @@ async def slots_livres(db: AsyncSession, *,
             else:
                 entrada[1].append(c)
 
+    if usar_google:
+        # Também com o Google ativo: é o que conta, depois, quantos horários ele tirou.
+        _logar_comparacao(sairiam, "tirados" if servir_google else "sairiam")
+
     livres = [SlotDisponivel(slot=s, consultoras=tuple(cs))
               for s, cs in sorted(por_horario.values(), key=lambda x: x[0].inicio)]
     _cache = (agora, livres)
     return livres
+
+
+async def _google_da_rodada(equipe: list[Consultora], margem: timedelta) -> dict:
+    """Uma `freebusy.query` para a equipe inteira, na janela dos candidatos mais a folga."""
+    com_slots = [(c, c.grade.slots_candidatos()) for c in equipe]
+    com_slots = [(c, cs) for c, cs in com_slots if cs]
+    for c, _ in com_slots:
+        if not c.google_calendar_id:
+            print(f"⚠️ disponibilidade: {c.email} sem `google_calendar_id` em "
+                  "consultoras.json. O Google não é consultado para ela.")
+    ids = [c.google_calendar_id for c, _ in com_slots if c.google_calendar_id]
+    if not ids:
+        return {}
+    ini = min(s.inicio for _, cs in com_slots for s in cs) - margem
+    fim = max(s.fim for _, cs in com_slots for s in cs) + margem
+    return await google_ocupado.ocupados_google(ids, ini, fim)
+
+
+# Última comparação impressa. O log só sai quando o resultado MUDA: com o cache de 60 s,
+# repetir a mesma lista a cada minuto afogaria o journal sem dizer nada novo.
+_ultima_comparacao: tuple | None = None
+
+
+def _logar_comparacao(sairiam: dict[tuple[str, str], list[str]], rotulo: str) -> None:
+    """`sairiam` em comparação (LOG_ONLY), `tirados` com o Google decidindo a grade."""
+    global _ultima_comparacao
+    assinatura = (rotulo,) + tuple(sorted((k, tuple(v)) for k, v in sairiam.items()))
+    if assinatura == _ultima_comparacao:
+        return
+    _ultima_comparacao = assinatura
+    if not sairiam:
+        print(f"📊 google_grade: nenhum horário {rotulo} pelo Google")
+        return
+    for (dia, email), horas in sorted(sairiam.items()):
+        print(f"📊 google_grade dia={dia} consultora={email} {rotulo}={horas}")
+
+
+async def filtrar_pelo_google(slot: Slot, candidatas: list[Consultora]) -> list[Consultora]:
+    """As candidatas de `agendar` que o Google deixa atender este slot (com a folga).
+
+    Necessário porque `agendar` escolhe a consultora pela CARGA, não pela grade: num horário
+    em que só a Rodrigues está livre no Google, a Amorim podia ganhar o `BoxesAdd`, porque a
+    Exact dela não tem o bloqueio (RECON §1.3, colisão 1). Só age com `google_ocupado.ativo()`;
+    com a chave desligada ou em comparação, devolve a lista como veio.
+
+    Google ilegível tira a consultora, igual a `slots_livres`. Consultora sem
+    `google_calendar_id` fica.
+    """
+    if not google_ocupado.ativo():
+        return candidatas
+    margem = folga()
+    ids = [c.google_calendar_id for c in candidatas if c.google_calendar_id]
+    google = await google_ocupado.ocupados_google(ids, slot.inicio - margem,
+                                                  slot.fim + margem) if ids else {}
+    saida = []
+    for c in candidatas:
+        if not c.google_calendar_id:
+            saida.append(c)
+            continue
+        blocos = google.get(c.google_calendar_id)
+        if not isinstance(blocos, list):
+            print(f"⚠️ agendamento: Google de {c.email} ilegível ({blocos}); fora de {slot.id}")
+            continue
+        if any(_sobrepoe(slot.inicio, slot.fim, oi - margem, of + margem) for oi, of in blocos):
+            print(f"↪️ agendamento: {c.nome_exibicao} ocupada no Google em {slot.id}")
+            continue
+        saida.append(c)
+    return saida
 
 
 def invalidar_cache() -> None:
