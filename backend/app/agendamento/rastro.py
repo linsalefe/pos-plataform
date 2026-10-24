@@ -49,6 +49,9 @@ from app.models import PASSO_RECUSADO, Agendamento
 # `validacao_<campo>` (ver `motivo_de_validacao`).
 ORIGEM_NAO_PERMITIDA = "origem_nao_permitida"
 DUPLO_CLIQUE = "duplo_clique"
+# Telefone com reunião Vigente e futura em `reuniao_status`: a LP devolve a reunião
+# existente em vez de criar lead e box (agendamento/trava.py). `erro` traz o meeting_id.
+JA_AGENDADO = "ja_agendado"
 SLOT_INVALIDO = "slot_invalido"
 SLOT_OCUPADO = "slot_ocupado"
 LEAD_NAO_ENCONTRADO = "lead_nao_encontrado"

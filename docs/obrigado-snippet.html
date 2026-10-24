@@ -56,6 +56,8 @@
     text-align: center; }
   .cenat-ag .dia.sel { border-color: var(--cor); background: var(--cor); color: #fff; }
   .cenat-ag .dia small { display: block; opacity: .75; font-size: .75rem; }
+  .cenat-ag a.wa { display: inline-block; padding: 12px 20px; border-radius: 8px;
+    background: #25d366; color: #fff; font-weight: 600; text-decoration: none; }
   .cenat-ag .horas { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
     gap: 8px; margin-bottom: 16px; }
   .cenat-ag .hora { padding: 10px 0; border: 1px solid var(--borda); border-radius: 8px;
@@ -264,6 +266,7 @@
         if (res.status >= 400) {
           return msg(res.corpo.detail || "Não consegui concluir. Tente de novo.", "erro");
         }
+        if (res.corpo.ja_agendado) { return jaAgendado(res.corpo); }
         confirmar(res.corpo);
       })
       .catch(function () {
@@ -288,6 +291,38 @@
       + "é por lá que ajustamos o horário.</p>";
   }
 
+  // A pessoa já tem conversa marcada (o backend travou a reaplicação). Mostra a reunião
+  // existente quando o backend devolve a data, a mensagem genérica quando não devolve, e
+  // nos dois casos o botão de remarcar pelo WhatsApp. Nenhuma grade: marcar de novo é
+  // justamente o que não pode.
+  function jaAgendado(d) {
+    var texto;
+    // Formato conferido porque, no caminho do `?ja=1`, a data vem da URL.
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(d.inicio || "")) {
+      var partes = d.inicio.split("T");
+      var r = rotulo(partes[0]);
+      texto = "Você já tem uma conversa marcada para <strong>" + r.semana + ", " + r.dia
+            + " de " + r.mes + " às " + partes[1].slice(0, 5) + "</strong> (horário de Brasília)"
+            + (d.consultora_nome ? " com <strong>" + esc(d.consultora_nome) + "</strong>" : "")
+            + ".";
+    } else {
+      texto = "Já recebemos seu contato e sua conversa com a consultora está marcada.";
+    }
+    var botao = /^https:\/\/wa\.me\/[0-9]+$/.test(d.whatsapp_url || "")
+      ? '<p><a class="wa" href="' + d.whatsapp_url + '" target="_blank" rel="noopener">'
+        + "Remarcar pelo WhatsApp</a></p>"
+      : "";
+    $("cenat-ag").innerHTML =
+      '<div class="msg ok">' + texto + "</div>" + botao
+      + '<p class="aviso">Se precisar mudar o horário, é só falar com a gente pelo WhatsApp.</p>';
+  }
+
+  function esc(t) {
+    return String(t).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
   // Pré-preenche com o que veio do index.html. Os campos seguem editáveis de propósito:
   // se a pessoa errou o telefone na tela anterior, esta é a última chance de corrigir antes
   // de o horário virar reunião na agenda de uma consultora.
@@ -302,7 +337,13 @@
     });
   })();
 
-  $("ag-enviar").onclick = enviar;
-  carregarSlots();
+  // Veio do form nativo com reunião já marcada (`?ja=1`): nem carrega a grade.
+  if (query("ja") === "1") {
+    jaAgendado({ inicio: query("inicio") || null, consultora_nome: query("consultora"),
+                 whatsapp_url: query("wa") });
+  } else {
+    $("ag-enviar").onclick = enviar;
+    carregarSlots();
+  }
 })();
 </script>
