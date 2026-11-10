@@ -216,3 +216,166 @@ falhou inteiro. Dos 113 do Hub: 63 delivered + 24 read = **87 chegaram (77%)**, 
 Conserto sugerido (não aplicado, é frontend): ícone próprio para `failed` (⚠ vermelho com
 `error_title` no tooltip). A API já devolve `status` (`routes.py:755`); falta incluir
 `error_code`/`error_title` na resposta se o tooltip for usar o motivo.
+
+---
+
+## Adendo 10/11: investigação do 131049 (somente leitura)
+
+Fontes: banco (SELECT), `GET /{waba_id}/message_templates` e `GET /{phone_number_id}` na Graph
+API v22.0. A categoria vem da Meta, não da tabela `whatsapp_templates`. "Marketing recebido" =
+template MARKETING com status sent/delivered/read (sem as falhas). O telefone é casado pelos
+**últimos 8 dígitos**, porque o mesmo humano aparece com 12 e 13 dígitos. Na primeira conta,
+por `contact_wa_id`, o …5186 das 18:37 saía com 0, embora tivesse recebido 3 de manhã sob a
+outra grafia.
+
+### Conclusão
+
+**O 131049 de ontem é frequência nossa: o próprio Fluxo B estoura o limite.** O lote `abertura
+→ reativ_30m → reativ_2h` deixa a pessoa com 3 marketing em 4h, e o quarto (`reativ_4h`, ou o
+follow ou o Hub que vier depois) é barrado. Nos 30 dias, com 3 marketing nas 24h anteriores o
+131049 vai a **71%**; com 0 a 2, fica entre 5% e 8%. O número está **GREEN**, então não é
+qualidade. Também não é tendência: a taxa está estável perto de 10% desde 07/10. Mas o teto só
+resolve cerca de 28% do 131049 total: mais da metade (193 de 361) acontece com **zero** marketing
+nosso antes. É frequência de outras empresas ou critério de engajamento da Meta, que não
+controlamos.
+
+### 1. Os 20 com 131049 em 09/11
+
+| Tel | Hora | Template que falhou | Mkt 24h antes | Mkt 7d antes | Origem dos de 24h |
+|---|---|---|---:|---:|---|
+| …8721 | 09:31 | nat_b_reativ_30m | 1 | 2 | abertura B |
+| …1593 | 13:01 | nat_b_reativ_4h | 3 | 3 | abertura B + reativações |
+| …5186 | 13:01 | nat_b_reativ_4h | 3 | 4 | abertura B + reativações |
+| …0369 | 13:01 | nat_b_reativ_4h | 3 | 5 | abertura B + reativações |
+| …2207 | 13:01 | nat_b_reativ_4h | 3 | 4 | abertura B + reativações |
+| …2420 | 13:01 | nat_b_reativ_4h | 3 | 3 | abertura B + reativações |
+| …1992 | 13:01 | nat_b_reativ_4h | 3 | 3 | abertura B + reativações |
+| …6487 | 13:01 | nat_b_reativ_4h | 3 | 3 | abertura B + reativações |
+| …2420 | 13:39 | mensagem_flow (follow est.) | 3 | 3 | abertura B + reativações |
+| …0369 | 15:57 | mensagens_flows2 (follow est.) | 3 | 5 | abertura B + reativações |
+| …6910 | 16:08 | mensagens_flows2 (follow est.) | 0 | 3 | — |
+| …2420 | 16:40 | mensagens_flows2 (follow est.) | 3 | 3 | abertura B + reativações |
+| …7176 | 17:02 | f3_guiarapst3 (follow est.) | 0 | 1 | — |
+| …7916 | 18:27 | f4_audiosmenfermagem (follow est.) | 0 | 2 | — |
+| …6640 | 18:37 | follow1_vagasafirmativas (Hub) | 0 | 1 | — |
+| …5186 | 18:37 | follow1_vagasafirmativas (Hub) | 3 | 4 | abertura B + reativações |
+| …2207 | 18:38 | follow1_vagasafirmativas (Hub) | 3 | 4 | abertura B + reativações |
+| …6487 | 18:39 | follow1_vagasafirmativas (Hub) | 3 | 3 | abertura B + reativações |
+| …1992 | 18:39 | follow1_vagasafirmativas (Hub) | 3 | 3 | abertura B + reativações |
+| …5616 | 19:51 | mensagem_flow (follow est.) | 3 | 3 | abertura B + reativações |
+
+Confirmação, no-show e agente não aparecem como origem em nenhum caso. Os mesmos 9 telefones do
+Fluxo B das 09:00 respondem por 15 das 20 falhas: depois do `reativ_4h` barrado, o follow por
+estágio e o Hub tentaram de novo no mesmo dia e falharam de novo.
+
+### 2. Comparação com os entregues do disparo das 18h
+
+O disparo de vagas afirmativas das 18:30–18:45 teve **86** delivered/read. O "70" é o total de
+delivered da hora 18h somando todas as origens.
+
+| Grupo | n | Mkt 24h (média / mediana) | Mkt 7d (média / mediana) | 0 nas 24h | ≥ 2 nas 24h | ≥ 3 nos 7d |
+|---|---:|---|---|---:|---:|---:|
+| 131049 em 09/11 | 20 | 2,30 / 3 | 3,10 / 3 | 4 | **15** | 16 |
+| Entregues do Hub 18h | 86 | 0,05 / 0 | 0,84 / 0 | 83 | **1** | 8 |
+
+Distribuição de marketing nas 24h antes: o grupo 131049 tem **15 com 3** e o dos entregues tem
+**nenhum com 3**. **Sim, a diferença é o número de marketing recebidos antes.**
+
+Nos 30 dias (07/10–09/11, todos os envios MARKETING):
+
+| Mkt nas 24h antes | Envios | 131049 | Taxa |
+|---:|---:|---:|---:|
+| 0 | 2.336 | 193 | 8,3% |
+| 1 | 874 | 54 | 6,2% |
+| 2 | 306 | 14 | 4,6% |
+| **3** | **140** | **100** | **71,4%** |
+| 4+ | 10 | 0 | 0% (quem passou do 3º) |
+
+### 3. Categoria dos templates na Meta
+
+**124 de 133 templates são MARKETING; 9 são UTILITY.** Entre os usados desde 07/10, os únicos
+UTILITY são `nat_a_30min`, `nat_a_pedido_confirmacao` e `nat_a_ultimo_aviso`.
+
+| Template | Categoria | Observação |
+|---|---|---|
+| `nat_a_confirmacao` | **MARKETING** | `previous_category=UTILITY`: a Meta reclassificou |
+| `nat_abertura_agendado` | **MARKETING** | reclassificado de UTILITY |
+| `follow_up` | **MARKETING** | reclassificado de UTILITY |
+| `sdr_agradecimento` | **MARKETING** | reclassificado de UTILITY |
+| `nat_a_beneficio`, `nat_a_ementa` | MARKETING | conteúdo, correto |
+| `nat_b_abertura`, `nat_b_reativ_30m/2h/4h/d1` | MARKETING | prospecção, correto |
+| `nat_ns_d0_1h`, `nat_ns_d0_8h`, `nat_ns_d0_corte`, `nat_ns_d2_audio` | MARKETING | |
+| `confirmacaoreuniao_vick` | MARKETING | |
+| follow por estágio (`mensagem_flow*`, `mensagem_follow*`, `f3_*`, `f4_*`) e vagas afirmativas | MARKETING | |
+| `nat_a_30min`, `nat_a_pedido_confirmacao`, `nat_a_ultimo_aviso` | UTILITY | |
+
+Nenhum template tem `quality_score` (todos `UNKNOWN`).
+
+### 4. 131049 por dia desde 07/10
+
+| Semana | Mkt enviados (dias úteis) | 131049 | Taxa |
+|---|---:|---:|---:|
+| 07–11/10 | 466 | 39 | 8,4% |
+| 12–16/10 | 627 | 70 | 11,2% |
+| 19–23/10 | 740 | 83 | 11,2% |
+| 26–31/10 | 1.017 | 93 | 9,1% |
+| 02–07/11 | 558 | 56 | 10,0% |
+| 09/11 | 208 | 20 | 9,6% |
+
+**Não está crescendo.** O que mudou foi a origem. Até 30/10 o 131049 vinha quase todo do follow
+e do Hub (o Fluxo B dava 0 a 2 por dia). Desde 02/11 o Fluxo B passou a gerar uma parte grande:
+14 de 14 em 02/11, 9 de 16 em 03/11, 8 de 20 em 09/11. Fim de semana: zero.
+
+### 5. Qualidade do número
+
+`GET /978293125363835?fields=quality_rating,messaging_limit_tier,...` devolve
+`quality_rating=GREEN`, `throughput.level=STANDARD`, `status=CONNECTED`, `name_status=APPROVED`.
+`messaging_limit_tier` não veio na resposta da v22.0. **Qualidade não é a causa.**
+
+### 6. Proposta (nada aplicado)
+
+**(a) Ressubmeter como UTILITY.** É preciso criar um template novo, com outro nome: a Meta não
+devolve a categoria de um aprovado e reclassifica de novo se o texto for promocional. A regra
+dela: UTILITY é sobre uma transação ou pedido **que a pessoa já fez**, sem oferta.
+
+| Atual | Por que caiu em MARKETING | Nova versão UTILITY |
+|---|---|---|
+| `nat_a_confirmacao` | "você garante a isenção da taxa de matrícula e um e-book exclusivo" | Tirar a frase. Fica só data, hora, consultora e duração. A isenção pode ir no `nat_a_beneficio`, que já é marketing. |
+| `confirmacaoreuniao_vick` | Mesma frase da isenção + e-book | Mesmo corte. Ou aposentar e usar a confirmação nova. |
+| `nat_abertura_agendado` | "Que bom te ver ✨" + pergunta de qualificação | Separar: um UTILITY só com "sua reunião com X está confirmada para D às H" e a pergunta da formação como texto livre, já dentro da janela se a pessoa responder. |
+| `nat_ns_d0_1h` | "a agenda está apertada e restam poucas vagas" | "Sua reunião de hoje às H não aconteceu. Quer escolher outro horário?" sem escassez. |
+| Lembrete T-30 (`nat_a_30min`) | Já é UTILITY | Manter. |
+| Fluxo B, follow, Hub | Prospecção e conteúdo | **Não ressubmeter.** Se a Meta reclassificar, é pior. |
+
+Efeito esperado: a confirmação e o lembrete deixam de contar para o limite de marketing. Ontem
+isso não pesou nos 20 casos (nenhum veio de confirmação), mas protege quem tem reunião marcada,
+que é quem mais importa.
+
+**(b) Teto de marketing por pessoa.** Recomendação: **no máximo 3 MARKETING em 24h por humano**
+(chave por `variantes_wa_id` / últimos 8 dígitos, não por `contact_wa_id`), somando todas as
+origens: Fluxo B, follow por estágio, Hub manual, no-show e confirmação marketing.
+
+- Por que 3: é onde está o salto. O 4º falha 71% das vezes. Nos 30 dias o teto teria pulado 140
+  envios, dos quais 100 iam falhar de qualquer jeito, e preservado os 40 que passaram (dá para
+  aceitar a perda ou subir para 4 se o comercial preferir).
+- Como: quem envia consulta antes. A régua (`nat_scheduled_actions`) grava `skipped` com
+  `motivo='teto_marketing_24h'`, o follow por estágio grava `skipped` com o mesmo motivo, e o bulk
+  do Hub mostra na prévia "N contatos pulados pelo teto" e pula. Não reagendar automaticamente: o
+  degrau seguinte da régua segue normal.
+- Efeito direto no Fluxo B: `abertura + 30m + 2h` já são 3, então o `reativ_4h` passa a ser
+  pulado sempre que os três anteriores entraram. Vale decidir se o `reativ_4h` continua existindo
+  ou se vira D+1.
+- Custo do teto: ele só ataca cerca de 28% do 131049. Os 53% sem marketing nosso antes não mudam.
+- Junto: **pular 131026 recente** no bulk e no follow (seção 2 do primeiro relatório). Não é
+  131049, mas é o mesmo desperdício.
+
+**(c) Frontend.**
+- `getStatusIcon` (`conversations/page.tsx:896`): caso próprio para `failed`, com ícone de
+  alerta vermelho e tooltip com `error_title` e código ("131049 · limite de frequência da Meta").
+  A API (`routes.py:755`) precisa passar a devolver `error_code` e `error_title`, que já estão na
+  tabela.
+- Filtro "Falhou" na lista de conversas: contatos cuja última outbound está `failed`, com o
+  código como etiqueta. Hoje esses contatos não se distinguem de "mensagem a caminho".
+- Traduzir os 4 códigos mais comuns para texto de gente: 131026 "número sem WhatsApp", 131049
+  "a Meta segurou por excesso de marketing", 131047 "fora da janela de 24h, use template",
+  130472 "número em teste da Meta".
