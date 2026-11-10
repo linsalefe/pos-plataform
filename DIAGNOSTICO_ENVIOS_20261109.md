@@ -179,3 +179,40 @@ Pool zerado, nenhuma transação ociosa. O único problema é o `reuniao_sync`.
 3. Fazer o bulk pular telefone com 131026 recente.
 4. Investigar a abertura do Fluxo B em dobro para o mesmo telefone (ids 44689/44698, 44693/44700, 44705/44706).
 5. Alertar quando o `/health` ficar em 503 (hoje ninguém é avisado).
+
+---
+
+## Adendo 21:05 SP: "mensagens no relógio desde ~13h"
+
+**Conclusão: o relógio não é status pendente. É `failed` desenhado como relógio.** Não é o
+webhook nem lock, então os consertos 1 e 2 **não** foram aplicados (era a condição para aplicar).
+
+1. **Não existe status `pending` no banco.** Desde 09/11 00h, os outbound são: 120 delivered,
+   80 read, 50 failed, 11 sent. Todas as horas depois das 13h têm delivered e read (18h: 70
+   delivered + 34 read de 132). O último delivered chegou pelos POSTs das 20:59 SP; o webhook
+   continua respondendo 200.
+2. **A Meta está mandando e nós estamos gravando.** `POST /webhook` com 200 todas as horas de
+   09/11 (10h–23h UTC). Os 500 do `variantes_wa_id` já existiam de manhã, inclusive em proporção
+   maior (11h UTC: 18 × 500 para 16 × 200) e não mudaram às 13h. O journal não separa
+   `statuses` de `messages` por POST, então essa conta não dá para fazer. O painel de webhooks
+   da Meta não foi consultado, porque não tenho acesso a ele daqui.
+3. **Locks: nenhum.** `pg_stat_activity` mostra 20 conexões, todas `idle` e nenhuma em transação.
+   `pg_locks` não tem nada em `messages` nem `contacts`. O `reuniao_sync` faz ROLLBACK a cada
+   ciclo e não segura nada.
+4. **Não há como perguntar à Meta o status de uma mensagem:** a Cloud API não tem
+   `GET /{wamid}`, e o status só chega pelo webhook. Mesmo assim, as 3 mensagens das 18:3x no
+   relógio que amostrei estão gravadas como `failed`, com código (131026 ×2, 131049 ×1).
+5. **Por que o relógio:** `frontend/src/app/conversations/page.tsx:896` (`getStatusIcon`)
+   mostra ✓ para `sent`, ✓✓ para `delivered` e `read`, e **relógio para qualquer outro valor,
+   inclusive `failed`**. A falha aparece exatamente como "enviando…". Desde 13h são 41 `failed`
+   (relógio) e 5 `sent` (✓ só). O "~13:00" bate com o lote `nat_b_reativ_4h` das 13:01: 7 de
+   8 falharam com 131049.
+
+**Essas mensagens foram entregues? Não.** Quem está no relógio levou recusa da Meta (131026
+número inexistente, 131049 limite de frequência) e **não recebeu**. Mas o disparo das 18:3x não
+falhou inteiro. Dos 113 do Hub: 63 delivered + 24 read = **87 chegaram (77%)**, 25 falharam e
+1 está em `sent`.
+
+Conserto sugerido (não aplicado, é frontend): ícone próprio para `failed` (⚠ vermelho com
+`error_title` no tooltip). A API já devolve `status` (`routes.py:755`); falta incluir
+`error_code`/`error_title` na resposta se o tooltip for usar o motivo.
